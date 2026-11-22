@@ -364,6 +364,20 @@ export function updateDriving(G, dt) {
       }
     }
   } catch (e) {}
+  // ---- S26 player health from impacts ------------------------------------
+  // healthBefore (top of frame, S24 probe) vs now: every collision path in
+  // this function — building collider slides, traffic hits, and cop rams
+  // (police.js damageVehicle on the player car) — funnels through car
+  // health, so the frame delta is the impact size. Hard hits (delta > 7)
+  // hurt the DRIVER too: damage = (delta - 6) * 1.6.
+  if (healthBefore != null && typeof v.health === 'number') {
+    const impactDelta = healthBefore - v.health;
+    if (impactDelta > 7) { try { G.damagePlayer?.((impactDelta - 6) * 1.6); } catch (e) {} }
+  }
+  // Sea edge: the car is clamped at ±656 (island rim) — grinding along the
+  // rim in the water drains the player fast (the on-foot case is drained
+  // in hud.js' health tick).
+  if (Math.abs(v.x) >= 655 || Math.abs(v.z) >= 655) { try { G.damagePlayer?.(18 * dt); } catch (e) {} }
   // camera handled in main.js via G.car
   G.camTarget = { x: v.x, z: v.z, angle: v.angle, speed: v.speed };
 }

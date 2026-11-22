@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { CFG } from './config.js';
 import { srand } from './random.js';
-import { buildWorld, updateWorld, groundH } from './world.js';
+import { buildWorld, updateWorld, groundH, glowSprite } from './world.js';
 import { spawnTraffic, updateTraffic, updateSmoke, spawnVehicle } from './cars.js';
 import { createPlayer, updatePlayer } from './player.js';
 import { updateDriving, enterCar, exitCar, initVespas } from './drive.js';
@@ -72,6 +72,99 @@ initMissions(G);
 initHUD(G);
 initAudio(G);
 initWeapons(G);
+// --- S26 hospital marker (world.js untouched): pole + white sign with a
+// red-cross canvas texture at the WASTED respawn corner (330,-330). -------
+{
+  const hx = 335, hz = -335;
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, 5, 8),
+    new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.6, metalness: 0.6 })
+  );
+  pole.position.set(hx, groundH(hx, hz) + 2.5, hz);
+  scene.add(pole);
+  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const g2 = c.getContext('2d');
+  g2.fillStyle = '#ffffff'; g2.fillRect(0, 0, 128, 128);
+  g2.fillStyle = '#d8232a'; g2.fillRect(52, 24, 24, 80); g2.fillRect(24, 52, 80, 24);
+  const signTex = new THREE.CanvasTexture(c);
+  const sign = new THREE.Mesh(
+    new THREE.BoxGeometry(2.6, 2.6, 0.25),
+    new THREE.MeshBasicMaterial({ map: signTex })
+  );
+  sign.position.set(hx, groundH(hx, hz) + 5.4, hz);
+  sign.rotation.y = Math.PI / 4;
+  scene.add(sign);
+}
+// --- S26 pickups: 8 cash + 6 health, spinning/bobbing glow discs ---------
+const PICKUP_SPOTS = [
+  { type: 'cash', amount: 100, x: 174, z: -156 },   // Downtown intersection
+  { type: 'cash', amount: 125, x: 165, z: 488 },    // Coral Bay road
+  { type: 'cash', amount: 150, x: 338, z: 420 },    // Portside gate
+  { type: 'cash', amount: 150, x: 322, z: 545 },    // Port south quay
+  { type: 'cash', amount: 90, x: -174, z: 156 },    // Neon District
+  { type: 'cash', amount: 110, x: -488, z: -174 },  // Harborview
+  { type: 'cash', amount: 150, x: -296, z: -606 },  // Touge summit
+  { type: 'cash', amount: 75, x: -338, z: 338 },    // Hoshino blocks
+  { type: 'health', amount: 30, x: 326, z: -322 },  // Hospital corner
+  { type: 'health', amount: 30, x: -404, z: 460 },  // HQ garage apron
+  { type: 'health', amount: 30, x: -156, z: -338 }, // Downtown south
+  { type: 'health', amount: 30, x: 488, z: 488 },   // Coral Bay east
+  { type: 'health', amount: 30, x: 488, z: 404 },   // Portside east
+  { type: 'health', amount: 30, x: -276, z: -586 }, // Touge lower bend
+];
+function pickupTexture(glyph, color) {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+  const g2 = c.getContext('2d');
+  g2.clearRect(0, 0, 128, 128);
+  g2.fillStyle = color;
+  g2.font = 'bold 84px Arial, sans-serif';
+  g2.textAlign = 'center'; g2.textBaseline = 'middle';
+  g2.fillText(glyph, 64, 70);
+  return new THREE.CanvasTexture(c);
+}
+G.pickups = [];
+for (const s of PICKUP_SPOTS) {
+  const isCash = s.type === 'cash';
+  const grp = new THREE.Group();
+  const gy = groundH(s.x, s.z);
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.15, 24),
+    new THREE.MeshBasicMaterial({ color: isCash ? 0x2eff7a : 0xff4b4b, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+  );
+  disc.rotation.x = -Math.PI / 2; disc.position.y = 0.12;
+  grp.add(disc);
+  try { const glow = glowSprite(isCash ? 0x2eff7a : 0xff4b4b, 4.2); glow.position.y = 1.1; grp.add(glow); } catch (e) {}
+  const icon = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.5, 1.5),
+    new THREE.MeshBasicMaterial({ map: pickupTexture(isCash ? '$' : '+', isCash ? '#baffd2' : '#ffd2d2'), transparent: true, side: THREE.DoubleSide, depthWrite: false })
+  );
+  icon.position.y = 1.15;
+  grp.add(icon);
+  grp.position.set(s.x, gy, s.z);
+  scene.add(grp);
+  G.pickups.push({ ...s, group: grp, icon, disc, active: true, respawnT: 0, phase: (G.pickups.length * 1.93) % 6.28 });
+}
+G.updaters.push((G2, dt) => {
+  const pp = G2.car || G2.player;
+  const t = G2.elapsed || 0;
+  for (const pk of G2.pickups) {
+    if (!pk.active) {
+      pk.respawnT -= dt;
+      if (pk.respawnT <= 0) { pk.active = true; pk.group.visible = true; }
+      continue;
+    }
+    pk.icon.rotation.y += dt * 2.4;
+    pk.disc.rotation.z += dt * 1.2;
+    pk.icon.position.y = 1.15 + Math.sin(t * 2.2 + pk.phase) * 0.18;
+    if (!pp || G2.frozen) continue;
+    if (Math.hypot(pp.x - pk.x, pp.z - pk.z) < 1.8) {
+      if (pk.type === 'health' && (G2.playerHealth ?? 100) >= 100) continue; // leave it for when it matters
+      pk.active = false; pk.group.visible = false; pk.respawnT = 60;
+      if (pk.type === 'cash') { G2.money = (G2.money || 0) + pk.amount; G2.toast?.(`+$${pk.amount}`); }
+      else { G2.playerHealth = Math.min(100, (G2.playerHealth ?? 100) + pk.amount); G2.toast?.(`+${pk.amount} HP`); }
+    }
+  }
+});
 if (shot) {
   setupShot(G, shot);
   const menu = document.getElementById('menu'); if (menu) menu.style.display = 'none';
@@ -106,8 +199,13 @@ function loop(now) {
   if (!shot) G.timeOfDay = (G.timeOfDay + (dt / CFG.dayLength) * 24) % 24;
   if (G.mode === 'play') {
     for (const u of G.updaters) { try { u(G, dt); } catch (err) { console.error(err); } }
-    if (G.car) updateDriving(G, dt); else updatePlayer(G, dt);
-    updateTraffic(G, dt);
+    // S26 freeze: during a WASTED/BUSTED overlay the player + traffic halt
+    // (cop AI halts inside police.js); updaters keep running so the HUD
+    // respawn timer can tick the world back in.
+    if (!G.frozen) {
+      if (G.car) updateDriving(G, dt); else updatePlayer(G, dt);
+      updateTraffic(G, dt);
+    }
   }
   updateSmoke(G, dt);
   updateWorld(G, dt);

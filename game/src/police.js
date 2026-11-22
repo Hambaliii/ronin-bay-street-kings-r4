@@ -3,7 +3,7 @@ import { loadHeroAsset } from './assets.js';
 import { CAST } from './config.js';
 import { rr, ri, pick, chance } from './random.js';
 import { groundH, glowSprite } from './world.js';
-import { spawnVehicle, spawnSmokeAt, applyNpcPoliceGlb } from './cars.js';
+import { spawnVehicle, spawnSmokeAt, applyNpcPoliceGlb, damageVehicle } from './cars.js';
 import { makeFigure, animateFigure } from './player.js';
 
 // ---------------------------------------------------------------- police.js
@@ -26,6 +26,42 @@ function playerPos(G) {
 function playerAngle(G) {
   if (G.car) return G.car.angle;
   return G.player.angle;
+}
+
+// --- S26 district helper + car description (chatter / WASTED sub-line) ------
+export function districtAt(x, z) {
+  if (z > 380) return 'Coral Bay';
+  if (x > 250) return 'Portside';
+  if (z < -450) return 'Touge Highlands';
+  if (Math.abs(x) < 200 && Math.abs(z) < 200) return 'Downtown';
+  return x < 0 ? 'Harborview' : 'Neon District';
+}
+const COLOR_WORDS = [
+  [0xff7a1a, 'orange'], [0xe33b3b, 'red'], [0xb01030, 'red'], [0x2e6fb7, 'blue'],
+  [0x3f6d8e, 'blue'], [0x37c8ff, 'blue'], [0xffffff, 'white'], [0xf2f2f2, 'white'],
+  [0x111111, 'black'], [0x1d2735, 'black'], [0xc0c0c0, 'silver'], [0x8a8a8a, 'gray'],
+  [0xffd23f, 'yellow'], [0x2e9e4f, 'green'], [0x7a4fd0, 'purple'], [0xff4fd8, 'pink'],
+];
+function colorWord(v) {
+  const raw = (v && v.spec && (v.spec.color ?? v.spec.paint)) ?? (v && (v.color ?? v.paint));
+  if (typeof raw === 'string') return raw.replace(/^#/, '').length === 6 ? 'painted' : raw;
+  if (typeof raw === 'number') {
+    let best = 'painted', bd = Infinity;
+    for (const [hex, word] of COLOR_WORDS) {
+      const dr = ((hex >> 16) & 255) - ((raw >> 16) & 255);
+      const dg = ((hex >> 8) & 255) - ((raw >> 8) & 255);
+      const db = (hex & 255) - (raw & 255);
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bd) { bd = d; best = word; }
+    }
+    return best;
+  }
+  return 'painted';
+}
+function carDesc(G) {
+  if (!G.car) return 'suspect on foot';
+  const name = (G.car.spec && G.car.spec.name) || G.car.specId || 'vehicle';
+  return `${colorWord(G.car)} ${name}`;
 }
 
 // --- RBPD decal texture -----------------------------------------------------
@@ -379,9 +415,9 @@ export function initPolice(G) {
     blockCd: 8,
     blocks: [],
     spikeT: 0,
-    bustT: 0,
-    bustResetT: -1,
-    wastedResetT: -1,
+    prevWantedInt: 0,
+    chatterIdx: 0,
+    ramCd: 0,
     prevPX: 0, prevPZ: 0,
     pvx: 0, pvz: 0,
     smokeCd: 0,
@@ -492,43 +528,10 @@ export function initPolice(G) {
   }
 
   // --- resets ------------------------------------------------------------------
-  function teleportHome(withCar) {
-    const hx = HQ.x, hz = HQ.z + 12;
-    if (G.player?.fig) {
-      G.player.x = hx; G.player.z = hz;
-      G.player.fig.position.set(hx, groundH(hx, hz), hz);
-    }
-    if (withCar && G.car) {
-      G.car.x = hx + 4; G.car.z = hz + 4; G.car.speed = 0; G.car.angle = 0;
-      G.car.mesh.position.set(G.car.x, groundH(G.car.x, G.car.z), G.car.z);
-      G.car.mesh.rotation.y = G.car.angle;
-    }
-  }
-
-  function doBustedReset() {
-    const fine = Math.floor((G.money || 0) * 0.10);
-    G.money = Math.max(0, (G.money || 0) - fine);
-    G.wanted = 0;
-    teleportHome(true);
-    for (const v of [...G.cops]) removeCop(v);
-    for (const b of [...S.blocks]) removeRoadblock(b);
-    G.flags.busted = false;
-    S.bustT = 0;
-    G.toast?.(`Busted — fined $${fine.toLocaleString('en-US')}`);
-    G.saveGame?.();
-  }
-
-  function doWastedReset() {
-    G.money = Math.max(0, (G.money || 0) - 150);
-    if (G.car) G.car.health = 100;
-    G.wanted = 0;
-    teleportHome(true);
-    for (const v of [...G.cops]) removeCop(v);
-    for (const b of [...S.blocks]) removeRoadblock(b);
-    G.flags.wasted = false;
-    G.toast?.('Wasted — hospital bill $150, car repaired');
-    G.saveGame?.();
-  }
+  // S26: WASTED / BUSTED resets live in hud.js now (G.hud.showWasted /
+  // showBusted own the overlay, the 2.8 s freeze and the respawn/penalty).
+  // The legacy resets that lived here (10% fine / car repaired to 100) are
+  // gone so there is exactly one penalty path.
 
   // --- helicopter lifecycle ------------------------------------------------------
   function ensureHeli(atStage) {
@@ -554,6 +557,7 @@ export function initPolice(G) {
   // --- main updater ---------------------------------------------------------------
   G.updaters.push((G2, dt) => {
     if (G2 !== G) { /* same object */ }
+    if (G.frozen) return; // S26: WASTED/BUSTED overlay freeze — cop AI halts
     S.t += dt;
     const p = playerPos(G);
     // Player velocity estimate (for intercept lead).
@@ -596,6 +600,47 @@ export function initPolice(G) {
     }
     G.wanted = THREE.MathUtils.clamp(G.wanted || 0, 0, 5);
 
+    // ---- S26 police radio chatter (integer wanted changes only) ----
+    {
+      const wi = Math.round(G.wanted || 0);
+      if (wi !== S.prevWantedInt) {
+        const up = wi > S.prevWantedInt;
+        S.prevWantedInt = wi;
+        const district = districtAt(p.x, p.z);
+        const desc = carDesc(G);
+        const i = S.chatterIdx++;
+        let line;
+        if (!G.car) {
+          line = up
+            ? [`Dispatch: suspect on foot, ${district} — units respond.`, `Dispatch: all units, suspect on foot in ${district}. Move in.`, `Dispatch: be advised, suspect fled on foot in ${district}.`][i % 3]
+            : [`All units: suspect lost visual, ${district}. Stand down.`, `Dispatch: foot pursuit cooling off in ${district} — hold positions.`, `All units: be advised, the suspect on foot slipped away near ${district}.`][i % 3];
+          try { G.dispatch?.(line); } catch (e) {}
+          line = null;
+        }
+        if (!G.car) { /* foot line already dispatched above */ } else if (up && wi >= 4) {
+          line = [
+            `Dispatch: roadblock authorized, ${district}.`,
+            `Dispatch: air support and roadblocks authorized — suspect in a ${desc}, ${district}.`,
+            `Dispatch: all units converge — suspect in ${desc}, ${district}.`,
+          ][i % 3];
+        } else if (up) {
+          line = [
+            `Dispatch: suspect in a ${desc}, ${district} — units respond.`,
+            `Dispatch: all units, ${desc} spotted in ${district}. Move to intercept.`,
+            `Dispatch: be advised, a ${desc} is raising hell in ${district}.`,
+          ][i % 3];
+        } else {
+          line = [
+            `All units: suspect lost visual, ${district}. Stand down.`,
+            `Dispatch: pursuit cooling off in ${district} — hold positions.`,
+            `All units: be advised, ${desc} slipped away near ${district}.`,
+          ][i % 3];
+        }
+        if (line) { try { G.dispatch?.(line); } catch (e) {} }
+      }
+    }
+
+    S.ramCd = Math.max(0, S.ramCd - dt);
     // Spike effect timer.
     if (S.spikeT > 0) {
       S.spikeT -= dt;
@@ -676,6 +721,14 @@ export function initPolice(G) {
       v.z = THREE.MathUtils.clamp(v.z, -655, 655);
       v.mesh.position.set(v.x, groundH(v.x, v.z), v.z);
       v.mesh.rotation.y = v.angle;
+      // S26 cop ram: a fast cop connecting with the player's car damages
+      // the car — drive.js' frame health-delta then hurts the player
+      // through the same impact path as any other crash.
+      if (inCar && G.car && d < 3 && (v.speed || 0) > 8 && S.ramCd <= 0) {
+        damageVehicle(G, G.car, (v.speed || 0) * 0.35);
+        S.ramCd = 0.6;
+        G.flags.crashTimer = 1;
+      }
       if (v.steerVis !== undefined) v.steerVis = THREE.MathUtils.clamp(diff, -0.5, 0.5);
       const ud = v.mesh.userData;
       if (ud?.wheels) {
@@ -750,40 +803,27 @@ export function initPolice(G) {
       }
     }
 
-    // ---- busted ----
-    let busting = false;
+    // ---- S26 bust meter ----
+    // Fills only while surrounded AND stopped at heat: wanted >= 2, player
+    // speed < 1.2 m/s, >= 2 cops within 13 m -> +0.28/s (≈3.6 s to bust).
+    // Otherwise drains -0.5/s; forced to 0 whenever wanted < 2. At 1.0 the
+    // hud.js BUSTED flow (overlay + freeze + respawn/penalty) takes over.
     if (!G.flags.busted && !G.flags.wasted) {
-      if (inCar && pSpeedKmh < 3) {
-        for (const v of G.cops) if (dist2d(v.x, v.z, p.x, p.z) < 4) { busting = true; break; }
-      } else if (!inCar && G.wanted > 0) {
-        for (const v of G.cops) if (dist2d(v.x, v.z, p.x, p.z) < 2.5) { busting = true; break; }
-      }
-    }
-    if (busting) {
-      S.bustT += dt;
-      const need = inCar ? 2.5 : 2.0;
-      if (S.bustT >= need && S.bustResetT < 0) {
-        G.flags.busted = true;
-        S.bustResetT = 2.2;
+      const pSpeed = inCar ? Math.abs(G.car.speed || 0) : Math.abs(G.player?.speed || 0);
+      let nearCops = 0;
+      for (const v of G.cops) if (dist2d(v.x, v.z, p.x, p.z) < 13) nearCops++;
+      if ((G.wanted || 0) < 2) G.bustMeter = 0;
+      else if (pSpeed < 1.2 && nearCops >= 2) G.bustMeter = Math.min(1, (G.bustMeter || 0) + 0.28 * dt);
+      else G.bustMeter = Math.max(0, (G.bustMeter || 0) - 0.5 * dt);
+      if ((G.bustMeter || 0) >= 1) {
+        G.bustMeter = 0;
         G.audio?.play?.('busted');
+        try { G.hud?.showBusted?.(); } catch (e) {}
       }
     } else {
-      S.bustT = Math.max(0, S.bustT - dt * 1.5);
+      G.bustMeter = 0;
     }
-    if (S.bustResetT >= 0) {
-      S.bustResetT -= dt;
-      if (S.bustResetT < 0) doBustedReset();
-    }
-
-    // ---- wasted ----
-    if (G.car && (G.car.health ?? 100) <= 0 && !G.flags.wasted && S.wastedResetT < 0) {
-      G.flags.wasted = true;
-      S.wastedResetT = 2.2;
-      G.audio?.play?.('wasted');
-    }
-    if (S.wastedResetT >= 0) {
-      S.wastedResetT -= dt;
-      if (S.wastedResetT < 0) doWastedReset();
-    }
+    // WASTED is driven by G.playerHealth in hud.js (G.damagePlayer) — the
+    // old car-health<=0 trigger that lived here is retired with its reset.
   });
 }

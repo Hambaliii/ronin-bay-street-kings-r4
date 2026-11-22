@@ -70,6 +70,8 @@ export function setupShot(G, name) {
   } else if (name === 'chase') {
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
     v.speed = 22;
+    v.health = 45; // S26 amendment B: damage smoke trails from the hood (S25)
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
     G.flags.flashCar = v; G.flags.forceFlash = 'car';
     const p1 = spawnVehicle(G, 'police', 86, 489, Math.PI / 2, { driver: 'cop' });
@@ -81,6 +83,7 @@ export function setupShot(G, name) {
     G.flags.heliStage = { x: 100, z: 495 };
     cam(G, 114, 2.6, 480, 97, 1.0, 496);
   } else if (name === 'hero') {
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     const v = spawnVehicle(G, 'kaze', -300, -610, 2.2, { driver: 'parked' });
     cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
     void v;
@@ -146,6 +149,7 @@ export function setupShot(G, name) {
     // low corner view of the marked avenue, crosswalk and NE traffic light.
     // (150,-150) is the staging label; the actual grid point is (165,-165).
     G.timeOfDay = 10.5;
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     spawnVehicle(G, 'taiyo', 150, -128, Math.PI, { driver: 'parked' });
     cam(G, 161, 1.7, -133, 149, 1.5, -156);
   } else if (name === 'smoke') {
@@ -160,6 +164,7 @@ export function setupShot(G, name) {
     // S25 verify: taiyo staged in-car on the avenue at night (tod 21.5,
     // D = 1) so headlight cones + glow rake across the asphalt.
     G.timeOfDay = 21.5;
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip (in-car)
     const v = spawnVehicle(G, 'taiyo', 165, -120, 0, { driver: 'parked' });
     const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
     cam(G, 172, 2.0, -104, 164, 0.8, -122);
@@ -170,9 +175,35 @@ export function setupShot(G, name) {
   } else if (name === 'pausemap') {
     G.flags.openPauseMap = true;
     cam(G, 0, 30, -60, 0, 0, 0);
+  } else if (name === 'wasted') {
+    // S26: player on foot downtown at dusk, WASTED overlay shown directly.
+    // STAGING GUARD (hud.js): in a shot mode the overlay displays but the
+    // respawn timer never runs and the world never freezes/respawns.
+    G.timeOfDay = 18.5;
+    if (G.player) {
+      G.player.x = 165; G.player.z = -140; G.player.angle = 0.6;
+      G.player.fig.position.set(165, groundH(165, -140), -140);
+      G.player.fig.rotation.y = 0.6;
+    }
+    try { G.hud?.showWasted?.('Downtown'); } catch (e) {}
+    cam(G, 171, 1.7, -133, 164, 1.0, -141);
+  } else if (name === 'busted') {
+    // S26: player in a taiyo downtown, 2 staged cops, 4 stars, BUSTED
+    // overlay shown directly (same staging guard as 'wasted').
+    const v = spawnVehicle(G, 'taiyo', 165, -140, 0.4, { driver: 'parked' });
+    const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
+    const p1 = spawnVehicle(G, 'police', 158, -148, 0.9, { driver: 'cop' });
+    applyNpcPoliceGlb(p1);
+    const p2 = spawnVehicle(G, 'police', 173, -133, -2.2, { driver: 'cop' });
+    applyNpcPoliceGlb(p2);
+    p1.staged = true; p2.staged = true;
+    G.cops.push(p1, p2);
+    G.wanted = 4;
+    try { G.hud?.showBusted?.(); } catch (e) {}
+    cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }

@@ -1,5 +1,6 @@
 import { CLUB_RANKS, CAST, DISTRICTS, CFG, MISSIONS } from './config.js';
 import { roadRoute } from './world.js';
+import { districtAt } from './police.js';
 
 // ------------------------------------------------------------------- hud.js
 // DOM HUD: stats, mission card, crew + cop panels, GTA-style minimap,
@@ -34,6 +35,125 @@ export function initHUD(G) {
     document.body.appendChild(radioChip);
   }
   E.radioChip = radioChip;
+  // --- S26 health / WASTED / BUSTED / dispatch UI ----------------------------
+  // G.playerHealth is THE single health source (the bar below used to be a
+  // cosmetic 100%). Dispatch ticker + bust bar are created here like the
+  // radio chip (no static elements in the page).
+  if (G.playerHealth == null) G.playerHealth = 100;
+  if (G.bustMeter == null) G.bustMeter = 0;
+  if (G._lastDamageAt == null) G._lastDamageAt = -99;
+  let dispatchEl = el('dispatchLine');
+  if (!dispatchEl && typeof document !== 'undefined' && document.body) {
+    dispatchEl = document.createElement('div');
+    dispatchEl.id = 'dispatchLine';
+    dispatchEl.style.cssText = 'position:fixed;top:172px;left:16px;z-index:30;pointer-events:none;display:none;max-width:430px;padding:4px 10px;background:rgba(8,10,14,0.66);border-left:3px solid #57b7ff;color:#cfe6ff;font:12px "Courier New",monospace;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;';
+    document.body.appendChild(dispatchEl);
+  }
+  E.dispatch = dispatchEl;
+  let bustWrap = el('bustWrap');
+  if (!bustWrap && typeof document !== 'undefined' && document.body) {
+    bustWrap = document.createElement('div');
+    bustWrap.id = 'bustWrap';
+    bustWrap.style.cssText = 'position:fixed;top:64px;right:16px;z-index:30;pointer-events:none;display:none;width:190px;';
+    bustWrap.innerHTML = '<div id="bustLabel" style="color:#ffd23f;font:bold 13px Arial,sans-serif;letter-spacing:3px;text-align:right;text-shadow:0 1px 3px #000;">BUSTED</div>'
+      + '<div style="height:7px;margin-top:3px;background:rgba(255,255,255,0.18);border:1px solid rgba(0,0,0,0.6);"><div id="bustFill" style="height:100%;width:0%;background:#57b7ff;"></div></div>';
+    document.body.appendChild(bustWrap);
+  }
+  E.bustWrap = bustWrap;
+  E.bustFill = bustWrap ? bustWrap.querySelector('#bustFill') : null;
+  E.bustLabel = bustWrap ? bustWrap.querySelector('#bustLabel') : null;
+  let dispatchT = 0;
+  G.dispatch = (line) => {
+    G.lastDispatch = line;
+    if (!E.dispatch) return;
+    E.dispatch.textContent = line;
+    E.dispatch.style.display = 'block';
+    E.dispatch.style.opacity = '1';
+    dispatchT = 5;
+  };
+  // WASTED / BUSTED overlays: rebuild each overlay element with the classic
+  // full-screen framing (vignette + huge letterspaced title + sub-line).
+  function prepOverlay(elm, title, bg, titleColor) {
+    if (!elm) return null;
+    elm.innerHTML = '';
+    elm.style.cssText = `position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;flex-direction:column;background:${bg};pointer-events:none;`;
+    const t = document.createElement('div');
+    t.className = 's26Title';
+    t.textContent = title;
+    t.style.cssText = `color:${titleColor};font:bold 104px Arial,sans-serif;letter-spacing:22px;text-shadow:0 4px 22px rgba(0,0,0,0.85);`;
+    const s = document.createElement('div');
+    s.className = 's26Sub';
+    s.style.cssText = 'color:#e8e8e8;font:17px Arial,sans-serif;letter-spacing:2px;margin-top:16px;text-shadow:0 2px 8px #000;';
+    elm.appendChild(t); elm.appendChild(s);
+    return { title: t, sub: s };
+  }
+  const wastedUi = prepOverlay(E.wasted, 'WASTED', 'radial-gradient(ellipse at center, rgba(74,4,4,0.55) 0%, rgba(16,0,0,0.94) 100%)', '#c9c9c9');
+  const bustedUi = prepOverlay(E.busted, 'BUSTED', 'radial-gradient(ellipse at center, rgba(24,38,58,0.55) 0%, rgba(4,8,16,0.94) 100%)', '#dfe9f5');
+  // Overlay flow state. staging = shot mode: display only, NO respawn timer,
+  // NO freeze (the dossier frame must stay exactly as staged).
+  let overlay = null; // { kind, t, car, staging }
+  const shotActive = () => !!(G.shot || G.shotMode);
+  function playerPos() { return G.car ? { x: G.car.x, z: G.car.z } : { x: G.player?.x || 0, z: G.player?.z || 0 }; }
+  function moveCarTo(car, x, z, health) {
+    if (!car) return;
+    car.x = x; car.z = z; car.speed = 0; car.angle = 0; car.health = health;
+    if (car.mesh) { car.mesh.position.set(x, car.mesh.position.y, z); car.mesh.rotation.y = 0; }
+  }
+  function teleportPlayer(x, z) {
+    const p = G.player; if (!p) return;
+    p.x = x; p.z = z;
+    if (p.fig) { p.fig.visible = true; p.fig.position.set(x, p.fig.position.y, z); }
+  }
+  function finishOverlay() {
+    const kind = overlay.kind;
+    const car = overlay.car;
+    if (G.car) { try { G.exitCar?.(); } catch (e) {} }
+    if (kind === 'wasted') {
+      G.money = Math.max(0, (G.money || 0) - 150);
+      moveCarTo(car, (G.hq && G.hq.garage && G.hq.garage.x) || -412.5, (G.hq && G.hq.garage && G.hq.garage.z) || 452, 60);
+      teleportPlayer(330, -330); // hospital corner
+      G.timeOfDay = ((G.timeOfDay || 12) + 2) % 24;
+      G.flags.wasted = false;
+      G.toast?.('Wasted — hospital bill $150');
+    } else {
+      G.money = Math.max(0, (G.money || 0) - 200);
+      moveCarTo(car, -408.5, 456, 50); // HQ garage apron, beside the respawn point
+      teleportPlayer(-412.5, 452); // HQ garage
+      G.timeOfDay = ((G.timeOfDay || 12) + 1) % 24;
+      G.flags.busted = false;
+      G.toast?.('Busted — RBPD fine $200, ride impounded to HQ');
+    }
+    G.wanted = 0;
+    G.bustMeter = 0;
+    G.playerHealth = 100;
+    G.frozen = false;
+    overlay = null;
+    G.saveGame?.();
+  }
+  G.hud = G.hud || {};
+  G.hud.showWasted = (district) => {
+    if (G.flags.wasted) return;
+    const p = playerPos();
+    G.flags.wasted = true;
+    if (wastedUi) wastedUi.sub.textContent = `You were flatlined in ${district || districtAt(p.x, p.z)}`;
+    overlay = { kind: 'wasted', t: 2.8, car: G.car || null, staging: shotActive() };
+    if (!overlay.staging) G.frozen = true; // main loop + police AI honor G.frozen
+  };
+  G.hud.showBusted = () => {
+    if (G.flags.busted) return;
+    G.flags.busted = true;
+    if (bustedUi) bustedUi.sub.textContent = 'RBPD impounded your ride';
+    overlay = { kind: 'busted', t: 2.8, car: G.car || null, staging: shotActive() };
+    if (!overlay.staging) G.frozen = true;
+  };
+  // Single damage entry point (drive.js impacts call this). Ignored while an
+  // overlay is up so the death frame cannot re-trigger or stack damage.
+  G.damagePlayer = (amt) => {
+    if (!(amt > 0) || overlay || G.flags.wasted || G.flags.busted) return;
+    G.playerHealth = Math.max(0, (G.playerHealth ?? 100) - amt);
+    G._lastDamageAt = G.elapsed || 0;
+    if (G.playerHealth <= 0) G.hud.showWasted();
+  };
   const mm = E.minimap ? E.minimap.getContext('2d') : null;
   const bm = E.bigmap ? E.bigmap.getContext('2d') : null;
   const sp = E.speedo ? E.speedo.getContext('2d') : null;
@@ -460,7 +580,11 @@ export function initHUD(G) {
       E.stars.style.display = n > 0 ? 'block' : 'none';
       setText(E.stars, 'stars', '★'.repeat(n));
     }
-    if (E.healthBar) E.healthBar.style.width = '100%';
+    if (E.healthBar) {
+      const hp = Math.max(0, Math.min(100, G.playerHealth ?? 100));
+      E.healthBar.style.width = `${hp}%`;
+      E.healthBar.style.backgroundColor = hp < 30 ? '#e33b3b' : '';
+    }
     if (E.carBar) E.carBar.style.width = `${Math.max(0, Math.min(100, G.car ? (G.car.health ?? 100) : 100))}%`;
     // Objective line.
     if (E.objective) {
@@ -472,9 +596,40 @@ export function initHUD(G) {
         setText(E.objective, 'obj', 'Free roam — find a letter blip');
       }
     }
-    // Wasted / busted overlays.
-    if (E.wasted) E.wasted.style.display = G.flags.wasted ? 'block' : 'none';
-    if (E.busted) E.busted.style.display = G.flags.busted ? 'block' : 'none';
+    // Wasted / busted overlays (flex so the S26 framing centres).
+    if (E.wasted) E.wasted.style.display = G.flags.wasted ? 'flex' : 'none';
+    if (E.busted) E.busted.style.display = G.flags.busted ? 'flex' : 'none';
+    // --- S26 health tick: regen, sea drain, overlay timer, ticker, bust bar.
+    {
+      const nowT = G.elapsed || 0;
+      if (!overlay) {
+        // Sea: beyond the island edge drains fast (foot or car).
+        const pp = G.car || G.player;
+        if (pp && (Math.abs(pp.x) > 668 || Math.abs(pp.z) > 668)) G.damagePlayer(22 * dt);
+        // Slow regen: +0.8/s once 8 s have passed without damage.
+        else if ((G.playerHealth ?? 100) < 100 && nowT - (G._lastDamageAt ?? -99) > 8) {
+          G.playerHealth = Math.min(100, (G.playerHealth ?? 100) + 0.8 * dt);
+        }
+      } else if (!overlay.staging) {
+        overlay.t -= dt;
+        const ui = overlay.kind === 'wasted' ? wastedUi : bustedUi;
+        if (ui) { const k = 1 - Math.max(0, overlay.t) / 2.8; ui.title.style.transform = `scale(${(1 + k * 0.16).toFixed(3)})`; }
+        if (overlay.t <= 0) finishOverlay();
+      }
+      if (dispatchT > 0 && E.dispatch) {
+        dispatchT -= dt;
+        if (dispatchT <= 0) E.dispatch.style.display = 'none';
+        else if (dispatchT < 1) E.dispatch.style.opacity = dispatchT.toFixed(2);
+      }
+      if (E.bustWrap) {
+        const m = Math.max(0, Math.min(1, G.bustMeter || 0));
+        E.bustWrap.style.display = m > 0 ? 'block' : 'none';
+        if (m > 0) {
+          if (E.bustFill) E.bustFill.style.width = `${Math.round(m * 100)}%`;
+          if (E.bustLabel) E.bustLabel.style.opacity = m > 0.7 ? (Math.sin(t * 10) > 0 ? '1' : '0.25') : '1';
+        }
+      }
+    }
     // S24 radio chip: in car + radio on. A shot mode staging the player in
     // a car (G.shotMode set, G.car present) counts as in-car for the chip
     // even if flags.inCar was never raised by enterCar.
