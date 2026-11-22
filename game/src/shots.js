@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
 import { makeFigure, poseSeated } from './player.js';
-import { spawnVehicle } from './cars.js';
+import { spawnVehicle, applyNpcPoliceGlb } from './cars.js';
 
 function placeFig(G, castId, x, z, angle) {
   const fig = makeFigure(CAST[castId]);
@@ -33,14 +33,16 @@ export function setupShot(G, name) {
     const xs = [-434, -422, -410, -398];
     ids.forEach((id, i) => spawnVehicle(G, id, xs[i], 446, 0, { driver: 'parked' }));
     ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 1.5, 451, 0));
-    cam(G, -416, 1.9, 461, -416, 1.15, 445);
+    cam(G, -436, 2.4, 464, -410, 1.0, 446);
   } else if (name === 'chase') {
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
     v.speed = 22;
     const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
     G.flags.flashCar = v; G.flags.forceFlash = 'car';
     const p1 = spawnVehicle(G, 'police', 86, 489, Math.PI / 2, { driver: 'cop' });
+    applyNpcPoliceGlb(p1);
     const p2 = spawnVehicle(G, 'police', 82, 502, Math.PI / 2, { driver: 'cop' });
+    applyNpcPoliceGlb(p2);
     p1.staged = true; p2.staged = true;
     G.cops.push(p1, p2);
     G.flags.heliStage = { x: 100, z: 495 };
@@ -98,8 +100,9 @@ export function setupShot(G, name) {
     downed.rotation.x = -1.35; downed.position.y = groundH(202.5, -197) + 0.15;
     const fleeing = placeFig(G, 'mika', 206, -193, Math.atan2(6, 7));
     fleeing.rotation.x = 0.15;
-    spawnVehicle(G, 'police', 188, -208, Math.atan2(12, 8), { driver: 'cop' });
-    cam(G, 195.5, 1.7, -206.5, 200.5, 1.1, -199);
+    const copCar = spawnVehicle(G, 'police', 207.5, -192.5, -2.36, { driver: 'cop' });
+    applyNpcPoliceGlb(copCar);
+    cam(G, 197.2, 1.6, -204.8, 200.3, 1.05, -199.3);
   } else if (name === 'heli') {
     spawnVehicle(G, 'taiyo', -200, 300, 0.4, { driver: 'parked' });
     spawnVehicle(G, 'police-suv', -192, 292, -2.4, { driver: 'cop' });

@@ -188,7 +188,11 @@ export function buildWorld(G) {
     for (const s of [-1, 1]) { const sw = new THREE.Mesh(new THREE.BoxGeometry(3, 0.12, 1320), swMat); sw.position.set(x + s * (CFG.roadW / 2 + 1.5), 0.06, 0); scene.add(sw); }
   }
   for (const z of G.roadZ) {
-    const t = dashTex.clone(); t.needsUpdate = true; t.repeat.set(44, 1);
+    // rotation.z = PI/2 on these planes transposes the texture axes (plane
+    // U runs along the road, V across), so rotate the texture back: with
+    // rotation PI/2 about the centre, repeat (1,44) lands as 1 tile across
+    // and 44 along the length — same density/orientation as the X roads.
+    const t = dashTex.clone(); t.needsUpdate = true; t.center.set(0.5, 0.5); t.rotation = Math.PI / 2; t.repeat.set(1, 44);
     const r = new THREE.Mesh(new THREE.PlaneGeometry(1320, CFG.roadW), new THREE.MeshStandardMaterial({ map: t, roughness: 0.95 }));
     r.rotation.x = -Math.PI / 2; r.position.set(0, 0.05, z); r.rotation.z = Math.PI / 2; scene.add(r);
     for (const s of [-1, 1]) { const sw = new THREE.Mesh(new THREE.BoxGeometry(1320, 0.12, 3), swMat); sw.position.set(0, 0.06, z + s * (CFG.roadW / 2 + 1.5)); scene.add(sw); }
