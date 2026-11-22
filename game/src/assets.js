@@ -164,6 +164,7 @@ export const HERO_ASSETS = {
   helicopter: { url: 'assets/helicopter.glb', scale: 11 },
   heroCar: { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } },
   npcPolice: { url: 'assets/npc-police.glb', targetSize: { x: 1.82, y: 1.42, z: 4.85 } },
+  npcSedan: { url: 'assets/npc-sedan.glb', targetSize: { x: 4.75, y: 1.45, z: 1.80 } },
   gtr35: { url: 'assets/gtr35.glb', targetSize: { x: 1.89, y: 1.36, z: 4.71 } },
   mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
   garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
