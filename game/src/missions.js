@@ -106,13 +106,13 @@ export function initMissions(G) {
   function makeBeacon() {
     const grp = new THREE.Group();
     const cyl = new THREE.Mesh(
-      new THREE.CylinderGeometry(3.4, 3.4, 26, 20, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+      new THREE.CylinderGeometry(1.1, 1.1, 14, 20, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
     );
-    cyl.position.y = 13;
+    cyl.position.y = 7;
     grp.add(cyl);
     try {
-      const glow = glowSprite(0xffd23f, 9);
+      const glow = glowSprite(0xffd23f, 5.4);
       glow.position.y = 1.2;
       grp.add(glow);
     } catch (e) { /* optional */ }

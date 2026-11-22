@@ -56,6 +56,15 @@ createPlayer(G);
 const starter = spawnVehicle(G, 'hachi', -412.5, 452, Math.PI, { driver: 'parked' });
 G.starterCar = starter;
 spawnTraffic(G, 14);
+// Parked life: fixed street-edge cars (deterministic, never hero/police specs).
+spawnVehicle(G, 'sedan', 154, 300, 0, { driver: 'parked' });
+spawnVehicle(G, 'hatch', 176, -60, Math.PI, { driver: 'parked' });
+spawnVehicle(G, 'wagon', -60, 484, Math.PI / 2, { driver: 'parked' });
+spawnVehicle(G, 'suv', 60, 506, -Math.PI / 2, { driver: 'parked' });
+spawnVehicle(G, 'kei', 319, -140, 0, { driver: 'parked' });
+spawnVehicle(G, 'van', 341, -420, Math.PI, { driver: 'parked' });
+spawnVehicle(G, 'roadster', -140, 319, Math.PI / 2, { driver: 'parked' });
+spawnVehicle(G, 'sedan', 420, -341, -Math.PI / 2, { driver: 'parked' });
 initPeds(G);
 initPolice(G);
 initMissions(G);
@@ -113,8 +122,9 @@ function loop(now) {
       camera.position.y += ((groundH(v.x, v.z) + h) - camera.position.y) * Math.min(1, dt * 5);
       camera.lookAt(v.x + Math.sin(v.angle) * 6, groundH(v.x, v.z) + 1.4, v.z + Math.cos(v.angle) * 6);
       G.camYaw = v.angle + Math.PI;
-      const targetFov = G.flags.nosActive ? 74 : 66;
-      camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 4); camera.updateProjectionMatrix();
+      const targetFov = 62 + 10 * Math.min(1, Math.abs(v.speed) / (v.spec.topSpeed * 0.8)) + (G.flags.nosActive ? 4 : 0);
+      const fovDelta = targetFov - camera.fov;
+      if (Math.abs(fovDelta) > 0.05) { camera.fov += fovDelta * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
     } else if (G.player) {
       const p = G.player;
       // mouse-free orbit: camYaw follows movement slowly; A/D handled in player relative to camYaw
@@ -123,6 +133,8 @@ function loop(now) {
       camera.position.z += (tz - camera.position.z) * Math.min(1, dt * 6);
       camera.position.y += ((groundH(p.x, p.z) + 3) - camera.position.y) * Math.min(1, dt * 6);
       camera.lookAt(p.x, groundH(p.x, p.z) + 1.4, p.z);
+      const footFovDelta = 60 - camera.fov;
+      if (Math.abs(footFovDelta) > 0.05) { camera.fov += footFovDelta * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
       if (p.speed > 0) { const targetYaw = p.angle + Math.PI; let d = targetYaw - G.camYaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; G.camYaw += d * Math.min(1, dt * 1.6); }
     }
   } else {

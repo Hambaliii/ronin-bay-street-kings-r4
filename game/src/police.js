@@ -533,7 +533,7 @@ export function initPolice(G) {
     if (G.heli) return;
     const h = makeHeli(G);
     if (G.flags && G.flags.heliAsset) applyGlbVisual(h, G.flags.heliAsset, heliDressing);
-    if (atStage && G.flags.heliStage) {
+    if ((atStage || G.flags.heliStage) && G.flags.heliStage) {
       h.group.position.set(G.flags.heliStage.x, groundH(G.flags.heliStage.x, G.flags.heliStage.z) + 28, G.flags.heliStage.z);
     } else {
       const p = playerPos(G);
@@ -610,10 +610,11 @@ export function initPolice(G) {
     const want = desiredUnits();
     // Despawn far units first.
     for (const v of [...G.cops]) {
+      if (v.staged === true) continue; // staged shot units are never despawned
       if (S.blocks.some((b) => b.cars.includes(v))) continue;
       if (dist2d(v.x, v.z, p.x, p.z) > 400) removeCop(v);
     }
-    const activeCops = G.cops.filter((v) => !S.blocks.some((b) => b.cars.includes(v)));
+    const activeCops = G.cops.filter((v) => v.staged !== true && !S.blocks.some((b) => b.cars.includes(v)));
     if (activeCops.length < want && S.spawnCd <= 0) {
       spawnCop();
       S.spawnCd = 1.2;
@@ -626,6 +627,7 @@ export function initPolice(G) {
     const playerTop = (G.car?.spec?.topSpeed || 180) / 3.6;
     for (const v of G.cops) {
       flashLightbar(v, S.t);
+      if (v.staged === true) continue; // staged shot units: lightbar flashes, AI/movement frozen
       if (S.blocks.some((b) => b.cars.includes(v))) continue; // roadblock cars stay parked
       const d = dist2d(v.x, v.z, p.x, p.z);
       const wrecked = (v.health ?? 100) < 30;
@@ -724,7 +726,7 @@ export function initPolice(G) {
       } else h.leaveT = 0;
       if (G.heli) {
         h.orbitA += dt * 0.35;
-        const stage = G.shot === 'heli' && G.flags.heliStage ? G.flags.heliStage : p;
+        const stage = G.flags.heliStage ? G.flags.heliStage : p;
         const radius = G.shot === 'heli' ? 6 : 20;
         const hx = stage.x + Math.sin(h.orbitA) * radius;
         const hz = stage.z + Math.cos(h.orbitA) * radius;
