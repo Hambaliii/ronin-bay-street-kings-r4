@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RONIN BAY: Street Kings</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05070d; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: #eef2f6; }
+  #game { position: fixed; inset: 0; }
+  #gameCanvas { width: 100%; height: 100%; display: block; }
+  .glass { background: rgba(8, 12, 22, .72); border: 1px solid rgba(87, 183, 255, .35); border-radius: 10px; backdrop-filter: blur(6px); box-shadow: 0 4px 24px rgba(0,0,0,.45); }
+  .hud { position: fixed; z-index: 10; pointer-events: none; }
+  #objective { top: 14px; left: 14px; padding: 10px 14px; max-width: 340px; }
+  #objective .objTitle { font-size: 15px; font-weight: 700; letter-spacing: .12em; color: #ffb35c; text-transform: uppercase; }
+  #objective .objSub { font-size: 12.5px; color: #cfe3f2; margin-top: 3px; letter-spacing: .03em; }
+  #missionCard { top: 108px; left: 14px; padding: 10px 12px; width: 300px; display: flex; gap: 10px; align-items: flex-start; }
+  #cardPortrait { width: 44px; height: 44px; border-radius: 50%; background: linear-gradient(135deg, #ff7a1a, #e879ff); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 17px; color: #fff; flex: none; letter-spacing: .05em; }
+  #cardGiver { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: #57b7ff; text-transform: uppercase; }
+  #cardText { font-size: 12.5px; line-height: 1.45; color: #e8eef4; margin-top: 2px; }
+  #cardProg { font-size: 11.5px; color: #7dffb0; margin-top: 4px; letter-spacing: .06em; }
+  #statsBlock { top: 14px; right: 14px; padding: 10px 14px; text-align: right; min-width: 170px; }
+  #money { font-size: 22px; font-weight: 800; color: #7dffb0; letter-spacing: .04em; }
+  #rep { font-size: 13px; color: #e879ff; margin-top: 2px; letter-spacing: .08em; }
+  #rank { font-size: 12px; color: #ffb35c; margin-top: 2px; letter-spacing: .14em; text-transform: uppercase; }
+  #crewPanel { top: 118px; right: 14px; display: flex; flex-direction: column; gap: 6px; width: 190px; }
+  .crewCard { display: flex; gap: 8px; align-items: center; padding: 6px 9px; }
+  .crewFace { width: 30px; height: 30px; border-radius: 50%; background: #24304a; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; color: #fff; flex: none; }
+  .crewName { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .crewRole { font-size: 10px; color: #57b7ff; letter-spacing: .12em; text-transform: uppercase; }
+  .crewStatus { font-size: 10.5px; color: #9fb4c6; }
+  #stars { top: 14px; left: 50%; transform: translateX(-50%); font-size: 26px; letter-spacing: .3em; color: #ffd23f; text-shadow: 0 0 12px rgba(255, 210, 63, .7); }
+  #copPanel { left: 14px; top: 46%; width: 250px; padding: 10px 12px; border-color: rgba(255, 70, 70, .5); }
+  #copPanel .copHead { font-size: 11px; font-weight: 800; letter-spacing: .22em; color: #ff6b6b; }
+  #copRows { font-size: 12px; line-height: 1.7; color: #e8eef4; margin-top: 4px; }
+  #healthWrap { left: 14px; bottom: 16px; width: 230px; padding: 10px 12px; }
+  #healthWrap .barLabel { font-size: 10px; letter-spacing: .18em; color: #9fb4c6; text-transform: uppercase; }
+  .barOuter { height: 10px; background: rgba(255,255,255,.12); border-radius: 5px; overflow: hidden; margin: 4px 0 8px; }
+  #healthBar { height: 100%; width: 100%; background: linear-gradient(90deg, #3ddc74, #7dffb0); transition: width .25s; }
+  #carBar { height: 100%; width: 100%; background: linear-gradient(90deg, #ff7a1a, #ffb35c); transition: width .25s; }
+  #mapWrap { right: 14px; bottom: 150px; padding: 6px; border-radius: 50%; overflow: hidden; }
+  #minimap { display: block; border-radius: 50%; }
+  #speedo { right: 14px; bottom: 16px; padding: 4px; }
+  #speedoCanvas { display: block; }
+  #briefing { left: 50%; bottom: 120px; transform: translateX(-50%); width: min(560px, 90vw); padding: 12px 16px; display: none; }
+  #briefing .giverChip { display: inline-block; background: #ff7a1a; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .14em; padding: 2px 8px; border-radius: 8px; text-transform: uppercase; }
+  #briefing .giver { font-size: 13px; font-weight: 700; color: #57b7ff; margin-left: 6px; letter-spacing: .06em; }
+  #briefing .line { font-size: 15px; line-height: 1.5; margin-top: 6px; }
+  #banner { left: 50%; top: 22%; transform: translateX(-50%); font-size: 34px; font-weight: 900; letter-spacing: .18em; color: #ffb35c; text-shadow: 0 0 24px rgba(255, 122, 26, .8), 0 2px 0 #000; text-transform: uppercase; display: none; text-align: center; white-space: nowrap; }
+  #toast { left: 50%; bottom: 34px; transform: translateX(-50%); padding: 8px 18px; font-size: 13.5px; letter-spacing: .05em; display: none; }
+  #garagePanel { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(680px, 92vw); max-height: 82vh; overflow: auto; padding: 18px 20px; pointer-events: auto; }
+  #pauseMenu { inset: 0; background: rgba(4, 6, 12, .82); display: none; align-items: center; justify-content: center; flex-direction: column; gap: 12px; pointer-events: auto; z-index: 40; }
+  #pauseMenu h2 { letter-spacing: .3em; color: #ffb35c; font-size: 22px; }
+  #mapLegend { font-size: 12.5px; color: #cfe3f2; letter-spacing: .06em; line-height: 1.8; text-align: center; }
+  #menu { inset: 0; background: radial-gradient(ellipse at 50% 35%, rgba(255,122,26,.22), transparent 60%), linear-gradient(180deg, rgba(5,7,13,.55), rgba(5,7,13,.92)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; z-index: 50; pointer-events: auto; cursor: pointer; text-align: center; }
+  #menu h1 { font-size: clamp(38px, 7vw, 72px); font-weight: 900; letter-spacing: .14em; color: #fff; text-shadow: 0 0 34px rgba(255, 122, 26, .75); }
+  #menu h1 span { color: #ff7a1a; }
+  #menu .tag { font-size: clamp(13px, 2vw, 18px); letter-spacing: .42em; color: #57b7ff; text-transform: uppercase; }
+  #menu .play { margin-top: 22px; font-size: 19px; font-weight: 800; letter-spacing: .3em; color: #7dffb0; animation: pulse 1.4s infinite; }
+  #menu .controls { font-size: 12.5px; color: #9fb4c6; line-height: 2; letter-spacing: .08em; margin-top: 10px; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  #wasted, #busted { inset: 0; display: none; align-items: center; justify-content: center; font-size: clamp(40px, 8vw, 84px); font-weight: 900; letter-spacing: .3em; z-index: 45; }
+  #wasted { background: rgba(60, 0, 0, .55); color: #ff3b30; }
+  #busted { background: rgba(0, 10, 60, .55); color: #57b7ff; }
+  .hidden { display: none !important; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<div id="game"><canvas id="gameCanvas"></canvas></div>
+
+<div id="objective" class="hud glass"><div class="objTitle">RONIN BAY</div><div class="objSub">Head to the Ronin Kai HQ.</div></div>
+<div id="missionCard" class="hud glass"><div id="cardPortrait">RT</div><div><div id="cardGiver">REN TAKAGI</div><div id="cardText">Pick up your Hachi-Roku at the clubhouse garage.</div><div id="cardProg"></div></div></div>
+<div id="statsBlock" class="hud glass"><div id="money">$500</div><div id="rep">REP 0</div><div id="rank">ROOKIE</div></div>
+<div id="crewPanel" class="hud">
+  <div class="crewCard glass" data-role="driver"><div class="crewFace">RT</div><div><div class="crewName">Ren Takagi</div><div class="crewRole">Driver</div><div class="crewStatus">Ready</div></div></div>
+  <div class="crewCard glass" data-role="mechanic"><div class="crewFace">AS</div><div><div class="crewName">Ako Sato</div><div class="crewRole">Mechanic</div><div class="crewStatus">At HQ</div></div></div>
+  <div class="crewCard glass" data-role="lookout"><div class="crewFace">MC</div><div><div class="crewName">Mika Chen</div><div class="crewRole">Lookout</div><div class="crewStatus">Scanning</div></div></div>
+</div>
+<div id="stars" class="hud"></div>
+<div id="copPanel" class="hud glass hidden"><div class="copHead">RBPD RESPONSE</div><div id="copRows"></div></div>
+<div id="healthWrap" class="hud glass"><div class="barLabel">Health</div><div class="barOuter"><div id="healthBar"></div></div><div class="barLabel">Vehicle</div><div class="barOuter"><div id="carBar"></div></div></div>
+<div id="mapWrap" class="hud glass"><canvas id="minimap" width="220" height="220"></canvas></div>
+<div id="speedo" class="hud glass"><canvas id="speedoCanvas" width="190" height="130"></canvas></div>
+<div id="briefing" class="hud glass"><span class="giverChip">Mission</span><span class="giver"></span><div class="line"></div></div>
+<div id="banner" class="hud"></div>
+<div id="toast" class="hud glass"></div>
+<div id="garagePanel" class="hud glass hidden"></div>
+<div id="pauseMenu" class="hud"><h2>RONIN BAY — MAP</h2><canvas id="bigmap" width="1024" height="720"></canvas><div id="mapLegend">Portside · Coral Strip · Neon Mile · Hoshino Heights — P / Esc to resume</div><div style="font-size:12px;color:#9fb4c6;letter-spacing:.1em;">Press P or Esc to resume</div></div>
+<div id="menu" class="hud"><h1>RONIN <span>BAY</span></h1><div class="tag">Street Kings</div><div class="play">CLICK TO PLAY</div><div class="controls">WASD / Arrows — Move &amp; Drive &nbsp;·&nbsp; F — Enter / Exit Car &nbsp;·&nbsp; Space — Handbrake<br>Shift — NOS / Run &nbsp;·&nbsp; P / Esc — Map &amp; Pause &nbsp;·&nbsp; M — Mute</div></div>
+<div id="wasted" class="hud">WASTED</div>
+<div id="busted" class="hud">BUSTED</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
