@@ -369,6 +369,61 @@ export function applyNpcSedanGlb(vehicle, tintHex) {
     }).catch(() => { vehicle.glbSwapped = false; });
   } catch (e) { /* keep the procedural visual */ }
 }
+// --- NPC taxi: npc-taxi GLB visual for traffic taxis -----------------------
+// Mirrors applyNpcSedanGlb above MINUS the tint: the taxi GLB's baked
+// texture is already the correct taxi yellow (roof sign included), so the
+// clone is used as-is — no luminance recolor. The model's nose is already
+// +Z (bounds x +/-0.261, y 0..0.43 incl. roof sign, z +/-0.5), so NO
+// rotation is applied. The procedural body stays hidden as fallback: if
+// the GLB fails to load, loadHeroAsset resolves null and nothing is
+// touched (the fallback then shows in the spec's taxi-yellow 0xf2b21b).
+// Kept procedural wheels are re-seated into the GLB's arches and keep
+// spinning. Never throws.
+export function applyNpcTaxiGlb(vehicle) {
+  try {
+    if (!vehicle || vehicle.glbSwapped) return;
+    const grp = vehicle.mesh || vehicle; // vehicle object, or the group itself
+    if (!grp || !grp.children || !grp.userData) return;
+    vehicle.glbSwapped = true; // guard double-swap (incl. concurrent calls)
+    if (grp !== vehicle) grp.userData.glbSwapped = true;
+    loadHeroAsset('npcTaxi').then((wrapper) => {
+      try {
+        if (!wrapper) { vehicle.glbSwapped = false; if (grp !== vehicle) grp.userData.glbSwapped = false; return; } // fallback stays
+        const ud = grp.userData;
+        // --- refs to KEEP visible (same keep-set as the sedan helper) ----
+        const keep = new Set();
+        const wheels = ud.wheels || vehicle.wheels || {};
+        for (const w of Object.values(wheels)) if (w) keep.add(w);
+        // Glow sprites and the flat ground planes (underglow / blob shadow:
+        // PlaneGeometry rotated flat).
+        for (const c of grp.children) {
+          if (c.isSprite) keep.add(c);
+          else if (c.isMesh && c.geometry && c.geometry.type === 'PlaneGeometry' && Math.abs(c.rotation.x + Math.PI / 2) < 0.01) keep.add(c);
+        }
+        // --- hide the procedural BODY meshes (hide, never remove) -----------
+        for (const c of [...grp.children]) if (!keep.has(c)) c.visible = false;
+        // --- add the GLB wrapper (clone: the cached wrapper is shared) -----
+        const clone = wrapper.clone ? wrapper.clone(true) : wrapper;
+        clone.position.set(0, 0, 0);
+        // no rotation — model nose already +Z; no tint — baked yellow kept
+        grp.add(clone);
+        ud.npcTaxiGlb = clone;
+        // --- re-seat the kept wheels into the GLB's wheel arches ------------
+        // Model wheel clusters: local z +0.25 front / -0.28 rear, scaled by
+        // length 4.80 -> game z +1.20 front / -1.34 rear, x +/-0.80. Front
+        // vs rear by current z sign; y kept as-is (wheel radius / spin
+        // behaviour untouched).
+        for (const w of Object.values(wheels)) {
+          if (!w || !w.position) continue;
+          const isFront = w.position.z >= 0;
+          w.position.z = isFront ? 1.20 : -1.34;
+          w.position.x = w.position.x < 0 ? -0.80 : 0.80;
+          // y kept as-is
+        }
+      } catch (e) { /* keep the procedural visual */ }
+    }).catch(() => { vehicle.glbSwapped = false; });
+  } catch (e) { /* keep the procedural visual */ }
+}
 // Shared ground dressing for every car visual (procedural or GLB hero car):
 // the additive underglow plane (when the spec/opts carry a glow colour) and
 // the blob shadow. Kept in one place so both visuals sit identically.
@@ -562,7 +617,7 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
 }
 // --- traffic ---
 const TRAFFIC_COLORS = [0xb9c0c7, 0x3f8cff, 0xd95555, 0x44484e, 0xf2f2f2, 0x5a7d4f, 0xffd23f, 0x707880, 0x8a4fd0, 0x2a9d8f];
-const TRAFFIC_IDS = ['sedan', 'hatch', 'suv', 'wagon', 'kei', 'hachi', 'van', 'sora15', 'roadster', 'taxi'];
+const TRAFFIC_IDS = ['sedan', 'hatch', 'suv', 'wagon', 'kei', 'hachi', 'van', 'sora15', 'roadster', 'taxi', 'sedan', 'hatch', 'suv', 'taxi'];
 // Realistic per-instance tints for GLB traffic sedans (luminance recolor —
 // the GLB's baked electric blue never survives). Cycled deterministically
 // by sedan spawn index.
@@ -580,11 +635,14 @@ export function spawnTraffic(G, n) {
     const z = onX ? along : line - laneOff;
     const angle = onX ? (dirSign > 0 ? 0 : Math.PI) : (dirSign > 0 ? Math.PI / 2 : -Math.PI / 2);
     const specId = pick(TRAFFIC_IDS);
-    const v = spawnVehicle(G, specId, x, z, angle, { color: pick(TRAFFIC_COLORS), driver: 'traffic' });
+    const v = spawnVehicle(G, specId, x, z, angle, { color: specId === 'taxi' ? CARS.taxi.color : pick(TRAFFIC_COLORS), driver: 'traffic' });
     if (specId === 'sedan') {
       const tintHex = NPC_SEDAN_TINTS[npcSedanSpawnIndex % NPC_SEDAN_TINTS.length];
       npcSedanSpawnIndex++;
       applyNpcSedanGlb(v, tintHex);
+    }
+    if (specId === 'taxi') {
+      applyNpcTaxiGlb(v);
     }
     v.onX = onX; v.line = line; v.dirSign = dirSign; v.cruise = rr(22, 38) / 3.6; v.speed = v.cruise;
     G.traffic.push(v);
