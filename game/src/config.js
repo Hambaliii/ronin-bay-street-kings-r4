@@ -24,6 +24,7 @@ export const CARS = {
   'hoshi7': { name: 'Hoshi RX-7', price: 9800, len: 4.3, wid: 1.8, topSpeed: 228, accel: 0.78, grip: 0.9, drift: 1.0, color: 0xffcf3f, body: 'coupe', hood: 0.7, cabin: 0.5, roof: 'fastback', popups: true, tail: 'roundWing', roundTail: true, glow: 0xffcf3f, wheels: 0xe8e8e8 },
   'taiyo': { name: 'Taiyo Supra GT', price: 12500, len: 4.5, wid: 1.85, topSpeed: 242, accel: 0.84, grip: 0.92, drift: 0.9, color: 0xff7a1a, body: 'coupe', hood: 0.65, cabin: 0.52, roof: 'fastback', tail: 'roundWing', roundTail: true, glow: 0xff7a1a, wheels: 0xe0e0e0 },
   'kaze': { name: 'Kaze GT-X', price: 15000, len: 4.6, wid: 1.9, topSpeed: 252, accel: 0.88, grip: 0.94, drift: 0.88, color: 0x35586e, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'quadWing', roundTail: true, glow: 0x57b7ff, wheels: 0xd0d0d0 },
+  'gtr35': { name: 'Arakawa GT-R35', price: 18000, len: 4.71, wid: 1.89, topSpeed: 262, accel: 0.93, grip: 0.95, drift: 0.85, color: 0x9aa0a6, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'wing', roundTail: true, glow: 0xff2a2a, wheels: 0xd0d0d0, desc: 'The R35 rival flagship — silver over black, red stripe, all menace.' },
   'hero-supra': { name: 'TEN-SECOND Taiyo', price: 0, len: 4.5, wid: 1.85, topSpeed: 258, accel: 0.92, grip: 0.93, drift: 0.92, color: 0xff7a1a, body: 'coupe', hood: 0.65, cabin: 0.52, roof: 'fastback', tail: 'roundWing', roundTail: true, glow: 0xffa63f, livery: 'hero-supra', wheels: 0xffd700 },
   'hero-gtr': { name: 'BAYSIDE GHOST Kaze', price: 0, len: 4.6, wid: 1.9, topSpeed: 268, accel: 0.95, grip: 0.96, drift: 0.9, color: 0x2c4a63, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'quadWing', roundTail: true, glow: 0x7dd7ff, livery: 'hero-gtr', wheels: 0xe8e8e8 },
 };
@@ -34,6 +35,7 @@ export const CAST = {
   jun: { name: 'Jun Park', role: 'muscle', h: 1.02, build: 0.7, skin: 0xb97a4e, hair: 'buzz', hairColor: 0x1a1a1a, outfit: { top: 'tank', topColor: 0xe8e8e8, trim: 0x888888, pants: 'cargo', pantsColor: 0x4a4a38, shoes: 0x222222 }, accessory: 'chain' },
   ryo: { name: "Ryo 'Ghost' Kaze", role: 'legend', h: 1.0, build: 0.5, skin: 0xd9a878, hair: 'silver undercut', hairColor: 0xc8ccd0, outfit: { top: 'jacket', topColor: 0x2c4a63, trim: 0x9fd8ff, pants: 'jeans', pantsColor: 0x1c2733, shoes: 0x9fd8ff, shoeStripes: true }, accessory: 'glasses' },
   dante: { name: 'Dante Voss', role: 'rival', h: 1.04, build: 0.62, skin: 0x8a5a34, hair: 'slick black', hairColor: 0x0a0a0a, outfit: { top: 'leather', topColor: 0x1a1a1e, trim: 0xc02040, pants: 'jeans', pantsColor: 0x14161c, shoes: 0xc02040 }, accessory: 'gloves' },
+  shun: { name: 'Shun Arakawa', role: 'RIVAL ACE', h: 1.02, build: 0.62, skin: 0xb97a4e, hair: 'slick black', hairColor: 0x0a0a0a, outfit: { top: 'leather', topColor: 0x17181c, trim: 0xc02040, pants: 'jeans', pantsColor: 0x14161c, shoes: 0x141414 }, accessory: 'gloves' },
   cop: { name: 'RBPD Officer', role: 'cop', h: 1.0, build: 0.6, skin: 0xc98d64, hair: 'cap', hairColor: 0x24304a, outfit: { top: 'uniform', topColor: 0x24304a, trim: 0xc8a028, pants: 'uniform', pantsColor: 0x1c2733, shoes: 0x141414 }, accessory: 'cap+badge' },
 };
 export const MISSIONS = [
@@ -47,7 +49,7 @@ export const MISSIONS = [
   { id: 'm8', giver: 'jun', title: 'Disable the Pursuit', type: 'disable', district: 'neon', blurb: 'Ram the RBPD pursuit unit off the road.', reward: { money: 2200, rep: 85 }, need: 3 },
   { id: 'm9', giver: 'mika', title: 'Data Jack', type: 'jack', district: 'neon', blurb: 'Jack the data terminal in Neon Mile.', reward: { money: 2600, rep: 95 }, need: 3 },
   { id: 'm10', giver: 'ren', title: 'Hold the Mile', type: 'hold', district: 'neon', blurb: 'Defend Ronin territory on the Mile.', reward: { money: 3000, rep: 105 }, need: 4 },
-  { id: 'm11', giver: 'dante', title: 'Kings of Coral', type: 'race', district: 'coral', blurb: 'Settle Coral Strip once and for all.', reward: { money: 3500, rep: 110 }, need: 5 },
+  { id: 'm11', giver: 'shun', title: 'Kings of Coral', type: 'race', district: 'coral', blurb: 'Settle Coral Strip once and for all.', reward: { money: 3500, rep: 110 }, need: 5 },
   { id: 'm12', giver: 'ryo', title: 'Bayside Ghost', type: 'pinkslip', district: 'hoshino', blurb: "Final run vs Ryo's GHOST. Win takes the hero-gtr.", reward: { money: 4000, rep: 120 }, need: 6 },
 ];
 export const TOUGE_POINTS = [[-560,-560],[-470,-600],[-380,-545],[-300,-610],[-215,-560],[-170,-640],[-90,-590],[-60,-500],[-140,-450],[-90,-380],[-190,-330],[-290,-390],[-370,-330],[-450,-390],[-540,-350],[-600,-430],[-560,-560]];

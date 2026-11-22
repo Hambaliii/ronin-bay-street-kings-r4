@@ -280,18 +280,110 @@ try {
     } catch (e) { /* keep the procedural visual */ }
   }).catch(() => { heroCarSettled = true; heroCarPending.length = 0; });
 } catch (e) { heroCarSettled = true; }
+// --- rival hero car: GT-R R35 GLB (assets/gtr35.glb) + Bosku livery --------
+// Spec 'gtr35' follows the exact hero-car pattern above: real GLB once it
+// resolves, exact procedural makeCarMesh fallback until then / on failure.
+// Livery (silver upper / black lower kit / red stripe at the kit's top edge)
+// is injected per-clone via onBeforeCompile height-band tinting in LOCAL
+// model Y (model y range 0..0.311, before wrapper scaling).
+function applyGtrLivery(root) {
+  if (!root) return;
+  root.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const applyOne = (orig) => {
+      const mat = orig.clone();
+      mat.onBeforeCompile = (shader) => {
+        shader.vertexShader = shader.vertexShader
+          .replace('#include <common>', '#include <common>\nvarying float vLocalY;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\nvLocalY = position.y;');
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <common>', '#include <common>\nvarying float vLocalY;')
+          .replace('#include <map_fragment>', [
+            '#include <map_fragment>',
+            'vec3 gtrBase = diffuseColor.rgb;',
+            'vec3 gtrKit = mix(gtrBase * 0.25, vec3(0.012, 0.012, 0.014), 0.75);',
+            'vec3 gtrStripe = vec3(0.85, 0.04, 0.05);',
+            'vec3 gtrUpper = gtrBase * 1.18;',
+            'float gtrToStripe = smoothstep(0.095 - 0.006, 0.095 + 0.006, vLocalY);',
+            'float gtrToUpper = smoothstep(0.125 - 0.006, 0.125 + 0.006, vLocalY);',
+            'diffuseColor.rgb = mix(mix(gtrKit, gtrStripe, gtrToStripe), gtrUpper, gtrToUpper);',
+          ].join('\n'));
+      };
+      mat.customProgramCacheKey = () => 'gtr35-livery';
+      return mat;
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(applyOne) : applyOne(o.material);
+  });
+}
+const GTR_SPECS = new Set(['gtr35']);
+let gtrWrapper = null;
+let gtrSettled = false;
+const gtrPending = [];
+function populateGtrCar(grp, spec, opts) {
+  const clone = gtrWrapper.clone(true);
+  applyGtrLivery(clone);
+  grp.add(clone);
+  addUnderglow(grp, spec, opts);
+  addBlobShadow(grp, spec);
+  const wheels = {};
+  for (const [key, sx, sz] of [['fl', -0.80, 1.41], ['fr', 0.80, 1.41], ['rl', -0.80, -1.55], ['rr', 0.80, -1.55]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx, 0.35, sz);
+    grp.add(pivot);
+    wheels[key] = pivot;
+  }
+  grp.userData.wheels = wheels;
+  grp.userData.wheelR = 0.35;
+  grp.userData.tailMat = null;
+  grp.userData.headMat = null;
+  grp.userData.visualMode = 'glb';
+  return grp;
+}
+function makeGtrCarMesh(spec, opts) {
+  return populateGtrCar(new THREE.Group(), spec, opts);
+}
+function swapToGtrCar(p) {
+  try {
+    const v = p.v;
+    if (!v || !v.mesh || !v.mesh.parent) return;
+    if (v.mesh.userData.visualMode === 'glb') return;
+    if (v._procChildren) {
+      for (const c of [...v.mesh.children]) if (v._procChildren.has(c)) v.mesh.remove(c);
+    } else {
+      while (v.mesh.children.length) v.mesh.remove(v.mesh.children[0]);
+    }
+    populateGtrCar(v.mesh, p.spec, { glow: p.glow });
+    v.wheels = v.mesh.userData.wheels;
+    v._procChildren = null;
+  } catch (e) { /* keep the procedural visual */ }
+}
+try {
+  loadHeroAsset('gtr35').then((wrapper) => {
+    try {
+      gtrSettled = true;
+      if (!wrapper) { gtrPending.length = 0; return; } // fallback stays
+      gtrWrapper = wrapper;
+      for (const p of gtrPending.splice(0)) swapToGtrCar(p);
+    } catch (e) { /* keep the procedural visual */ }
+  }).catch(() => { gtrSettled = true; gtrPending.length = 0; });
+} catch (e) { gtrSettled = true; }
 
 export function spawnVehicle(G, specId, x, z, angle, opts) {
   opts = opts || {};
   const spec = { ...CARS[specId], id: specId };
   const isHeroCar = HERO_CAR_SPECS.has(specId);
-  const mesh = isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
+  const isGtrCar = GTR_SPECS.has(specId);
+  const mesh = isGtrCar && gtrWrapper ? makeGtrCarMesh(spec, opts) : isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
   mesh.position.set(x, groundH(x, z) + 0.02, z); mesh.rotation.y = angle || 0;
   G.scene.add(mesh);
   const v = { spec, specId, mesh, angle: angle || 0, speed: 0, health: 100, driver: opts.driver || 'parked', color: opts.color != null ? opts.color : spec.color, wheels: mesh.userData.wheels, steerVis: 0, x, z, target: null, lane: opts.lane || 0, smokeT: 0 };
   if (isHeroCar && !heroCarWrapper && !heroCarSettled) {
     v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
     heroCarPending.push({ v, spec, glow: opts.glow });
+  }
+  if (isGtrCar && !gtrWrapper && !gtrSettled) {
+    v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
+    gtrPending.push({ v, spec, glow: opts.glow });
   }
   if (!G.vehicles) G.vehicles = [];
   G.vehicles.push(v);

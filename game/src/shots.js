@@ -50,8 +50,8 @@ export function setupShot(G, name) {
     cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
     void v;
   } else if (name === 'lineup') {
-    const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra'];
-    all.forEach((id, i) => spawnVehicle(G, id, -560 + i * 70, 560, Math.PI, { driver: 'parked' }));
+    const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra','gtr35'];
+    all.forEach((id, i) => spawnVehicle(G, id, -561 + i * 66, 560, Math.PI, { driver: 'parked' }));
     cam(G, -40, 10, 592, -40, 0.5, 556);
   } else if (name === 'chars') {
     ['ren', 'ako', 'mika', 'jun', 'ryo', 'dante', 'cop'].forEach((cid, i) => placeFig(G, cid, -436 + i * 8, 448, Math.PI));

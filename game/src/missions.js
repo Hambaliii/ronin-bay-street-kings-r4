@@ -217,12 +217,12 @@ export function initMissions(G) {
       case 'pinkslip': {
         chain.checkpoints = makeCheckpoints(G, start, dest, 4);
         chain.timer = routeTime(G, start, chain.checkpoints) + 60;
-        const rivalSpec = m.id === 'm12' ? 'hero-gtr' : (m.id === 'm11' ? 'kaze' : 'taiyo');
-        const rivalCast = m.id === 'm12' ? 'ryo' : 'dante';
+        const rivalSpec = m.id === 'm12' ? 'hero-gtr' : (m.id === 'm11' ? 'gtr35' : 'taiyo');
+        const rivalCast = m.id === 'm12' ? 'ryo' : (m.id === 'm11' ? 'shun' : 'dante');
         chain.rubberF = rr(0.92, 1.08);
         const rs = start;
         chain.rival = spawnVehicle(G, rivalSpec, rs.x + 6, rs.z + 4, G.car ? G.car.angle : 0,
-          { driver: rivalCast, color: m.id === 'm12' ? 0x30343c : 0x7a1010 });
+          { driver: rivalCast, color: m.id === 'm12' ? 0x30343c : (m.id === 'm11' ? 0x9aa0a6 : 0x7a1010) });
         chain.rivalSpeed = 0;
         break;
       }
