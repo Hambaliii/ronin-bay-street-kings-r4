@@ -1,4 +1,4 @@
-// config.js — all design data for RONIN BAY: Street Kings r4
+// config.js — all design data for STREET SAMURAI r4
 export const CFG = { world: 1320, half: 660, roadEvery: 165, roadW: 30, waterLevel: 0, dayLength: 240, startHour: 10.5 };
 export const DISTRICTS = [
   { id: 'port', name: 'Portside', cx: -330, cz: 330, color: 0x3f6d8e, accent: '#57b7ff' },

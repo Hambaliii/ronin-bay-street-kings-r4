@@ -1,4 +1,4 @@
-// audio.js — RONIN BAY: Street Kings WebAudio synth engine.
+// audio.js — STREET SAMURAI WebAudio synth engine.
 // Everything is synthesized (no external files): engine, skid, siren, UI
 // blips and a lookahead-scheduled synthwave loop. Fully defensive — a
 // headless screenshot context (no AudioContext, suspended context, missing

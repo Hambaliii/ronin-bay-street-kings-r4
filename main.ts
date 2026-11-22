@@ -1,4 +1,4 @@
-// RONIN BAY: Street Kings — Make Fun entrypoint.
+// STREET SAMURAI — Make Fun entrypoint.
 // Stages game/ and screenshots/ into the output directory (byte-stable:
 // fixed traversal, no timestamps), then builds the dossier with the
 // vendored make.fun library and writes its raw bytes to dossier.json.

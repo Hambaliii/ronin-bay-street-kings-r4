@@ -1,4 +1,4 @@
-# RONIN BAY: Street Kings
+# STREET SAMURAI
 
 A browser open-world JDM street-racing crime game. Take over Ronin Bay with the Ronin Kai club: build your garage, run 12 missions across the city and the mountain, take territory, and outrun the RBPD when the heat comes down.
 

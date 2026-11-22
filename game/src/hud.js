@@ -473,7 +473,7 @@ export function initHUD(G) {
     bm.font = 'bold 34px Arial, sans-serif';
     bm.textAlign = 'left'; bm.textBaseline = 'top';
     try { bm.letterSpacing = '6px'; } catch (e) {}
-    bm.fillText('RONIN BAY', 22, 16);
+    bm.fillText('STREET SAMURAI', 22, 16);
     try { bm.letterSpacing = '0px'; } catch (e) {}
   }
 
