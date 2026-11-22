@@ -56,6 +56,88 @@ function startMcLoad() {
 }
 startMcLoad();
 
+// --- Tripo GLB cast overrides ------------------------------------------------
+// Named cast members whose procedural figure is replaced by a GLB visual.
+// SHUN ARAKAWA (CAST.shun, the GT-R R35 rival driver) renders as the
+// textured 'rivalDriver' GLB (black leather jacket + sunglasses, faces +Z,
+// so rotation 0 matches the procedural figure's facing). Same pattern as
+// the MC swap above: the figure group returned by makeFigure stays the
+// outer group (position/rotation/animation untouched); only its inner
+// visual is swapped once the asset resolves. If the GLB fails to load
+// (loadHeroAsset resolves null) the procedural CAST figure stays — the
+// exact fallback, untouched.
+const CAST_GLB_ROT_Y = 0;
+const CAST_GLB_OVERRIDE = { shun: 'rivalDriver' };
+const _castGlbTemplates = new Map(); // assetName -> resolved wrapper
+const _castGlbStarted = new Set(); // assetName loads already kicked off
+const _castGlbWaiters = new Map(); // assetName -> Set of figs awaiting swap
+function applyCastGlbVisual(fig, assetName) {
+  try {
+    const template = _castGlbTemplates.get(assetName);
+    if (!fig || !template || fig.userData.figIsGlb) return false;
+    const inner = new THREE.Group();
+    inner.name = 'cast-glb-inner';
+    inner.rotation.y = CAST_GLB_ROT_Y;
+    inner.add(template.clone(true));
+    // Detach the procedural visual into a held group: fig.userData part
+    // refs (legs/arms/head) stay valid on it, and it is simply no longer
+    // rendered. The outer fig group keeps its transform.
+    const proc = new THREE.Group();
+    proc.name = 'cast-proc-visual';
+    while (fig.children.length) proc.add(fig.children[0]);
+    fig.add(inner);
+    // Same blob shadow treatment as the MC swap, on the outer group.
+    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
+    shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02;
+    fig.add(shadow);
+    fig.userData.procFig = proc;
+    fig.userData.glbInner = inner;
+    fig.userData.glbShadow = shadow;
+    fig.userData.figIsGlb = true;
+    // Figure was already posed seated before the GLB resolved (in-car
+    // driver): the GLB cannot articulate into a seat, so sink the inner
+    // wrapper to seat height instead of standing through the roof.
+    if (fig.userData.seated) inner.position.y = -0.55;
+    fig.figIsGlb = true;
+    return true;
+  } catch (e) {
+    return false; // never throw: procedural visual stays in place
+  }
+}
+function startCastGlbLoad(assetName) {
+  if (_castGlbStarted.has(assetName)) return;
+  _castGlbStarted.add(assetName);
+  try {
+    loadHeroAsset(assetName).then((wrapper) => {
+      try {
+        if (!wrapper) return; // load failed -> procedural fallback stays
+        _castGlbTemplates.set(assetName, wrapper);
+        const waiters = _castGlbWaiters.get(assetName);
+        if (waiters) { for (const fig of waiters) applyCastGlbVisual(fig, assetName); waiters.clear(); }
+      } catch (e) { /* keep procedural fallback */ }
+    }).catch(() => { /* keep procedural fallback */ });
+  } catch (e) { /* keep procedural fallback */ }
+}
+// Kick off (or immediately apply) the GLB override for a cast figure.
+// Idempotent. Called by makeFigure when the CAST entry matches an override
+// key, and by shots.js placeFig, which carries the cast key explicitly.
+export function applyCastFigureOverride(fig, castKey) {
+  try {
+    if (!fig || !castKey) return false;
+    const assetName = CAST_GLB_OVERRIDE[castKey];
+    if (!assetName) return false;
+    fig.userData.castKey = castKey;
+    if (fig.userData.figIsGlb) return true;
+    startCastGlbLoad(assetName);
+    if (applyCastGlbVisual(fig, assetName)) return true;
+    if (!_castGlbWaiters.has(assetName)) _castGlbWaiters.set(assetName, new Set());
+    _castGlbWaiters.get(assetName).add(fig);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Deterministic texture noise (no Math.random — simple LCG local to texture gen)
 function texRng(seed) { let s = seed * 7919 + 13; return () => { s = (s * 16807) % 2147483647; return (s & 0xffff) / 0xffff; }; }
 function hexCss(hex) { return '#' + hex.toString(16).padStart(6, '0'); }
@@ -251,10 +333,37 @@ export function makeFigure(o) {
   const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
   shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02; fig.add(shadow);
   fig.userData = { legL: lL.hip, legR: lR.hip, kneeL: lL.knee, kneeR: lR.knee, armL: aL.shoulder, armR: aR.shoulder, foreL: aL.elbow, foreR: aR.elbow, headG, torsoG, H };
+  // Cast GLB override: callers pass the CAST entry object itself
+  // (makeFigure(CAST.shun)), so identity against CAST entries recovers
+  // the cast key even where the call site never threads it through. This
+  // one hook therefore covers every figure built from CAST — mission
+  // rivals, cutscene/dialogue figures, meet/chars staging, and seated
+  // in-car drivers (poseSeated users), which all share this factory.
+  for (const castKey of Object.keys(CAST_GLB_OVERRIDE)) {
+    if (o === CAST[castKey]) { applyCastFigureOverride(fig, castKey); break; }
+  }
   return fig;
 }
 export function animateFigure(fig, phase, amt) {
-  const u = fig.userData; if (!u.legL) return;
+  const u = fig.userData; if (!u) return;
+  if (u.figIsGlb && u.glbInner) {
+    // GLB cast visual has no articulated parts: bob/rock the inner
+    // wrapper instead, mirroring the MC GLB branch in updatePlayer
+    // (outer fig transform untouched).
+    const inner = u.glbInner;
+    if (amt > 0.05) {
+      inner.position.y = Math.abs(Math.sin(phase)) * 0.045;
+      inner.rotation.z = Math.sin(phase) * 0.035;
+      inner.rotation.x = 0.05 * Math.min(1, amt);
+    } else {
+      inner.position.y = 0.008 * Math.sin(phase * 0.35);
+      inner.rotation.z = 0;
+      inner.rotation.x = 0;
+    }
+    inner.rotation.y = CAST_GLB_ROT_Y;
+    return;
+  }
+  if (!u.legL) return;
   const s = Math.sin(phase), c = Math.sin(phase + Math.PI);
   u.legL.rotation.x = s * 0.55 * amt; u.legR.rotation.x = c * 0.55 * amt;
   u.kneeL.rotation.x = Math.max(0, -c) * 0.6 * amt; u.kneeR.rotation.x = Math.max(0, -s) * 0.6 * amt;
@@ -264,7 +373,10 @@ export function animateFigure(fig, phase, amt) {
   u.headG.rotation.x = Math.sin(phase * 0.5) * 0.03;
 }
 export function poseSeated(fig) {
-  const u = fig.userData; if (!u.legL) return;
+  const u = fig.userData; if (!u) return;
+  u.seated = true;
+  if (u.figIsGlb && u.glbInner) { u.glbInner.position.y = -0.55; return; }
+  if (!u.legL) return;
   u.legL.rotation.x = -Math.PI / 2 + 0.12; u.legR.rotation.x = -Math.PI / 2 + 0.12;
   u.kneeL.rotation.x = Math.PI / 2 - 0.15; u.kneeR.rotation.x = Math.PI / 2 - 0.15;
   u.armL.rotation.x = -0.85; u.armR.rotation.x = -0.85;

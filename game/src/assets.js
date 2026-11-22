@@ -169,6 +169,7 @@ export const HERO_ASSETS = {
   npcVespa: { url: 'assets/npc-vespa.glb', targetSize: { x: 0.75, y: 1.55, z: 1.95 } },
   gtr35: { url: 'assets/gtr35.glb', targetSize: { x: 1.89, y: 1.36, z: 4.71 } },
   mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
+  rivalDriver: { url: 'assets/rival-driver.glb', scale: 1.80 },
   garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
   citizenWoman: { url: 'assets/citizen-woman.glb', scale: 1.68 },
   // Untextured GLB (POSITION+NORMAL only, no UVs/material/image): parseGLB

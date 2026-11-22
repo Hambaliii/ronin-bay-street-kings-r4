@@ -2,11 +2,16 @@
 import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
-import { makeFigure, poseSeated } from './player.js';
+import { makeFigure, poseSeated, applyCastFigureOverride } from './player.js';
 import { spawnVehicle, applyNpcPoliceGlb, primeDamageSmoke } from './cars.js';
 
 function placeFig(G, castId, x, z, angle) {
   const fig = makeFigure(CAST[castId]);
+  // Thread the cast key explicitly so GLB cast overrides (player.js
+  // CAST_GLB_OVERRIDE, e.g. 'shun' -> rivalDriver GLB) apply on this
+  // staging path too; makeFigure's CAST-identity hook already fired,
+  // this call is idempotent and stamps fig.userData.castKey.
+  applyCastFigureOverride(fig, castId);
   fig.position.set(x, groundH(x, z), z); fig.rotation.y = angle || 0;
   G.scene.add(fig); return fig;
 }
@@ -92,8 +97,25 @@ export function setupShot(G, name) {
     all.forEach((id, i) => spawnVehicle(G, id, -561 + i * 66, 560, Math.PI, { driver: 'parked' }));
     cam(G, -40, 10, 592, -40, 0.5, 556);
   } else if (name === 'chars') {
-    ['ren', 'ako', 'mika', 'jun', 'ryo', 'dante', 'cop'].forEach((cid, i) => placeFig(G, cid, -436 + i * 8, 448, Math.PI));
+    // S27: 'shun' added at the end of the row. Spacing tightened 8 -> 7
+    // so the now-8-wide row stays centered on the camera target (-412):
+    // span -436..-387, center -411.5.
+    ['ren', 'ako', 'mika', 'jun', 'ryo', 'dante', 'cop', 'shun'].forEach((cid, i) => placeFig(G, cid, -436 + i * 7, 448, Math.PI));
     cam(G, -412, 1.5, 443.8, -412, 1.0, 448);
+  } else if (name === 'versus') {
+    // S27 versus shot (HQ apron, tod 10.5): Ren + his hero taiyo on the
+    // left, Shun Arakawa (rivalDriver GLB via the cast override) + his
+    // GT-R R35 on the right, drivers standing beside their cars.
+    G.timeOfDay = 10.5;
+    spawnVehicle(G, 'taiyo', -424, 446, 0.5, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = -421.5; G.player.z = 447.5; G.player.angle = 2.6;
+      G.player.fig.position.set(-421.5, groundH(-421.5, 447.5), 447.5);
+      G.player.fig.rotation.y = 2.6;
+    }
+    spawnVehicle(G, 'gtr35', -401, 446, -0.5, { driver: 'parked' });
+    placeFig(G, 'shun', -398.5, 447.5, 0.6);
+    cam(G, -412, 2.0, 462, -412, 1.0, 445);
   } else if (name === 'mc') {
     if (G.player) {
       G.player.x = -412.5; G.player.z = 440; G.player.angle = Math.PI;
@@ -203,7 +225,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
