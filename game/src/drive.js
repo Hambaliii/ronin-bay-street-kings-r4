@@ -4,6 +4,8 @@ import { CAST } from './config.js';
 import { groundH } from './world.js';
 import { makeFigure, poseSeated } from './player.js';
 import { spawnSmokeAt, damageVehicle } from './cars.js';
+import { loadHeroAsset } from './assets.js';
+import { rnd, rr, pick } from './random.js';
 
 // ---- S16 traffic-light compliance for NPC traffic ----
 // drive.js cannot edit cars.js' updateTraffic, so this hook registers once
@@ -41,6 +43,92 @@ function ensureLightHook(G) {
   if (!G || G._lightHook || !Array.isArray(G.updaters)) return;
   G._lightHook = true;
   G.updaters.push((G2) => { try { updateTrafficLights(G2); } catch (e) {} });
+}
+// ---- S20 Vespa traffic + parked props -----------------------------------
+// Independent small agent set (not the car traffic class): the npc-vespa
+// GLB (scooter with rider baked in, nose +Z) runs as 4 weaving traffic
+// scooters plus 3 parked waiting-rider props. Garnish only: if the GLB
+// fails to load, loadHeroAsset resolves null and nothing spawns (no
+// procedural fallback). Movement hooks G.updaters like the light hook.
+const VESPA_TINTS = [0xffffff, 0xffd9c9, 0xfff3b0, 0xbfe3ff, 0xe6ccff, 0xffc4c4];
+function makeVespaInstance(wrapper, tintHex) {
+  // The cached wrapper is shared — always clone, then clone every material
+  // before tinting so the shared template (and other instances) stay mint.
+  // material.color multiplies the light mint-teal baked texture.
+  const clone = wrapper.clone(true);
+  clone.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const tintOne = (m) => { const c = m.clone(); if (c.color) c.color.setHex(tintHex); return c; };
+    o.material = Array.isArray(o.material) ? o.material.map(tintOne) : tintOne(o.material);
+  });
+  return clone;
+}
+function placeVespaOnRoad(G, s) {
+  // Same lane conventions as spawnTraffic/updateTraffic in cars.js:
+  // roads on G.roadX run along z (onX), roads on G.roadZ run along x;
+  // lane centre is 5 m from the road centre, side chosen by dirSign
+  // (onX: x = line + 5*dirSign; cross: z = line - 5*dirSign).
+  s.onX = rnd() < 0.5;
+  s.line = pick(s.onX ? G.roadX : G.roadZ);
+  s.dirSign = rnd() < 0.5 ? 1 : -1;
+  s.along = rr(-600, 600);
+  s.travel = 0;
+}
+function updateVespas(G, dt) {
+  if (!G._vespas || !dt) return;
+  const t = G.elapsed || 0;
+  for (const s of G._vespas) {
+    s.travel += s.speed * dt;
+    s.along += s.dirSign * s.speed * dt;
+    // Respawn at a random road after ~500 m travelled or at the map edge.
+    if (s.travel > 500 || Math.abs(s.along) > 655) placeVespaOnRoad(G, s);
+    const weave = Math.sin(t * 0.9 + s.weavePhase) * 0.8;
+    const weaveYaw = Math.cos(t * 0.9 + s.weavePhase) * 0.06;
+    let base;
+    if (s.onX) {
+      s.x = s.line + 5 * s.dirSign + weave; s.z = s.along;
+      base = s.dirSign > 0 ? 0 : Math.PI;
+    } else {
+      s.x = s.along; s.z = s.line - 5 * s.dirSign + weave;
+      base = s.dirSign > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    s.angle = base + weaveYaw;
+    s.group.position.set(s.x, groundH(s.x, s.z) + 0.02, s.z);
+    s.group.rotation.y = s.angle;
+  }
+}
+const VESPA_PARKED = [
+  { x: -405, z: 448, angle: 0.7, tint: 1 },   // HQ apron edge
+  { x: 330, z: 470, angle: -Math.PI / 2, tint: 3 }, // port gate
+  { x: 155, z: -145, angle: 2.35, tint: 5 },  // downtown corner
+];
+export function initVespas(G) {
+  if (!G || G._vespasInit || !Array.isArray(G.updaters)) return;
+  G._vespasInit = true;
+  G._vespas = [];
+  G.updaters.push((G2, dt) => { try { updateVespas(G2, dt); } catch (e) {} });
+  loadHeroAsset('npcVespa').then((wrapper) => {
+    try {
+      if (!wrapper) return; // garnish only — no fallback, spawn nothing
+      for (let i = 0; i < 4; i++) {
+        const group = makeVespaInstance(wrapper, VESPA_TINTS[i % VESPA_TINTS.length]);
+        G.scene.add(group);
+        const s = { group, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, speed: rr(11, 15), weavePhase: rr(0, Math.PI * 2) };
+        placeVespaOnRoad(G, s);
+        group.position.set(s.onX ? s.line + 5 * s.dirSign : s.along, 0, s.onX ? s.along : s.line - 5 * s.dirSign);
+        group.position.y = groundH(group.position.x, group.position.z) + 0.02;
+        G._vespas.push(s);
+      }
+      G._parkedVespas = [];
+      for (const p of VESPA_PARKED) {
+        const group = makeVespaInstance(wrapper, VESPA_TINTS[p.tint % VESPA_TINTS.length]);
+        group.position.set(p.x, groundH(p.x, p.z) + 0.02, p.z);
+        group.rotation.y = p.angle;
+        G.scene.add(group);
+        G._parkedVespas.push(group);
+      }
+    } catch (e) { /* garnish only — never break the game */ }
+  }).catch(() => {});
 }
 export function enterCar(G, v) {
   ensureLightHook(G);
