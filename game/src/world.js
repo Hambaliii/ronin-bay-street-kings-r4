@@ -360,7 +360,32 @@ function buildHQ(G, scene) {
   sign.position.set(hx, 8.6, hz + 17.3); hqGroup.add(sign);
   const winMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb35c, emissiveIntensity: 0.6 });
   for (let i = 0; i < 5; i++) { const w = new THREE.Mesh(new THREE.PlaneGeometry(5, 2.4), winMat); w.position.set(hx - 28 + i * 14, 7.6, hz - 17.2); w.rotation.y = Math.PI; hqGroup.add(w); }
-  const apron = new THREE.Mesh(new THREE.PlaneGeometry(80, 30), new THREE.MeshStandardMaterial({ color: 0x8a8578, roughness: 1 }));
+  // Apron (both modes, stays outside hqGroup): textured asphalt instead
+  // of a flat colour — speckle, oil stains, and white parking stalls
+  // along its south edge. Canvas note: the plane is rotated -PI/2 about
+  // X, so canvas bottom (v=0) maps to the world-south edge of the apron.
+  const apronTex = canvasTex(1024, 384, (g, w, h) => {
+    g.fillStyle = '#6a6d70'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 5200; i++) {
+      const v = 96 + Math.floor(rnd() * 48);
+      g.fillStyle = `rgba(${v},${v},${v + 4},.14)`;
+      g.fillRect(rnd() * w, rnd() * h, 2, 2);
+    }
+    for (const [ox, oy, orx, ory] of [[210, 120, 58, 20], [560, 210, 74, 26], [790, 90, 46, 16], [390, 290, 52, 18]]) {
+      g.fillStyle = 'rgba(18,18,20,.20)';
+      g.beginPath(); g.ellipse(ox, oy, orx, ory, 0.4, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(18,18,20,.12)';
+      g.beginPath(); g.ellipse(ox + 14, oy + 6, orx * 0.6, ory * 0.6, 0.4, 0, Math.PI * 2); g.fill();
+    }
+    // Parking stalls along the south edge (canvas bottom).
+    g.strokeStyle = 'rgba(245,245,240,.88)'; g.lineWidth = 5;
+    g.beginPath(); g.moveTo(0, h - 108); g.lineTo(w, h - 108); g.stroke();
+    for (let x = 32; x <= w - 32; x += 96) {
+      g.beginPath(); g.moveTo(x, h - 108); g.lineTo(x, h - 6); g.stroke();
+    }
+  });
+  apronTex.wrapS = apronTex.wrapT = THREE.ClampToEdgeWrapping;
+  const apron = new THREE.Mesh(new THREE.PlaneGeometry(80, 30), new THREE.MeshStandardMaterial({ map: apronTex, roughness: 1 }));
   apron.rotation.x = -Math.PI / 2; apron.position.set(hx, 0.04, 455); scene.add(apron);
   G.hq = { x: hx, z: hz, garage: { x: hx, z: 455 } };
   // Hero asset: Tripo garage GLB replaces the procedural HQ building when
@@ -374,6 +399,48 @@ function buildHQ(G, scene) {
         placement.position.set(hx, groundH(hx, hz), hz);
         placement.rotation.y = GARAGE_ROT_Y;
         placement.add(loaded);
+        // Club dressing (GLB mode only): the bare GLB reads as a dark
+        // monolith and lost the RONIN KAI identity, so re-dress its
+        // world-south face. Sign-side reasoning (verified): placement
+        // rotation.y = PI maps a child-local point (x, z) to world
+        // offset (-x, -z), so a child at placement-local z = -15.15 sits
+        // at world z = hz + 15.15 — the SOUTH face (the wrapper's own
+        // facade ended up facing world south through this same PI
+        // rotation; the GLB targetSize is 30 deep, so its face is at
+        // local |z| = 15 and the sign floats 0.15 proud of it). A plane's
+        // front is its local +z; with the parent's PI rotation that
+        // would face world north (into the building), so each dressing
+        // plane gets rotation.y = PI of its own: its front then points
+        // along placement-local -z, which the parent maps to world +z
+        // (south, outward) — and the two PI turns cancel, so the sign
+        // text reads unmirrored from the street.
+        const signTex = (() => {
+          const c = document.createElement('canvas'); c.width = 1024; c.height = 192;
+          const g = c.getContext('2d');
+          g.clearRect(0, 0, 1024, 192);
+          g.font = 'italic bold 118px sans-serif'; g.textAlign = 'center';
+          g.shadowColor = '#ff4fd8'; g.shadowBlur = 34;
+          g.fillStyle = '#ff4fd8';
+          g.fillText('RONIN KAI', 512, 122);
+          g.shadowBlur = 18; g.fillStyle = '#ff7a1a';
+          g.fillRect(212, 148, 600, 14);
+          const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+        })();
+        const neonSign = new THREE.Mesh(
+          new THREE.PlaneGeometry(14, 2.6),
+          new THREE.MeshBasicMaterial({ map: signTex, transparent: true })
+        );
+        neonSign.position.set(0, 10.8, -15.15); neonSign.rotation.y = Math.PI;
+        placement.add(neonSign);
+        const stripMat = new THREE.MeshBasicMaterial({ color: 0x39d5ff });
+        for (const sx of [-13.5, 13.5]) {
+          const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 8), stripMat);
+          strip.position.set(sx, 6, -15.15); strip.rotation.y = Math.PI;
+          placement.add(strip);
+        }
+        const signGlow = glowSprite(0xff4fd8, 16);
+        signGlow.position.set(0, 10.8, -15.35); signGlow.material.opacity = 0.35;
+        placement.add(signGlow);
         scene.add(placement);
       } catch (e) { /* keep procedural HQ */ }
     }).catch(() => {});

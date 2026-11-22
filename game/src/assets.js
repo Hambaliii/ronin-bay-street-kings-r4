@@ -172,7 +172,7 @@ export const HERO_ASSETS = {
   citizenTeen: { url: 'assets/citizen-teen.glb', scale: 1.62 },
   weaponPistol: { url: 'assets/weapon-pistol.glb', scale: 0.30 },
   weaponSmg: { url: 'assets/weapon-smg.glb', scale: 0.55 },
-  weaponBat: { url: 'assets/weapon-bat.glb', scale: 0.90 },
+  weaponBat: { url: 'assets/weapon-bat.glb', scale: 0.72 },
 };
 
 const _heroCache = new Map();

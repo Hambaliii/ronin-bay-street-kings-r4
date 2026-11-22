@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { rr, chance } from './random.js';
 import { groundH, glowSprite } from './world.js';
 import { damageVehicle, spawnSmokeAt } from './cars.js';
-import { loadHeroAsset } from './assets.js';
+import { loadHeroAsset, HERO_ASSETS } from './assets.js';
 
 // ---------------------------------------------------------------- weapons.js
 // Free shooting system (S10): pistol / micro SMG / baseball bat.
@@ -19,6 +19,65 @@ export const WEAPON_TABLE = {
 };
 const ORDER = ['pistol', 'smg', 'bat'];
 const GLB_FOR = { pistol: 'weaponPistol', smg: 'weaponSmg', bat: 'weaponBat' };
+
+// ---------------------------------------------------------- GLB orientation
+// Tripo weapon GLBs do not share the game's axes (held root on the player
+// fig sits at (0.24, 1.02, 0.28) and points +Z). WEAPON_POSE corrects each
+// model INSIDE its per-weapon group, relative to that root. Procedural
+// children are untouched, so the fallback is exact when a GLB is absent.
+// SMG muzzle direction is the one uncertain call (see below): flipping it
+// is this single constant.
+const SMG_ROT_Y = Math.PI;
+export const WEAPON_POSE = {
+  // Pistol bounds x +-0.5, y 0..0.661, z +-0.266: barrel along X, muzzle
+  // at +X, grip/rear at -X, up +Y. rotY -PI/2 maps +X -> +Z (forward).
+  // Offset: model height 0.661 * scale 0.30 ~= 0.20 m; the hand grips the
+  // rear-lower part, so shift the wrapper down/back by this amount in the
+  // weapon group's local space.
+  pistol: { rotY: -Math.PI / 2, offset: new THREE.Vector3(0, -0.10, -0.02) },
+  // SMG bounds x +-0.068, y 0..0.703, z +-0.5: barrel along Z, muzzle
+  // believed at -Z (tall thin front-sight slice at z -0.5, grip drops at
+  // z -0.2..-0.1, long magazine drops to y=0 at z +0.2..+0.3, buttstock
+  // at z +0.4..+0.5). rotY PI maps -Z -> +Z. Hand position: under the
+  // receiver near the grip — after the PI flip the grip (model z
+  // -0.2..-0.1, * scale 0.55 = -0.11..-0.055) lands at group z
+  // +0.055..+0.11 and the receiver underside sits ~0.13 m above the hand
+  // origin, hence offset (0, -0.13, +0.03) centres the grip in the palm.
+  // Verify with the 'smg' shot mode; if the muzzle faces the player,
+  // set SMG_ROT_Y = 0.
+  smg: { rotY: SMG_ROT_Y, offset: new THREE.Vector3(0, -0.13, 0.03) },
+  // Bat bounds x +-0.5, y 0..0.844, z +-0.074: posed diagonally in XY.
+  // axisFrom A = barrel->knob principal axis; axisTo D is where A must
+  // land so knob->barrel ends up ~(0, +0.75, -0.66) — up-and-back over
+  // the shoulder, matching the procedural bat's rest pose. knobLocal is
+  // the knob position in model space; the holder is then translated by
+  // -R*(knobLocal * batScale) so the knob lands on the group origin.
+  bat: {
+    axisFrom: new THREE.Vector3(-0.775, -0.631, 0.001).normalize(),
+    axisTo: new THREE.Vector3(0, -0.75, 0.66).normalize(),
+    knobLocal: new THREE.Vector3(-0.49, 0.02, 0),
+  },
+};
+
+// Build the oriented holder for one weapon's GLB wrapper. The holder is a
+// child of the per-weapon group, so recoil (group position) and the bat
+// swing (group rotation.x) carry the GLB exactly like the procedural mesh.
+function orientWrapper(id, holder, wrapper) {
+  const pose = WEAPON_POSE[id];
+  if (!pose) { holder.add(wrapper); return; }
+  if (id === 'bat') {
+    const R = new THREE.Quaternion().setFromUnitVectors(pose.axisFrom, pose.axisTo);
+    holder.quaternion.copy(R);
+    const batScale = (HERO_ASSETS.weaponBat && HERO_ASSETS.weaponBat.scale) || 0.72;
+    const knobScaled = pose.knobLocal.clone().multiplyScalar(batScale);
+    holder.position.copy(knobScaled.applyQuaternion(R)).negate();
+    holder.add(wrapper);
+  } else {
+    wrapper.rotation.y = pose.rotY;
+    wrapper.position.copy(pose.offset);
+    holder.add(wrapper);
+  }
+}
 
 function vPos(v) {
   // Vehicle position: v.x/v.z mirror the mesh (verified in cars.js
@@ -123,15 +182,25 @@ export function initWeapons(G) {
       grp.visible = false;
       heldRoot.add(grp);
       S.held[id] = grp;
-      // GLB drop-in: swap children when (if) the model arrives.
+      // Oriented holder for the GLB drop-in: a child of the per-weapon
+      // group (so swing/recoil on the group carries it). Empty — and
+      // therefore invisible — while the procedural fallback is in use.
+      const holder = new THREE.Group();
+      holder.name = 'glbHolder:' + id;
+      grp.add(holder);
+      // GLB drop-in: swap children when (if) the model arrives. Remove
+      // the procedural children only (keep the holder), then put the
+      // wrapper into the holder with its WEAPON_POSE orientation.
       try {
         const p = loadHeroAsset(GLB_FOR[id]);
         if (p && typeof p.then === 'function') {
           p.then((wrapper) => {
             try {
               if (!wrapper) return;
-              while (grp.children.length) grp.remove(grp.children[0]);
-              grp.add(wrapper);
+              for (const child of [...grp.children]) {
+                if (child !== holder) grp.remove(child);
+              }
+              orientWrapper(id, holder, wrapper);
             } catch (e) { /* procedural stays */ }
           }).catch(() => {});
         }

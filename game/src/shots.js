@@ -22,18 +22,18 @@ export function setupShot(G, name) {
   if (name === 'city') {
     const v = spawnVehicle(G, 'hero-supra', 150, -148, 0.85, { driver: 'parked' });
     if (G.player) {
-      G.player.x = 153.2; G.player.z = -144.6; G.player.angle = -2.3;
+      G.player.x = 153.2; G.player.z = -144.6; G.player.angle = 0.8;
       G.player.fig.position.set(153.2, groundH(153.2, -144.6), -144.6);
-      G.player.fig.rotation.y = -2.3;
+      G.player.fig.rotation.y = 0.8;
     }
     cam(G, 156.5, 1.35, -141.5, 150.5, 0.95, -148.5);
     void v;
   } else if (name === 'meet') {
     const ids = ['hachi', 'sora15', 'hoshi7', 'kaze'];
-    const xs = [-446, -428, -410, -392];
+    const xs = [-434, -422, -410, -398];
     ids.forEach((id, i) => spawnVehicle(G, id, xs[i], 446, 0, { driver: 'parked' }));
-    ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 2, 451.5, 0));
-    cam(G, -419, 2.0, 466, -419, 1.2, 444);
+    ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 1.5, 451, 0));
+    cam(G, -416, 1.9, 461, -416, 1.15, 445);
   } else if (name === 'chase') {
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
     v.speed = 22;
@@ -63,6 +63,25 @@ export function setupShot(G, name) {
       G.player.fig.rotation.y = Math.PI;
     }
     cam(G, -412.5, 1.1, 437.8, -412.5, 1.0, 440);
+  } else if (name === 'smg') {
+    // Close-up verify for the SMG GLB orientation (S13): same HQ apron
+    // staging as 'mc', SMG equipped, camera 2.0 m in front. No forceFlash.
+    if (G.player) {
+      G.player.x = -412.5; G.player.z = 440; G.player.angle = Math.PI;
+      G.player.fig.position.set(-412.5, groundH(-412.5, 440), 440);
+      G.player.fig.rotation.y = Math.PI;
+    }
+    if (G.weapons && G.weapons.equip) G.weapons.equip('smg');
+    cam(G, -412.5, 1.25, 437.9, -412.5, 1.05, 440);
+  } else if (name === 'bat') {
+    // Close-up verify for the bat GLB orientation (S13): same staging.
+    if (G.player) {
+      G.player.x = -412.5; G.player.z = 440; G.player.angle = Math.PI;
+      G.player.fig.position.set(-412.5, groundH(-412.5, 440), 440);
+      G.player.fig.rotation.y = Math.PI;
+    }
+    if (G.weapons && G.weapons.equip) G.weapons.equip('bat');
+    cam(G, -412.5, 1.25, 437.9, -412.5, 1.05, 440);
   } else if (name === 'shootout') {
     // Neon Mile (200,-200): player staged mid-street, pistol out, muzzle
     // flash held on; a downed figure, a fleeing figure and a frozen cop
@@ -95,7 +114,7 @@ export function setupShot(G, name) {
     cam(G, 0, 30, -60, 0, 0, 0);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
