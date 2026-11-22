@@ -434,7 +434,14 @@ function addUnderglow(grp, spec, opts) {
   const gg = gc.getContext('2d'); const gr2 = gg.createRadialGradient(64, 64, 4, 64, 64, 64);
   gr2.addColorStop(0, 'rgba(255,255,255,.9)'); gr2.addColorStop(1, 'rgba(255,255,255,0)');
   gg.fillStyle = gr2; gg.fillRect(0, 0, 128, 128);
-  const gm = new THREE.Mesh(new THREE.PlaneGeometry(spec.wid + 1.6, spec.len + 1.6), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), color: glowColor, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
+  // S33: size capped sanely — the old wid/len + 1.6 plane read as a giant
+  // (6-8 m) coloured dome from a low camera at HQ. Now the glow hugs the
+  // car's own footprint scaled by 1.25 on both axes (long axis = spec
+  // length x 1.25, width proportional at spec width x 1.25), opacity 0.25
+  // (<= 0.45), flat on the ground at y 0.06. This one helper serves every
+  // path: procedural makeCarMesh and the GLB populate paths for the
+  // heroCar / gtr35 / lamboSvj hero vehicles.
+  const gm = new THREE.Mesh(new THREE.PlaneGeometry(spec.wid * 1.25, spec.len * 1.25), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), color: glowColor, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
   gm.rotation.x = -Math.PI / 2; gm.position.y = 0.06; grp.add(gm);
 }
 function addBlobShadow(grp, spec) {
@@ -895,14 +902,14 @@ function damageBand(health) {
   return { rate: 2, color: 0xb8bcc0, s0: 0.5, s1: 1.6, op: 0.28 }; // 40..70 light wisps
 }
 const _hoodV = new THREE.Vector3();
-export function spawnDamagePuff(G, v, prewarm) {
+export function spawnDamagePuff(G, v, prewarm, ageOverride) {
   ensureSmoke(G);
   if (!smokePool) return;
   const band = damageBand(v.health);
   for (const p of smokePool) {
     if (p.life > 0) continue;
     hoodWorldPos(v, _hoodV);
-    const age = prewarm ? rr(0, 1.1) : 0;
+    const age = typeof ageOverride === 'number' ? ageOverride : (prewarm ? rr(0, 1.1) : 0);
     p.kind = 'dmg'; p.fire = false;
     p.max = 1.4; p.life = 1.4 - age;
     p.s0 = band.s0; p.s1 = band.s1; p.op = band.op;
@@ -915,8 +922,11 @@ export function spawnDamagePuff(G, v, prewarm) {
   }
 }
 // Pre-form a plume over a damaged car (shot staging).
+// S33: pre-ages are spread deterministically across 0..1.2 s (oldest puff
+// first) so a full column — not a random clump — exists at frame time.
 export function primeDamageSmoke(G, v, n) {
-  for (let i = 0; i < (n || 10); i++) spawnDamagePuff(G, v, true);
+  const count = n || 10;
+  for (let i = 0; i < count; i++) spawnDamagePuff(G, v, true, count > 1 ? (i / (count - 1)) * 1.2 : 0);
 }
 // --- headlights -------------------------------------------------------------
 // Glow sprites are THREE.Sprite children: every GLB swap helper in this

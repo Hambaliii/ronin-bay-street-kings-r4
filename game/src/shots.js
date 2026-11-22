@@ -71,7 +71,9 @@ export function setupShot(G, name) {
     const xs = [-434, -422, -410, -398];
     ids.forEach((id, i) => spawnVehicle(G, id, xs[i], 446, 0, { driver: 'parked' }));
     ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 1.5, 451, 0));
-    cam(G, -436, 2.4, 464, -410, 1.0, 446);
+    // S33: closer camera + late-morning tod so the garage front is lit.
+    G.timeOfDay = 11.5;
+    cam(G, -430, 1.8, 460, -414, 1.0, 447);
   } else if (name === 'chase') {
     // S28: dusk restage — heli searchlight (cone + ground pool) hard-tracks
     // the player car at wanted 4; the heliShot override drops the heli to
@@ -95,14 +97,19 @@ export function setupShot(G, name) {
     cam(G, 121, 5.5, 468, 99, 1.5, 495);
   } else if (name === 'hero') {
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    const v = spawnVehicle(G, 'kaze', -300, -610, 2.2, { driver: 'parked' });
-    cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
+    // S33: offset +14 m along the car's facing (angle 2.2 -> heading
+    // (sin 2.2, cos 2.2) = (0.808, -0.589); delta (+11.3, -8.2)) so the car
+    // no longer sits on the cash pickup at Touge (-296,-606) — it is now
+    // ~14.2 m clear. Camera position AND look target shift by the same
+    // delta, so the framing relative to the car is unchanged.
+    const v = spawnVehicle(G, 'kaze', -288.7, -618.2, 2.2, { driver: 'parked' });
+    cam(G, -279.7, groundH(-279.7, -608.2) + 2.0, -608.2, -288.7, groundH(-288.7, -618.2) + 0.8, -618.2);
     void v;
   } else if (name === 'svj') {
     // S31: front 3/4 of the HQ showcase SVJ (spawned in main.js at
     // (-430,452), angle 0.9) — glass canopy readable at tod 10.5.
     G.timeOfDay = 10.5;
-    cam(G, -424, 1.3, 441, -430.5, 0.75, 452.5);
+    cam(G, -425.8, 1.05, 445.8, -430.2, 0.72, 452.3);
   } else if (name === 'svjrear') {
     // S31: rear 3/4 of the showcase SVJ — Y taillights readable. The GLB
     // swap is async, so arm the brake boost on the vehicle: swapToSvjCar
@@ -114,11 +121,14 @@ export function setupShot(G, name) {
       sv._brakeStaged = true;
       if (sv.mesh && sv.mesh.userData.tailMat) sv.mesh.userData.tailMat.emissiveIntensity = 2.4;
     }
-    cam(G, -437, 1.4, 461, -429.5, 0.8, 451.5);
+    cam(G, -437.5, 1.2, 445.0, -429.8, 0.75, 452.2);
   } else if (name === 'lineup') {
     const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra','gtr35','svj'];
     all.forEach((id, i) => spawnVehicle(G, id, -558 + i * 62, 560, Math.PI, { driver: 'parked' }));
-    cam(G, -40, 10, 592, -40, 0.5, 556);
+    // S33: camera relative to the row start (startX -558, rowZ 560):
+    // (startX - 26, 5.5, rowZ + 26) looking to (startX + 190, 0.8, rowZ)
+    // — a long elevated diagonal down the row (was inside a building).
+    cam(G, -584, 5.5, 586, -368, 0.8, 560);
   } else if (name === 'chars') {
     // S27: 'shun' added at the end of the row. Spacing tightened 8 -> 7
     // so the now-8-wide row stays centered on the camera target (-412):
@@ -130,15 +140,17 @@ export function setupShot(G, name) {
     // left, Shun Arakawa (rivalDriver GLB via the cast override) + his
     // GT-R R35 on the right, drivers standing beside their cars.
     G.timeOfDay = 10.5;
-    spawnVehicle(G, 'taiyo', -424, 446, 0.5, { driver: 'parked' });
+    // S33 restage: both cars angle 0.9 so both show a front 3/4 to the
+    // southern camera (the GT-R previously showed its rear to a wall).
+    spawnVehicle(G, 'taiyo', -424, 446, 0.9, { driver: 'parked' });
     if (G.player) {
-      G.player.x = -421.5; G.player.z = 447.5; G.player.angle = 2.6;
-      G.player.fig.position.set(-421.5, groundH(-421.5, 447.5), 447.5);
+      G.player.x = -421; G.player.z = 448; G.player.angle = 2.6;
+      G.player.fig.position.set(-421, groundH(-421, 448), 448);
       G.player.fig.rotation.y = 2.6;
     }
-    spawnVehicle(G, 'gtr35', -401, 446, -0.5, { driver: 'parked' });
-    placeFig(G, 'shun', -398.5, 447.5, 0.6);
-    cam(G, -412, 2.0, 462, -412, 1.0, 445);
+    spawnVehicle(G, 'gtr35', -400, 446, 0.9, { driver: 'parked' });
+    placeFig(G, 'shun', -397.5, 447.5, 2.8);
+    cam(G, -412, 1.7, 460, -411, 0.9, 445);
   } else if (name === 'mc') {
     if (G.player) {
       G.player.x = -412.5; G.player.z = 440; G.player.angle = Math.PI;
@@ -198,13 +210,16 @@ export function setupShot(G, name) {
     spawnVehicle(G, 'taiyo', 150, -128, Math.PI, { driver: 'parked' });
     cam(G, 161, 1.7, -133, 149, 1.5, -156);
   } else if (name === 'smoke') {
-    // S25 verify: taiyo at HQ apron with health forced to 30 — steady gray
-    // damage band (15..40), plume pre-primed so it reads in the first frame.
+    // S25 verify: taiyo at HQ apron, plume pre-primed so it reads in the
+    // first frame. S33: health 12 puts it in the darkest, fastest emission
+    // band (<15) and primeDamageSmoke now spreads the pre-primed puffs'
+    // pre-ages deterministically across 0..1.2 s, so a full readable
+    // column exists at frame time.
     G.timeOfDay = 10.5;
     const v = spawnVehicle(G, 'taiyo', -412.5, 446, 0.6, { driver: 'parked' });
-    v.health = 30;
+    v.health = 12;
     primeDamageSmoke(G, v, 12);
-    cam(G, -406, 1.8, 437, -412.5, 1.0, 446);
+    cam(G, -407.5, 1.5, 440.5, -412.5, 1.0, 446);
   } else if (name === 'night') {
     // S25 verify: taiyo staged in-car on the avenue at night (tod 21.5,
     // D = 1) so headlight cones + glow rake across the asphalt.

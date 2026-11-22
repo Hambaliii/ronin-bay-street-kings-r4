@@ -149,7 +149,11 @@ export function initHUD(G) {
   // Single damage entry point (drive.js impacts call this). Ignored while an
   // overlay is up so the death frame cannot re-trigger or stack damage.
   G.damagePlayer = (amt) => {
-    if (!(amt > 0) || overlay || G.flags.wasted || G.flags.busted) return;
+    // S33: while a shot is staged, damage is a no-op — staged scenes (e.g.
+    // 'chase' with staged cops + a stationary figure) must never decay
+    // health or trip WASTED over the dossier frame. The 'wasted'/'busted'
+    // shot modes call the overlay functions directly, so they still show.
+    if (!(amt > 0) || shotActive() || overlay || G.flags.wasted || G.flags.busted) return;
     G.playerHealth = Math.max(0, (G.playerHealth ?? 100) - amt);
     G._lastDamageAt = G.elapsed || 0;
     if (G.playerHealth <= 0) G.hud.showWasted();
@@ -571,6 +575,13 @@ export function initHUD(G) {
 
   G.updaters.push((G2, dt) => {
     const t = performance.now() / 1000;
+    // S33: while a shot is staged, the bust meter must NOT accumulate —
+    // the police updater adds to it each frame (staged cops + a stationary
+    // staged car would fill it and fire showBusted over the scene), so it
+    // is pinned at 0 here every frame. The 'busted' shot mode calls
+    // showBusted() directly, so its display is unaffected. When no shot is
+    // staged this branch never runs and gameplay is unchanged.
+    if (shotActive()) G.bustMeter = 0;
     // Stats.
     setText(E.money, 'money', fmtMoney(G.money));
     setText(E.rep, 'rep', String(Math.round(G.rep || 0)));
