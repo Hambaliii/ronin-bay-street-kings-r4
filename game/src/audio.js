@@ -50,6 +50,9 @@ export function initAudio(G) {
       musicStarted: false, step: 0, nextStepAt: 0,
       // poll state
       prevCrash: 0,
+      // horn (S23): start/stop pair so drive.js can sustain while H is held
+      hornOsc1: null, hornOsc2: null, hornFilter: null, hornGain: null,
+      hornOn: false, hornTimer: null,
     };
 
     const AC = (typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext)) || null;
@@ -246,6 +249,59 @@ export function initAudio(G) {
       } catch (e) { /* never throw */ }
     }
 
+    // ---- S23 car horn -------------------------------------------------
+    // Classic dual-tone horn: two detuned oscillators (~370 Hz + ~440 Hz)
+    // through a lowpass + gain envelope (attack 0.01, sustain while held,
+    // release 0.08). hornStart/hornStop is the primary API (long-press);
+    // horn(dur) is a one-shot convenience that auto-stops after dur secs.
+    function hornStart() {
+      try {
+        if (S.hornOn) return;
+        const ctx = ensureCtx();
+        if (!ctx) return;
+        if (ctx.state === 'suspended') { ctx.resume().catch(() => {}); }
+        if (S.hornTimer) { clearTimeout(S.hornTimer); S.hornTimer = null; }
+        const t = ctx.currentTime;
+        const o1 = ctx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 370;
+        const o2 = ctx.createOscillator(); o2.type = 'sawtooth'; o2.frequency.value = 440; o2.detune.value = 4;
+        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 1200; f.Q.value = 1;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.16, t + 0.01);
+        o1.connect(f); o2.connect(f); f.connect(g); g.connect(S.master);
+        o1.start(t); o2.start(t);
+        S.hornOsc1 = o1; S.hornOsc2 = o2; S.hornFilter = f; S.hornGain = g;
+        S.hornOn = true;
+      } catch (e) { /* never throw */ }
+    }
+    function hornStop() {
+      try {
+        if (!S.hornOn) return;
+        S.hornOn = false;
+        if (S.hornTimer) { clearTimeout(S.hornTimer); S.hornTimer = null; }
+        const ctx = S.ctx;
+        const o1 = S.hornOsc1, o2 = S.hornOsc2, g = S.hornGain;
+        S.hornOsc1 = null; S.hornOsc2 = null; S.hornFilter = null; S.hornGain = null;
+        if (!ctx || !g) { try { o1 && o1.stop(); } catch (e) {} try { o2 && o2.stop(); } catch (e) {} return; }
+        const t = ctx.currentTime;
+        try {
+          g.gain.cancelScheduledValues(t);
+          g.gain.setValueAtTime(g.gain.value, t);
+          g.gain.linearRampToValueAtTime(0, t + 0.08);
+          if (o1) o1.stop(t + 0.1);
+          if (o2) o2.stop(t + 0.1);
+        } catch (e) { /* ignore */ }
+      } catch (e) { /* never throw */ }
+    }
+    function horn(dur) {
+      try {
+        const d = Number.isFinite(dur) && dur > 0 ? Math.min(dur, 1.2) : 0.35;
+        hornStart();
+        if (S.hornTimer) clearTimeout(S.hornTimer);
+        S.hornTimer = setTimeout(() => { S.hornTimer = null; hornStop(); }, d * 1000);
+      } catch (e) { /* never throw */ }
+    }
+
     function setEngine(on, rpm01) {
       try {
         S.engOn = !!on;
@@ -439,6 +495,9 @@ export function initAudio(G) {
       toggleMute,
       setEngine,
       resume,
+      horn,
+      hornStart,
+      hornStop,
     };
     G.audio = api;
 
@@ -451,7 +510,7 @@ export function initAudio(G) {
     // Last resort: a silent stub so callers never crash.
     try {
       if (G && !G.audio) {
-        G.audio = { muted: true, play() {}, toggleMute() {}, setEngine() {}, resume() {} };
+        G.audio = { muted: true, play() {}, toggleMute() {}, setEngine() {}, resume() {}, horn() {}, hornStart() {}, hornStop() {} };
       }
     } catch (e2) { /* give up silently */ }
   }

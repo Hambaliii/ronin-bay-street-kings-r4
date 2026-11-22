@@ -148,6 +148,9 @@ export function enterCar(G, v) {
 }
 export function exitCar(G) {
   const v = G.car; if (!v) return;
+  // S23: never leave the horn sounding after stepping out.
+  try { if (G._hornActive && G.audio && G.audio.hornStop) G.audio.hornStop(); } catch (e) {}
+  G._hornActive = false; G._hornT = 0; G._hornWasDown = false;
   if (v.driverFig) v.mesh.remove(v.driverFig);
   v.driver = 'parked'; v.speed = 0;
   G.car = null; G.flags.inCar = false; G.speedKmh = 0;
@@ -163,6 +166,35 @@ export function updateDriving(G, dt) {
   ensureLightHook(G);
   const v = G.car; if (!v) return;
   const spec = v.spec; const k = G.keys;
+  // ---- S23 car horn (H) --------------------------------------------------
+  // G.keys is filled by main.js' keydown/keyup listeners (e.code), and
+  // updateDriving only runs in play mode, unpaused, while in the car —
+  // so H on foot / in menus does nothing. Press edge: start the horn and
+  // startle peds ONCE. Short honk minimum 0.18 s even on a tap; holding H
+  // sustains up to 1.2 s max; release (after the minimum) or the cap stops
+  // it via hornStop's 0.08 s release envelope. 0.25 s cooldown between
+  // honks; holding past the cap does not retrigger (edge-only).
+  {
+    const hornDown = !!(k && k['KeyH']);
+    if (G._hornCooldown == null) G._hornCooldown = 0;
+    if (G._hornCooldown > 0) G._hornCooldown -= dt;
+    if (hornDown && !G._hornWasDown && !G._hornActive && G._hornCooldown <= 0) {
+      try {
+        if (G.audio && G.audio.hornStart) G.audio.hornStart();
+        else if (G.audio && G.audio.horn) G.audio.horn(0.35);
+      } catch (e) {}
+      G._hornActive = true; G._hornT = 0;
+      try { if (typeof G.pedsStartle === 'function') G.pedsStartle(v.x, v.z, 12); } catch (e) {}
+    }
+    if (G._hornActive) {
+      G._hornT = (G._hornT || 0) + dt;
+      if (G._hornT >= 1.2 || (!hornDown && G._hornT >= 0.18)) {
+        try { if (G.audio && G.audio.hornStop) G.audio.hornStop(); } catch (e) {}
+        G._hornActive = false; G._hornT = 0; G._hornCooldown = 0.25;
+      }
+    }
+    G._hornWasDown = hornDown;
+  }
   const topMs = spec.topSpeed / 3.6;
   const nos = (k['ShiftLeft'] || k['ShiftRight']) && v.speed > 2;
   let accelIn = 0;

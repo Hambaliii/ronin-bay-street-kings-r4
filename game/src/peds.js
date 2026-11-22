@@ -174,6 +174,7 @@ export function initPeds(G) {
       phase: rr(0, 10),
       vertical: true, line: 0, off: 17.2, dir: 1,
       panicT: 0, idle: false, sway: rr(0, 6),
+      startleT: 0, fleeT: 0, fleeDir: null,
     };
     if (i < 6) {
       // Idle groups: HQ apron + Neon Mile corner.
@@ -210,6 +211,36 @@ export function initPeds(G) {
     applyGlbVisual(ped);
   }
 
+  // ---- S23 horn reaction -------------------------------------------------
+  // Called by drive.js once per honk start with the car position. Every
+  // non-downed ped within r: (a) startles — startleT pauses walking for
+  // 0.25 s and adds a tiny hop via the fig/bob offset in the updater; and
+  // (b) if on/near a road (within 20 m of a road centre line: road half
+  // width is 15, sidewalks sit at 17.2), steps aside by reusing the exact
+  // flee machinery weapons.js uses (fleeDir away from the car + fleeT),
+  // with a short 0.8 s timer. Fleeing peds just get flee refreshed away
+  // from the car; downed peds are skipped, so flee/downed can't break.
+  G.pedsStartle = function pedsStartle(x, z, r) {
+    try {
+      if (!Array.isArray(G.peds) || !Number.isFinite(x) || !Number.isFinite(z)) return;
+      const rad = Number.isFinite(r) && r > 0 ? r : 12;
+      const nearRoadLine = (v, arr) => Array.isArray(arr) && arr.some((line) => Math.abs(v - line) <= 20);
+      for (const ped of G.peds) {
+        if (!ped || ped.downed) continue;
+        const dx = ped.x - x, dz = ped.z - z;
+        const d = Math.hypot(dx, dz);
+        if (d > rad) continue;
+        ped.startleT = 0.25;
+        const nearRoad = nearRoadLine(ped.x, G.roadX) || nearRoadLine(ped.z, G.roadZ);
+        if (nearRoad || (ped.fleeT > 0 && ped.fleeDir)) {
+          const len = d > 0.001 ? d : 1;
+          ped.fleeDir = d > 0.001 ? { x: dx / len, z: dz / len } : { x: 1, z: 0 };
+          ped.fleeT = Math.max(ped.fleeT || 0, 0.8);
+        }
+      }
+    } catch (e) { /* horn reaction is best-effort */ }
+  };
+
   G.updaters.push((G2, dt) => {
     const px = G.car ? G.car.x : G.player.x;
     const pz = G.car ? G.car.z : G.player.z;
@@ -217,6 +248,14 @@ export function initPeds(G) {
 
     for (const ped of G.peds) {
       const dPlayer = Math.hypot(ped.x - px, ped.z - pz);
+      // S23 startle: tick the timer (downed peds return below before any
+      // movement, so their startle simply expires harmlessly on recovery).
+      let startleHop = 0;
+      if (ped.startleT > 0) {
+        ped.startleT -= dt;
+        const f = Math.min(1, Math.max(0, 1 - ped.startleT / 0.25));
+        startleHop = Math.sin(f * Math.PI) * 0.14;
+      }
 
       // S10 weapons hooks: downed peds lie tipped until they recover, then
       // teleport to a fresh sidewalk spawn; fleeing peds run from danger.
@@ -253,7 +292,7 @@ export function initPeds(G) {
         } else {
           try { animateFigure(ped.visual, ped.phase, 1.6); } catch (e) {}
         }
-        ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
         ped.fig.rotation.y = ped.angle;
         continue;
       }
@@ -277,7 +316,7 @@ export function initPeds(G) {
         } else {
           try { animateFigure(ped.visual, ped.sway * 0.7, 0.12); } catch (e) {}
         }
-        ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
         ped.fig.rotation.y = ped.angle + Math.sin(ped.sway * 0.4) * 0.15;
         continue;
       }
@@ -293,6 +332,9 @@ export function initPeds(G) {
         const away = Math.sign((ped.x - px) * Math.cos(ped.angle) - (ped.z - pz) * Math.sin(ped.angle)) || 1;
         perpSidestep = away * 2.4;
       }
+      // S23 startle: brief speed pause while startleT is live (flee/idle
+      // branches above are unaffected — flee keeps moving them aside).
+      if (ped.startleT > 0) moveSpeed = 0;
 
       // Advance along the sidewalk line.
       const alongDelta = ped.dir * moveSpeed * dt;
@@ -359,7 +401,7 @@ export function initPeds(G) {
       } else {
         try { animateFigure(ped.visual, ped.phase, ped.panicT > 0 ? 1.6 : 0.55); } catch (e) {}
       }
-      ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+      ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
       ped.fig.rotation.y = ped.angle;
     }
   });
