@@ -13,6 +13,7 @@ import { initPolice } from './police.js';
 import { initMissions } from './missions.js';
 import { initHUD } from './hud.js';
 import { initAudio } from './audio.js';
+import { initWeapons } from './weapons.js';
 
 const params = new URLSearchParams(location.search);
 const seed = parseInt(params.get('seed') || '1', 10) || 1;
@@ -60,6 +61,7 @@ initPolice(G);
 initMissions(G);
 initHUD(G);
 initAudio(G);
+initWeapons(G);
 if (shot) {
   setupShot(G, shot);
   const menu = document.getElementById('menu'); if (menu) menu.style.display = 'none';

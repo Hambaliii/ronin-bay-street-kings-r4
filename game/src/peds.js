@@ -186,6 +186,41 @@ export function initPeds(G) {
     for (const ped of G.peds) {
       const dPlayer = Math.hypot(ped.x - px, ped.z - pz);
 
+      // S10 weapons hooks: downed peds lie tipped until they recover, then
+      // teleport to a fresh sidewalk spawn; fleeing peds run from danger.
+      if (ped.downed) {
+        ped.downedT = (ped.downedT || 0) - dt;
+        if (ped.downedT <= 0) {
+          ped.downed = false;
+          ped._tipped = false;
+          ped.hp = 100;
+          try { ped.fig.rotation.set(0, ped.angle, 0); } catch (e) {}
+          placePed(ped, sidewalkPoint(G, px, pz, 60, 180));
+          ped.idle = false;
+          ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+          ped.fig.rotation.y = ped.angle;
+        }
+        continue;
+      }
+      if (ped.fleeT > 0 && ped.fleeDir) {
+        ped.fleeT -= dt;
+        ped.x += ped.fleeDir.x * 3.4 * dt;
+        ped.z += ped.fleeDir.z * 3.4 * dt;
+        ped.angle = Math.atan2(ped.fleeDir.x, ped.fleeDir.z);
+        ped.phase += 3.4 * dt * 2.4;
+        if (ped.figIsGlb && ped.glbInner) {
+          try {
+            ped.glbInner.position.y = Math.abs(Math.sin(ped.phase)) * 0.05;
+            ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.03;
+          } catch (e) {}
+        } else {
+          try { animateFigure(ped.visual, ped.phase, 1.6); } catch (e) {}
+        }
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+        ped.fig.rotation.y = ped.angle;
+        continue;
+      }
+
       // Respawn far peds near the action.
       if (dPlayer > 350) {
         placePed(ped, sidewalkPoint(G, px, pz, 150, 250));

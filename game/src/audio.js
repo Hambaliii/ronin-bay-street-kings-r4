@@ -219,6 +219,27 @@ export function initAudio(G) {
             noiseHit(t, 0.28, 0.5, 320, 'lowpass');
             tone('sine', 95, 38, t, 0.3, 0.4);
             break;
+          case 'shot': // pistol: noise burst + square blip pitch drop, ~120ms
+            noiseHit(t, 0.12, 0.3, 900, 'lowpass');
+            tone('square', 220, 55, t, 0.12, 0.16);
+            break;
+          case 'smg': // shorter burst, ~70ms
+            noiseHit(t, 0.07, 0.22, 1100, 'lowpass');
+            tone('square', 260, 70, t, 0.07, 0.12);
+            break;
+          case 'dry': // empty click
+            tone('square', 1200, 900, t, 0.03, 0.06);
+            break;
+          case 'reload': // two clicks
+            tone('square', 700, 500, t, 0.04, 0.09);
+            tone('square', 950, 650, t + 0.13, 0.04, 0.09);
+            break;
+          case 'swing': // filtered noise whoosh
+            noiseHit(t, 0.18, 0.12, 700, 'bandpass');
+            break;
+          case 'thud': // low sine thump
+            tone('sine', 90, 40, t, 0.15, 0.3);
+            break;
           default:
             break;
         }

@@ -37,6 +37,7 @@ export function setupShot(G, name) {
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
     v.speed = 22;
     const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
+    G.flags.flashCar = v; G.flags.forceFlash = 'car';
     const p1 = spawnVehicle(G, 'police', 84, 490, Math.PI / 2, { driver: 'cop' });
     const p2 = spawnVehicle(G, 'police', 80, 501, Math.PI / 2, { driver: 'cop' });
     G.cops.push(p1, p2);
@@ -60,6 +61,24 @@ export function setupShot(G, name) {
       G.player.fig.rotation.y = Math.PI;
     }
     cam(G, -412.5, 1.1, 437.8, -412.5, 1.0, 440);
+  } else if (name === 'shootout') {
+    // Neon Mile (200,-200): player staged mid-street, pistol out, muzzle
+    // flash held on; a downed figure, a fleeing figure and a frozen cop
+    // car complete the scene. Dressing only — the police car is NOT
+    // pushed to G.cops, so nothing chases.
+    if (G.player) {
+      G.player.x = 200; G.player.z = -200; G.player.angle = Math.atan2(-12, -8);
+      G.player.fig.position.set(200, groundH(200, -200), -200);
+      G.player.fig.rotation.y = G.player.angle;
+      if (G.weapons && G.weapons.equip) G.weapons.equip('pistol');
+    }
+    G.flags.forceFlash = 'foot';
+    const downed = placeFig(G, 'ren', 202.5, -197, 0.6);
+    downed.rotation.x = -1.35; downed.position.y = groundH(202.5, -197) + 0.15;
+    const fleeing = placeFig(G, 'mika', 206, -193, Math.atan2(6, 7));
+    fleeing.rotation.x = 0.15;
+    spawnVehicle(G, 'police', 188, -208, Math.atan2(12, 8), { driver: 'cop' });
+    cam(G, 195.5, 1.7, -206.5, 200.5, 1.1, -199);
   } else if (name === 'heli') {
     spawnVehicle(G, 'taiyo', -200, 300, 0.4, { driver: 'parked' });
     spawnVehicle(G, 'police-suv', -192, 292, -2.4, { driver: 'cop' });
@@ -74,7 +93,7 @@ export function setupShot(G, name) {
     cam(G, 0, 30, -60, 0, 0, 0);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
