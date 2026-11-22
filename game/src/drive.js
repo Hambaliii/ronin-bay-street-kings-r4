@@ -130,6 +130,16 @@ export function initVespas(G) {
     } catch (e) { /* garnish only — never break the game */ }
   }).catch(() => {});
 }
+// ---- S24 radio state sync ----------------------------------------------
+// Mirrors G.audio.radio.current() onto G so hud.js can draw the chip
+// without touching the audio module, and remembers the station / OFF
+// choice across drives (G._radioIdx / G._radioOff).
+function syncRadio(G, cur) {
+  try {
+    if (cur) { G._radioIdx = cur.index; G._radioOff = false; G.radioName = cur.name; }
+    else { G._radioOff = true; G.radioName = null; }
+  } catch (e) {}
+}
 export function enterCar(G, v) {
   ensureLightHook(G);
   if (!G.player) return;
@@ -145,12 +155,27 @@ export function enterCar(G, v) {
   v.driver = 'player';
   G.car = v;
   G.flags.inCar = true;
+  // S24: engine on at idle, and the radio resumes the remembered station
+  // (station 0 auto-starts on the very first drive; a player-chosen OFF
+  // is respected). Radio plays only in the car.
+  try { if (G.audio && G.audio.setEngine) G.audio.setEngine(true, 0.07); } catch (e) {}
+  try {
+    if (G.audio && G.audio.radio && !G._radioOff) {
+      syncRadio(G, G.audio.radio.start(G._radioIdx || 0));
+    } else if (G._radioOff) { G.radioName = null; }
+  } catch (e) {}
 }
 export function exitCar(G) {
   const v = G.car; if (!v) return;
   // S23: never leave the horn sounding after stepping out.
   try { if (G._hornActive && G.audio && G.audio.hornStop) G.audio.hornStop(); } catch (e) {}
   G._hornActive = false; G._hornT = 0; G._hornWasDown = false;
+  // S24: silence engine + screech and stop the radio on exit (the chosen
+  // station / OFF state stays remembered on G for the next drive).
+  try { if (G.audio && G.audio.setEngine) G.audio.setEngine(false, 0); } catch (e) {}
+  try { if (G.audio && G.audio.screech) G.audio.screech(false, 0); } catch (e) {}
+  try { if (G.audio && G.audio.radio) G.audio.radio.stop(); } catch (e) {}
+  G.radioName = null; G._radioWasDown = false;
   if (v.driverFig) v.mesh.remove(v.driverFig);
   v.driver = 'parked'; v.speed = 0;
   G.car = null; G.flags.inCar = false; G.speedKmh = 0;
@@ -166,6 +191,7 @@ export function updateDriving(G, dt) {
   ensureLightHook(G);
   const v = G.car; if (!v) return;
   const spec = v.spec; const k = G.keys;
+  const healthBefore = (typeof v.health === 'number') ? v.health : null; // S24 crash-delta probe
   // ---- S23 car horn (H) --------------------------------------------------
   // G.keys is filled by main.js' keydown/keyup listeners (e.code), and
   // updateDriving only runs in play mode, unpaused, while in the car —
@@ -194,6 +220,19 @@ export function updateDriving(G, dt) {
       }
     }
     G._hornWasDown = hornDown;
+  }
+  // ---- S24 car radio (R) -------------------------------------------------
+  // Keydown edge only (no auto-repeat cycling). updateDriving only runs
+  // in the car, so R on foot does nothing. Cycles station 0 -> 1 -> 2 ->
+  // OFF; the choice is remembered for the next drive via syncRadio.
+  {
+    const radioDown = !!(k && k['KeyR']);
+    if (radioDown && !G._radioWasDown) {
+      try {
+        if (G.audio && G.audio.radio) syncRadio(G, G.audio.radio.next());
+      } catch (e) {}
+    }
+    G._radioWasDown = radioDown;
   }
   const topMs = spec.topSpeed / 3.6;
   const nos = (k['ShiftLeft'] || k['ShiftRight']) && v.speed > 2;
@@ -295,6 +334,32 @@ export function updateDriving(G, dt) {
     v.spotL.target.position.set(-1.2, 0, spec.len / 2 + 22); v.spotR.target.position.set(1.2, 0, spec.len / 2 + 22);
   }
   v.spotL.intensity = night ? 60 : 0; v.spotR.intensity = night ? 60 : 0;
+  // ---- S24 vehicle audio (per frame) -------------------------------------
+  // Engine: explicit setEngine with speed fraction + throttle load (the
+  // audio poll's 300 ms fallback only covers gaps in these calls).
+  // Screech: active while drifting or handbrake-sliding above ~29 km/h,
+  // intensity from slip (steer demand + handbrake at speed).
+  // Crash: a health drop this frame is an impact — thud scaled by the
+  // damage increment, 120 ms debounce (audio crashSound debounces too).
+  try {
+    if (G.audio) {
+      const speedFrac = Math.min(1, Math.abs(v.speed) / Math.max(1, topMs));
+      const load = accelIn > 0 ? 0.3 : (accelIn < 0 ? 0.12 : 0);
+      if (G.audio.setEngine) G.audio.setEngine(true, Math.max(0.07, Math.min(1, speedFrac * 0.85 + load)));
+      if (G.audio.screech) {
+        const sliding = (handbrake || !!G.flags.drifting) && Math.abs(v.speed) > 8;
+        const slip = Math.min(1, Math.abs(v.steerVis || 0) * 1.4 + (handbrake ? 0.45 : 0.15) + speedFrac * 0.25);
+        G.audio.screech(sliding, sliding ? slip : 0);
+      }
+      if (G.audio.crash && healthBefore != null && typeof v.health === 'number' && v.health < healthBefore) {
+        const now = G.elapsed || 0;
+        if (now - (G._lastCrashSfxT || -10) > 0.12) {
+          G._lastCrashSfxT = now;
+          G.audio.crash(Math.min(1, (healthBefore - v.health) / 15));
+        }
+      }
+    }
+  } catch (e) {}
   // camera handled in main.js via G.car
   G.camTarget = { x: v.x, z: v.z, angle: v.angle, speed: v.speed };
 }

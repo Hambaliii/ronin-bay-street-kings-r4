@@ -21,6 +21,19 @@ export function initHUD(G) {
     wasted: el('wasted'), busted: el('busted'),
     garagePanel: el('garagePanel'), mapWrap: el('mapWrap'),
   };
+  // --- S24 radio chip -------------------------------------------------------
+  // Created here (no static element in the page): a small pill top-center,
+  // below the banner zone and clear of the bottom-right minimap / speedo /
+  // weapon cluster. Shown only while in a car (or staged in one for a shot)
+  // with the radio on; text is set through the setText cache in the updater.
+  let radioChip = el('radioChip');
+  if (!radioChip && typeof document !== 'undefined' && document.body) {
+    radioChip = document.createElement('div');
+    radioChip.id = 'radioChip';
+    radioChip.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:none;display:none;padding:5px 14px;border-radius:999px;background:rgba(10,12,18,0.72);border:1px solid rgba(255,122,26,0.65);color:#ffd9ae;font:bold 13px Arial,sans-serif;letter-spacing:1px;white-space:nowrap;';
+    document.body.appendChild(radioChip);
+  }
+  E.radioChip = radioChip;
   const mm = E.minimap ? E.minimap.getContext('2d') : null;
   const bm = E.bigmap ? E.bigmap.getContext('2d') : null;
   const sp = E.speedo ? E.speedo.getContext('2d') : null;
@@ -462,6 +475,22 @@ export function initHUD(G) {
     // Wasted / busted overlays.
     if (E.wasted) E.wasted.style.display = G.flags.wasted ? 'block' : 'none';
     if (E.busted) E.busted.style.display = G.flags.busted ? 'block' : 'none';
+    // S24 radio chip: in car + radio on. A shot mode staging the player in
+    // a car (G.shotMode set, G.car present) counts as in-car for the chip
+    // even if flags.inCar was never raised by enterCar.
+    if (E.radioChip) {
+      let rName = G.radioName || null;
+      if (!rName) {
+        try {
+          const cur = G.audio && G.audio.radio && G.audio.radio.current ? G.audio.radio.current() : null;
+          if (cur) rName = cur.name;
+        } catch (e) { /* chip stays hidden */ }
+      }
+      const staged = !!(G.shotMode && G.car);
+      const showRadio = !!((G.flags.inCar || staged) && rName);
+      E.radioChip.style.display = showRadio ? 'block' : 'none';
+      if (showRadio) setText(E.radioChip, 'radio', `♪ ${rName}`);
+    }
 
     drawMinimap(t);
     drawSpeedo(dt);

@@ -42,8 +42,14 @@ export function initAudio(G) {
       // engine
       engOsc1: null, engOsc2: null, engFilter: null, engGain: null,
       engOn: false, engRpm: 0, engRpmCur: 0, engGainCur: 0, lastSetEngine: -10,
-      // skid
+      // skid / screech (S24): explicit screech() wins over the drifting poll
       skidSrc: null, skidFilter: null, skidGain: null, skidCur: 0,
+      screechOn: false, screechInt: 0, lastScreech: -10,
+      // crash (S24): last scaled-thud time (ctx clock) for the 120 ms debounce
+      lastCrashAt: -10,
+      // radio (S24)
+      radioBus: null, radioFilter: null,
+      radioOn: false, radioIdx: 0, radioStep: 0, radioNextAt: 0, radioTimer: null,
       // siren
       sirOsc: null, sirGain: null, sirCur: 0,
       // music
@@ -81,6 +87,16 @@ export function initAudio(G) {
         S.musicBus = ctx.createGain();
         S.musicBus.gain.value = 0.05;
         S.musicBus.connect(S.master);
+        // S24 radio bus: modest master level + a shared lowpass that the
+        // bass voices of every station are routed through.
+        S.radioBus = ctx.createGain();
+        S.radioBus.gain.value = 0.16;
+        S.radioBus.connect(S.master);
+        S.radioFilter = ctx.createBiquadFilter();
+        S.radioFilter.type = 'lowpass';
+        S.radioFilter.frequency.value = 950;
+        S.radioFilter.Q.value = 1;
+        S.radioFilter.connect(S.radioBus);
         S.noiseBuf = makeNoiseBuffer(ctx);
         buildEngine(ctx);
         buildSkid(ctx);
@@ -123,8 +139,8 @@ export function initAudio(G) {
         S.skidSrc.loop = true;
         S.skidFilter = ctx.createBiquadFilter();
         S.skidFilter.type = 'bandpass';
-        S.skidFilter.frequency.value = 800;
-        S.skidFilter.Q.value = 1.2;
+        S.skidFilter.frequency.value = 900; // S24 screech centre
+        S.skidFilter.Q.value = 2;
         S.skidGain = ctx.createGain();
         S.skidGain.gain.value = 0;
         S.skidSrc.connect(S.skidFilter);
@@ -187,6 +203,64 @@ export function initAudio(G) {
       } catch (e) { /* ignore */ }
     }
 
+    // Noise burst routed to an explicit destination (radio bus voices).
+    function noiseTo(when, dur, vol, filterFreq, type, dest) {
+      const ctx = S.ctx;
+      if (!ctx || !S.noiseBuf) return;
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = S.noiseBuf;
+        src.playbackRate.value = 0.7 + ((when * 7) % 1) * 0.6; // deterministic variety
+        const f = ctx.createBiquadFilter();
+        f.type = type || 'lowpass';
+        f.frequency.value = filterFreq;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(vol, when);
+        g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+        src.connect(f);
+        f.connect(g);
+        g.connect(dest || S.master);
+        src.start(when);
+        src.stop(when + dur + 0.05);
+      } catch (e) { /* ignore */ }
+    }
+
+    // ---- S24 scaled crash thud -----------------------------------------
+    // Sine pitch drop 90 -> 35 Hz + a lowpassed noise burst, both scaled
+    // by intensity01. Shared 120 ms debounce (ctx clock) so the crashTimer
+    // poll in update() and an explicit drive.js crash() call for the same
+    // impact can never double up.
+    function crashSound(intensity01) {
+      try {
+        const ctx = ensureCtx();
+        if (!ctx) return;
+        const inten = Math.max(0.15, clamp01(intensity01));
+        const t = ctx.currentTime;
+        if (t - S.lastCrashAt < 0.12) return;
+        S.lastCrashAt = t;
+        const at = t + 0.005;
+        noiseHit(at, 0.26, 0.5 * inten, 300 + 260 * inten, 'lowpass');
+        tone('sine', 90, 35, at, 0.32, 0.48 * inten);
+      } catch (e) { /* never throw */ }
+    }
+    function crash(intensity01) { crashSound(intensity01); }
+
+    // ---- S24 tire screech ------------------------------------------------
+    // Explicit control for the bandpassed-noise skid voice (900 Hz, Q 2).
+    // drive.js calls this per frame while drifting / handbrake-sliding;
+    // update() falls back to flags.drifting when calls go silent (>300 ms).
+    function screech(active, intensity01) {
+      try {
+        S.screechOn = !!active;
+        S.screechInt = clamp01(intensity01);
+        S.lastScreech = nowSec();
+        if (active) {
+          const ctx = ensureCtx();
+          if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+        }
+      } catch (e) { /* never throw */ }
+    }
+
     function play(name) {
       try {
         const ctx = ensureCtx();
@@ -219,8 +293,7 @@ export function initAudio(G) {
             tone('sine', 660, 990, t, 0.09, 0.1);
             break;
           case 'crash':
-            noiseHit(t, 0.28, 0.5, 320, 'lowpass');
-            tone('sine', 95, 38, t, 0.3, 0.4);
+            crashSound(0.75);
             break;
           case 'shot': // pistol: noise burst + square blip pitch drop, ~120ms
             noiseHit(t, 0.12, 0.3, 900, 'lowpass');
@@ -399,9 +472,156 @@ export function initAudio(G) {
       }
     }
 
+    // ------------------------------------------------------------- radio (S24)
+    // Car radio: a lightweight 16th-note step sequencer on the WebAudio
+    // clock. A 100 ms interval schedules 200 ms ahead (lookahead), the
+    // same discipline as pumpMusic's per-frame pump. Three stations, each
+    // a procedural loop from compact pattern data (MIDI note tables) plus
+    // shared voice helpers (kick / hat / pad / bass below). State is kept
+    // even when no AudioContext exists (headless capture) so current()
+    // still reports the station for the HUD chip.
+    const RADIO_STATIONS = [
+      { name: 'WAVEFORM FM', bpm: 100, kind: 'wave' },
+      { name: 'LOFI BAY', bpm: 76, kind: 'lofi' },
+      { name: 'EUROBEAT KAI', bpm: 150, kind: 'euro' },
+    ];
+    // Lo-fi progression: Fmaj7 - Dm7 - Cmaj7 - Em7 (chord tones + roots).
+    const LOFI_CHORDS = [
+      [53, 57, 60, 64], [50, 53, 57, 60], [48, 52, 55, 59], [52, 55, 59, 62],
+    ];
+    const LOFI_ROOTS = [29, 26, 24, 28];
+    // Eurobeat: Am - Am - F - G roots, and a catchy 2-bar saw lead phrase
+    // (MIDI, 0 = rest), replayed over bars 0-1 then 2-3.
+    const EURO_ROOTS = [33, 33, 29, 31];
+    const EURO_LEAD = [
+      69, 0, 72, 0, 76, 0, 72, 0, 74, 0, 76, 0, 79, 0, 76, 0,
+      69, 0, 72, 0, 76, 0, 81, 0, 79, 76, 74, 0, 72, 0, 0, 0,
+    ];
+
+    function radioKick(when, vol) { tone('sine', 130, 45, when, 0.14, vol, S.radioBus); }
+    function radioHat(when, vol, dur) { noiseTo(when, dur || 0.04, vol, 6500, 'highpass', S.radioBus); }
+    function radioBass(when, midi, dur, vol) { tone('sawtooth', mf(midi), mf(midi), when, dur, vol, S.radioFilter); }
+    // Pad chord: detuned triangle pair per note, slow attack, whole length.
+    function radioPad(when, midis, dur, vol, detuneCents) {
+      const ctx = S.ctx;
+      if (!ctx) return;
+      for (const m of midis) {
+        for (const det of [-1, 1]) {
+          try {
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = 'triangle';
+            o.frequency.value = mf(m);
+            o.detune.value = det * (detuneCents || 6);
+            g.gain.setValueAtTime(0, when);
+            g.gain.linearRampToValueAtTime(vol, when + Math.min(0.4, dur * 0.3));
+            g.gain.setValueAtTime(vol, when + Math.max(0, dur - 0.35));
+            g.gain.linearRampToValueAtTime(0, when + dur);
+            o.connect(g);
+            g.connect(S.radioBus);
+            o.start(when);
+            o.stop(when + dur + 0.05);
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
+    function scheduleRadioStep(step, when) {
+      const st = RADIO_STATIONS[S.radioIdx];
+      if (!st || !S.ctx) return;
+      const stepDur = 60 / st.bpm / 4; // 16ths
+      const barDur = stepDur * 16;
+      const bar = Math.floor(step / 16);
+      const s = step % 16;
+      if (st.kind === 'wave') {
+        const b4 = bar % 4;
+        const root = ROOTS[b4];
+        if (s % 2 === 0) radioBass(when, s === 8 ? root + 12 : root, 0.22, 0.5); // 8th pulse
+        if (s === 0) radioPad(when, CHORDS[b4], barDur, 0.055, 7); // whole-note pads
+        const arpNotes = CHORDS[b4];
+        const am = arpNotes[s % 3] + 12 + (s % 8 === 6 ? 7 : 0); // 16th sparkle
+        tone('square', mf(am), mf(am), when, 0.09, 0.07, S.radioBus);
+        if (s % 4 === 2) radioHat(when, 0.1);
+      } else if (st.kind === 'lofi') {
+        const b4 = bar % 4;
+        if (s === 0) {
+          // jazzy 7ths, slight detune LFO (per-bar phase, deterministic)
+          radioPad(when, LOFI_CHORDS[b4], barDur, 0.085, 5 + Math.sin(bar * 1.7) * 4);
+          tone('triangle', mf(LOFI_ROOTS[b4] + 12), mf(LOFI_ROOTS[b4] + 12), when, barDur * 0.9, 0.22, S.radioBus);
+        }
+        if (s === 0 || s === 10) radioKick(when, 0.32); // soft, laid-back kick
+        if (s === 4 || s === 12) noiseTo(when, 0.09, 0.09, 1800, 'bandpass', S.radioBus); // brush snare
+        if (s % 4 === 2) radioHat(when, 0.045);
+        if (s % 2 === 0) noiseTo(when, 0.02, 0.014, 1600, 'lowpass', S.radioBus); // vinyl crackle
+      } else { // euro
+        const b4 = bar % 4;
+        const root = EURO_ROOTS[b4];
+        if (s % 4 === 0) radioKick(when, 0.5); // four on the floor
+        if (s % 4 === 2) radioBass(when, root + 12, 0.16, 0.42); // offbeat bass
+        if (s % 4 === 2) radioHat(when, 0.13, 0.07); // open offbeat hat
+        else if (s % 2 === 0) radioHat(when, 0.04);
+        if (s === 0) radioPad(when, CHORDS[b4 === 1 ? 0 : b4], stepDur * 4, 0.04, 5); // stab
+        const lead = EURO_LEAD[(bar % 2) * 16 + s];
+        if (lead) tone('sawtooth', mf(lead), mf(lead), when, 0.17, 0.16, S.radioBus);
+      }
+    }
+
+    function pumpRadio() {
+      const ctx = S.ctx;
+      if (!ctx || !S.radioOn) return;
+      if (ctx.state !== 'running') return;
+      const st = RADIO_STATIONS[S.radioIdx];
+      const stepDur = 60 / st.bpm / 4;
+      if (S.radioNextAt < ctx.currentTime) S.radioNextAt = ctx.currentTime + 0.05;
+      while (S.radioNextAt < ctx.currentTime + 0.2) {
+        scheduleRadioStep(S.radioStep, S.radioNextAt);
+        S.radioStep++;
+        S.radioNextAt += stepDur;
+      }
+    }
+
+    function radioStart(idx) {
+      try {
+        const n = RADIO_STATIONS.length;
+        S.radioIdx = ((Math.floor(Number(idx) || 0) % n) + n) % n;
+        S.radioOn = true;
+        S.radioStep = 0;
+        // Creating/resuming the context here keeps start() inside the
+        // caller's user-gesture chain (R key handler / enterCar click).
+        const ctx = ensureCtx();
+        if (ctx) {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          S.radioNextAt = ctx.currentTime + 0.06;
+          if (!S.radioTimer) S.radioTimer = setInterval(pumpRadio, 100);
+          pumpRadio();
+        }
+      } catch (e) { /* never throw */ }
+      return radioCurrent();
+    }
+    function radioStop() {
+      try {
+        S.radioOn = false;
+        if (S.radioTimer) { clearInterval(S.radioTimer); S.radioTimer = null; }
+        S.musicStarted = false; // ambient loop restarts cleanly, no catch-up burst
+      } catch (e) { /* never throw */ }
+    }
+    function radioNext() {
+      try {
+        if (!S.radioOn) return radioStart(0);
+        if (S.radioIdx < RADIO_STATIONS.length - 1) return radioStart(S.radioIdx + 1);
+        radioStop(); // after the last station: OFF
+      } catch (e) { /* never throw */ }
+      return radioCurrent();
+    }
+    function radioCurrent() {
+      return S.radioOn ? { name: RADIO_STATIONS[S.radioIdx].name, index: S.radioIdx } : null;
+    }
+    const radio = { start: radioStart, stop: radioStop, next: radioNext, current: radioCurrent };
+
     function pumpMusic() {
       const ctx = S.ctx;
       if (!ctx || ctx.state !== 'running') return;
+      if (S.radioOn) return; // S24: the car radio replaces the ambient loop
       if (!S.musicStarted) {
         S.musicStarted = true;
         S.step = 0;
@@ -450,8 +670,14 @@ export function initAudio(G) {
           S.engGain.gain.value = S.engGainCur;
         }
 
-        // skid follows drifting
-        const skidTarget = flags.drifting ? 0.06 : 0;
+        // skid / screech: an explicit screech() call from drive.js (fresh
+        // within 300 ms) wins, scaled by slip intensity; otherwise fall
+        // back to the drifting flag like before.
+        let skidTarget = flags.drifting ? 0.06 : 0;
+        if (t - S.lastScreech < 0.3) {
+          skidTarget = S.screechOn ? 0.03 + 0.11 * S.screechInt : 0;
+          if (S.skidFilter) S.skidFilter.frequency.value = 750 + 350 * S.screechInt;
+        }
         S.skidCur += (skidTarget - S.skidCur) * Math.min(1, dt * 12);
         if (S.skidGain) S.skidGain.gain.value = S.skidCur;
 
@@ -498,6 +724,11 @@ export function initAudio(G) {
       horn,
       hornStart,
       hornStop,
+      // S24 vehicle + radio surface
+      screech,
+      setScreech: screech,
+      crash,
+      radio,
     };
     G.audio = api;
 
@@ -510,7 +741,7 @@ export function initAudio(G) {
     // Last resort: a silent stub so callers never crash.
     try {
       if (G && !G.audio) {
-        G.audio = { muted: true, play() {}, toggleMute() {}, setEngine() {}, resume() {}, horn() {}, hornStart() {}, hornStop() {} };
+        G.audio = { muted: true, play() {}, toggleMute() {}, setEngine() {}, resume() {}, horn() {}, hornStart() {}, hornStop() {}, screech() {}, setScreech() {}, crash() {}, radio: { start() {}, stop() {}, next() {}, current() { return null; } } };
       }
     } catch (e2) { /* give up silently */ }
   }
