@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
 import { makeFigure, poseSeated } from './player.js';
-import { spawnVehicle, applyNpcPoliceGlb } from './cars.js';
+import { spawnVehicle, applyNpcPoliceGlb, primeDamageSmoke } from './cars.js';
 
 function placeFig(G, castId, x, z, angle) {
   const fig = makeFigure(CAST[castId]);
@@ -148,6 +148,21 @@ export function setupShot(G, name) {
     G.timeOfDay = 10.5;
     spawnVehicle(G, 'taiyo', 150, -128, Math.PI, { driver: 'parked' });
     cam(G, 161, 1.7, -133, 149, 1.5, -156);
+  } else if (name === 'smoke') {
+    // S25 verify: taiyo at HQ apron with health forced to 30 — steady gray
+    // damage band (15..40), plume pre-primed so it reads in the first frame.
+    G.timeOfDay = 10.5;
+    const v = spawnVehicle(G, 'taiyo', -412.5, 446, 0.6, { driver: 'parked' });
+    v.health = 30;
+    primeDamageSmoke(G, v, 12);
+    cam(G, -406, 1.8, 437, -412.5, 1.0, 446);
+  } else if (name === 'night') {
+    // S25 verify: taiyo staged in-car on the avenue at night (tod 21.5,
+    // D = 1) so headlight cones + glow rake across the asphalt.
+    G.timeOfDay = 21.5;
+    const v = spawnVehicle(G, 'taiyo', 165, -120, 0, { driver: 'parked' });
+    const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
+    cam(G, 172, 2.0, -104, 164, 0.8, -122);
   } else if (name === 'mapzoom') {
     if (G.player) { G.player.x = 300; G.player.z = -300; G.player.fig.position.set(300, groundH(300, -300), -300); }
     G.flags.mapZoom = true;

@@ -234,12 +234,16 @@ export function updateDriving(G, dt) {
     }
     G._radioWasDown = radioDown;
   }
-  const topMs = spec.topSpeed / 3.6;
+  // S25 perf drop: health < 35 scales effective top speed + accel by 0.72.
+  // The spec itself is never mutated — the multiplier is per-frame only,
+  // and the speed clamp below reads the scaled topMs too.
+  const perfScale = (typeof v.health === 'number' && v.health < 35) ? 0.72 : 1;
+  const topMs = (spec.topSpeed / 3.6) * perfScale;
   const nos = (k['ShiftLeft'] || k['ShiftRight']) && v.speed > 2;
   let accelIn = 0;
   if (k['KeyW'] || k['ArrowUp']) accelIn = 1;
   if (k['KeyS'] || k['ArrowDown']) accelIn = v.speed > 0.5 ? -1.6 : -0.55;
-  const accelRate = 6 + spec.accel * 16;
+  const accelRate = (6 + spec.accel * 16) * perfScale;
   if (accelIn > 0) v.speed += accelRate * (nos ? 1.8 : 1) * (1 - Math.max(0, v.speed) / (topMs * (nos ? 1.15 : 1))) * dt;
   else if (accelIn < 0) v.speed += accelIn * 10 * dt;
   else v.speed -= v.speed * 0.35 * dt; // drag

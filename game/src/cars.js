@@ -603,6 +603,7 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
   mesh.position.set(x, groundH(x, z) + 0.02, z); mesh.rotation.y = angle || 0;
   G.scene.add(mesh);
   const v = { spec, specId, mesh, angle: angle || 0, speed: 0, health: 100, driver: opts.driver || 'parked', color: opts.color != null ? opts.color : spec.color, wheels: mesh.userData.wheels, steerVis: 0, x, z, target: null, lane: opts.lane || 0, smokeT: 0 };
+  ensureFxHook(G);
   if (isHeroCar && !heroCarWrapper && !heroCarSettled) {
     v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
     heroCarPending.push({ v, spec, glow: opts.glow });
@@ -667,7 +668,8 @@ export function updateTraffic(G, dt) {
     let blocked = false;
     for (const o of G.traffic) { if (o === v) continue; const dx = o.x - v.x, dz = o.z - v.z; const fwdX = Math.sin(v.angle), fwdZ = Math.cos(v.angle); const ahead = dx * fwdX + dz * fwdZ; const side = Math.abs(dx * fwdZ - dz * fwdX); if (ahead > 0 && ahead < 9 && side < 2.2) { blocked = true; break; } }
     if (G.car && G.car !== v) { const dx = G.car.x - v.x, dz = G.car.z - v.z; const ahead = dx * Math.sin(v.angle) + dz * Math.cos(v.angle); const side = Math.abs(dx * Math.cos(v.angle) - dz * Math.sin(v.angle)); if (ahead > 0 && ahead < 9 && side < 2.4) blocked = true; }
-    const targetSpeed = blocked ? 0 : v.cruise;
+    // S25 perf drop: a wrecked NPC (health < 35) cruises at 72% like the player.
+    const targetSpeed = blocked ? 0 : v.cruise * (v.health < 35 ? 0.72 : 1);
     v.speed += Math.max(-8 * dt, Math.min(3 * dt, targetSpeed - v.speed));
     // advance along current axis; at intersection maybe turn
     v.x += Math.sin(v.angle) * v.speed * dt; v.z += Math.cos(v.angle) * v.speed * dt;
@@ -696,12 +698,140 @@ export function updateTraffic(G, dt) {
     for (const kkey of ['fl', 'fr', 'rl', 'rr']) { const w = v.wheels[kkey]; if (w) { w.userData.spin = (w.userData.spin || 0) + (v.speed * dt) / 0.33; w.rotation.set(w.userData.spin, 0, 0); } }
     if (night && !v.nightGlow) { const gl = glowSprite(0xffe9a0, 2.2); gl.position.set(0, 0.7, v.spec.len / 2 + 0.4); v.mesh.add(gl); v.nightGlow = gl; }
     if (!night && v.nightGlow) { v.mesh.remove(v.nightGlow); v.nightGlow = null; }
-    if (v.health < 60) { v.smokeT -= dt; if (v.smokeT <= 0) { v.smokeT = 0.15; spawnSmokeAt(G, v.mesh.position, 1, v.health < 25); } }
+    // S25: hood damage smoke is emitted centrally by updateDamageFx (below).
   }
 }
 export function damageVehicle(G, v, amt) {
   v.health = Math.max(0, v.health - amt);
-  spawnSmokeAt(G, v.mesh.position, 3, v.health < 25);
+  ensureFxHook(G);
+  // S25: impact burst comes off the hood, not the car centre.
+  const hp = hoodWorldPos(v, new THREE.Vector3());
+  spawnSmokeAt(G, hp, 3, v.health < 25);
+  for (let i = 0; i < 3; i++) spawnDamagePuff(G, v, false);
+}
+// --- S25 damage smoke + night headlights ----------------------------------
+// Darkness factor D (0 day .. 1 night): same signal world.js updateWorld
+// uses for the S7a sign glows — dayAmt = clamp(sin((t-6)/12*PI),0,1),
+// night = 1 - dayAmt. Recomputed here from G.timeOfDay so cars.js needs
+// no new import.
+export function darknessFactor(G) {
+  const t = (G && typeof G.timeOfDay === 'number') ? G.timeOfDay : 10.5;
+  const dayAmt = Math.max(0, Math.min(1, Math.sin(((t - 6) / 12) * Math.PI)));
+  return 1 - dayAmt;
+}
+function hoodWorldPos(v, out) {
+  const spec = v.spec || {};
+  const hoodH = spec.hood != null ? 0.62 + spec.hood * 0.28 : 0.85;
+  out.set(0, hoodH, (spec.len || 4.4) * 0.32);
+  if (v.mesh && v.mesh.localToWorld) { v.mesh.updateMatrixWorld(true); v.mesh.localToWorld(out); } else out.add(v.mesh.position);
+  return out;
+}
+// Damage bands: rate (puffs/s), tint, start size, grown size, opacity.
+function damageBand(health) {
+  if (health < 15) return { rate: 12, color: 0x232528, s0: 0.9, s1: 3.2, op: 0.65 };
+  if (health < 40) return { rate: 6, color: 0x777c83, s0: 0.7, s1: 2.4, op: 0.45 };
+  return { rate: 2, color: 0xb8bcc0, s0: 0.5, s1: 1.6, op: 0.28 }; // 40..70 light wisps
+}
+const _hoodV = new THREE.Vector3();
+export function spawnDamagePuff(G, v, prewarm) {
+  ensureSmoke(G);
+  if (!smokePool) return;
+  const band = damageBand(v.health);
+  for (const p of smokePool) {
+    if (p.life > 0) continue;
+    hoodWorldPos(v, _hoodV);
+    const age = prewarm ? rr(0, 1.1) : 0;
+    p.kind = 'dmg'; p.fire = false;
+    p.max = 1.4; p.life = 1.4 - age;
+    p.s0 = band.s0; p.s1 = band.s1; p.op = band.op;
+    p.s.material.color.set(band.color);
+    p.s.position.set(_hoodV.x + rr(-0.15, 0.15) + 0.3 * age, _hoodV.y + 1.2 * age, _hoodV.z + rr(-0.15, 0.15));
+    p.vx = 0.3 + rr(-0.08, 0.08); p.vy = 1.2 + rr(-0.2, 0.2); p.vz = rr(-0.08, 0.08);
+    const sc = p.s0 + (p.s1 - p.s0) * (age / 1.4); p.s.scale.set(sc, sc, 1);
+    p.s.visible = true;
+    return;
+  }
+}
+// Pre-form a plume over a damaged car (shot staging).
+export function primeDamageSmoke(G, v, n) {
+  for (let i = 0; i < (n || 10); i++) spawnDamagePuff(G, v, true);
+}
+// --- headlights -------------------------------------------------------------
+// Glow sprites are THREE.Sprite children: every GLB swap helper in this
+// file keeps isSprite children visible, so glows survive swaps untouched.
+// Cones are Meshes (a helper WOULD hide them if it ran after they were
+// added), so updateDamageFx re-asserts cone visibility every frame — a
+// swap can hide a cone for at most one frame. Hero/GTR swaps only remove
+// the _procChildren snapshot taken at spawn, so these later children are
+// never removed there either.
+const _coneGeo = new THREE.ConeGeometry(1.15, 7, 20, 1, true);
+_coneGeo.translate(0, -3.5, 0); // apex at origin, base 7 m out along -Y
+const _coneMat = new THREE.MeshBasicMaterial({ color: 0xffe2a8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+function ensureHeadlights(v) {
+  if (v._hl || !v.mesh || !v.spec) return;
+  const spec = v.spec, W = spec.wid, L = spec.len;
+  const mk = (color, scale, x, y, z) => { const s = glowSprite(color, scale); s.position.set(x, y, z); s.userData.s25Light = true; v.mesh.add(s); return s; };
+  const hl = {};
+  hl.glowL = mk(0xffe9a0, 1.25, -W * 0.32, 0.62, L / 2 + 0.12);
+  hl.glowR = mk(0xffe9a0, 1.25, W * 0.32, 0.62, L / 2 + 0.12);
+  hl.tailL = mk(0xff2a22, 0.85, -W * 0.32, 0.72, -L / 2 - 0.1);
+  hl.tailR = mk(0xff2a22, 0.85, W * 0.32, 0.72, -L / 2 - 0.1);
+  hl.cones = [];
+  for (const s of [-1, 1]) {
+    const cone = new THREE.Mesh(_coneGeo, _coneMat.clone());
+    cone.position.set(s * W * 0.32, 0.58, L / 2);
+    cone.rotation.x = -Math.PI / 2 + 0.07; // -Y (base) -> +Z forward, slight down-tilt
+    cone.visible = false; cone.userData.s25Light = true;
+    v.mesh.add(cone); hl.cones.push(cone);
+  }
+  v._hl = hl;
+}
+function ensurePlayerSpot(v) {
+  if (v._hlSpot || !v.mesh) return;
+  const L = v.spec.len;
+  const spot = new THREE.SpotLight(0xffe6b8, 0, 40, 0.5, 0.6);
+  spot.position.set(0, 0.7, L / 2);
+  spot.target.position.set(0, 0, L / 2 + 18);
+  spot.userData.s25Light = true;
+  v.mesh.add(spot); v.mesh.add(spot.target);
+  v._hlSpot = spot;
+}
+let _fxHooked = false;
+function ensureFxHook(G) {
+  if (_fxHooked || !G || !Array.isArray(G.updaters)) return;
+  _fxHooked = true;
+  G.updaters.push((G2, dt) => { try { updateDamageFx(G2, dt || 0.016); } catch (e) {} });
+}
+export function updateDamageFx(G, dt) {
+  if (!G || !Array.isArray(G.vehicles)) return;
+  const D = darknessFactor(G);
+  const px = G.car ? G.car.x : (G.player ? G.player.x : 0);
+  const pz = G.car ? G.car.z : (G.player ? G.player.z : 0);
+  // smoke emitters: nearest 10 damaged vehicles to the player
+  const damaged = [];
+  for (const v of G.vehicles) if (v && v.health < 70 && v.mesh) damaged.push(v);
+  damaged.sort((a, b) => ((a.x - px) ** 2 + (a.z - pz) ** 2) - ((b.x - px) ** 2 + (b.z - pz) ** 2));
+  const emitters = new Set(damaged.slice(0, 10));
+  const showLights = D > 0.25;
+  for (const v of G.vehicles) {
+    if (!v || !v.mesh) continue;
+    ensureHeadlights(v);
+    const hl = v._hl; if (!hl) continue;
+    const braking = v._prevSpeed != null && dt > 0 && (v._prevSpeed - (v.speed || 0)) / dt > 2;
+    v._prevSpeed = v.speed || 0;
+    for (const g of [hl.glowL, hl.glowR]) { g.visible = showLights; g.material.opacity = 0.85 * D; }
+    for (const g of [hl.tailL, hl.tailR]) { g.visible = showLights; g.material.opacity = (braking ? 0.95 : 0.4) * D; }
+    for (const c of hl.cones) { c.visible = showLights; c.material.opacity = 0.10 * D; }
+    if (emitters.has(v)) {
+      v._smokeAcc = (v._smokeAcc || 0) + damageBand(v.health).rate * dt;
+      while (v._smokeAcc >= 1) { v._smokeAcc -= 1; spawnDamagePuff(G, v, false); }
+    }
+  }
+  // player-only real spotlight (55 ~ drive.js' legacy pair at 60, sun 1.52)
+  if (G.car && G.car.mesh) {
+    ensurePlayerSpot(G.car);
+    if (G.car._hlSpot) G.car._hlSpot.intensity = 55 * D;
+  }
 }
 // --- smoke pool ---
 let smokePool = null;
@@ -713,10 +843,10 @@ function ensureSmoke(G) {
   gr.addColorStop(0, 'rgba(255,255,255,.85)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
   const tex = new THREE.CanvasTexture(c);
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false }));
     s.visible = false; G.scene.add(s);
-    smokePool.push({ s, life: 0, max: 1, fire: false, vx: 0, vy: 0, vz: 0 });
+    smokePool.push({ s, life: 0, max: 1, fire: false, kind: 'legacy', vx: 0, vy: 0, vz: 0, s0: 0.7, s1: 2.9, op: 0.5 });
   }
 }
 export function spawnSmokeAt(G, pos, n, fire) {
@@ -725,7 +855,7 @@ export function spawnSmokeAt(G, pos, n, fire) {
   for (const p of smokePool) {
     if (spawned >= n) break;
     if (p.life > 0) continue;
-    p.life = p.max = rr(0.6, 1.3); p.fire = !!fire;
+    p.life = p.max = rr(0.6, 1.3); p.fire = !!fire; p.kind = 'legacy';
     p.s.position.set(pos.x + rr(-0.4, 0.4), pos.y + rr(0.5, 1), pos.z + rr(-0.4, 0.4));
     p.s.material.color.set(fire ? 0xff7a2a : 0x8a8f96);
     p.s.scale.set(0.7, 0.7, 1); p.s.visible = true;
@@ -741,6 +871,11 @@ export function updateSmoke(G, dt) {
     if (p.life <= 0) { p.s.visible = false; p.s.material.opacity = 0; continue; }
     const t = 1 - p.life / p.max;
     p.s.position.x += p.vx * dt; p.s.position.y += p.vy * dt; p.s.position.z += p.vz * dt;
+    if (p.kind === 'dmg') {
+      const sc = p.s0 + (p.s1 - p.s0) * t; p.s.scale.set(sc, sc, 1);
+      p.s.material.opacity = p.op * (1 - t);
+      continue;
+    }
     const sc = 0.7 + t * (p.fire ? 1.2 : 2.2); p.s.scale.set(sc, sc, 1);
     p.s.material.opacity = (p.fire ? 0.75 : 0.5) * (1 - t) * (p.fire ? (0.7 + rnd() * 0.5) : 1);
     if (p.fire) p.s.material.color.setHSL(0.06 + rnd() * 0.03, 1, 0.5);
