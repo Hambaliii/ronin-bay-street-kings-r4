@@ -162,14 +162,19 @@ export async function loadGLBModel(url) {
 
 export const HERO_ASSETS = {
   helicopter: { url: 'assets/helicopter.glb', scale: 11 },
+  heroCar: { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } },
 };
 
 const _heroCache = new Map();
 
-// Loads a registered hero asset and wraps it in a Group scaled by the
-// registry scale (GLB local units -> game units; wrapper origin = model
-// origin). Resolves null on any failure. Cached per name: repeat calls
-// share one fetch and one wrapper instance.
+// Loads a registered hero asset and wraps it in a Group scaled into game
+// units (wrapper origin = model origin). Two scaling modes:
+//  - entry.scale: uniform scalar (helicopter).
+//  - entry.targetSize {x,y,z}: per-axis scale so the model's local bbox
+//    (measured on the UNWRAPPED model) lands exactly on the target size in
+//    metres — needed for stylized models whose proportions are off.
+// Resolves null on any failure. Cached per name: repeat calls share one
+// fetch and one wrapper instance.
 export async function loadHeroAsset(name) {
   const entry = HERO_ASSETS[name];
   if (!entry) return null;
@@ -179,7 +184,16 @@ export async function loadHeroAsset(name) {
       if (!model) return null;
       const wrapper = new THREE.Group();
       wrapper.name = 'hero:' + name;
-      wrapper.scale.setScalar(entry.scale || 1);
+      if (entry.targetSize) {
+        const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+        wrapper.scale.set(
+          size.x > 0 ? entry.targetSize.x / size.x : 1,
+          size.y > 0 ? entry.targetSize.y / size.y : 1,
+          size.z > 0 ? entry.targetSize.z / size.z : 1
+        );
+      } else {
+        wrapper.scale.setScalar(entry.scale || 1);
+      }
       wrapper.add(model);
       return wrapper;
     })().catch(() => null);

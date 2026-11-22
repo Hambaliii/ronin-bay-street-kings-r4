@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { CARS } from './config.js';
 import { rnd, rr, ri, pick } from './random.js';
 import { groundH, glowSprite } from './world.js';
+import { loadHeroAsset } from './assets.js';
 
 function hexCss(hex) { return '#' + hex.toString(16).padStart(6, '0'); }
 // Build side-profile Shape. x: -len/2 (tail) .. +len/2 (nose/front at +x before rotation). y: height.
@@ -192,29 +193,106 @@ export function makeCarMesh(spec, colorHex, opts) {
     const signB = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.18, 0.3), new THREE.MeshStandardMaterial({ color: 0xfff2c0, emissive: 0xffe9a0, emissiveIntensity: 0.9 }));
     signB.position.set(0, 1.36, 0.1); grp.add(signB);
   }
-  // underglow
-  const glowColor = opts.glow !== undefined ? opts.glow : spec.glow;
-  if (glowColor) {
-    const gc = document.createElement('canvas'); gc.width = gc.height = 128;
-    const gg = gc.getContext('2d'); const gr2 = gg.createRadialGradient(64, 64, 4, 64, 64, 64);
-    gr2.addColorStop(0, 'rgba(255,255,255,.9)'); gr2.addColorStop(1, 'rgba(255,255,255,0)');
-    gg.fillStyle = gr2; gg.fillRect(0, 0, 128, 128);
-    const gm = new THREE.Mesh(new THREE.PlaneGeometry(W + 1.6, L + 1.6), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), color: glowColor, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
-    gm.rotation.x = -Math.PI / 2; gm.position.y = 0.06; grp.add(gm);
-  }
-  // blob shadow
-  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(W + 0.5, L + 0.5), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
-  shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.03; grp.add(shadow);
+  addUnderglow(grp, spec, opts);
+  addBlobShadow(grp, spec);
   grp.userData.wheels = wheels; grp.userData.wheelR = wr;
   return grp;
 }
+// Shared ground dressing for every car visual (procedural or GLB hero car):
+// the additive underglow plane (when the spec/opts carry a glow colour) and
+// the blob shadow. Kept in one place so both visuals sit identically.
+function addUnderglow(grp, spec, opts) {
+  const glowColor = opts && opts.glow !== undefined ? opts.glow : spec.glow;
+  if (!glowColor) return;
+  const gc = document.createElement('canvas'); gc.width = gc.height = 128;
+  const gg = gc.getContext('2d'); const gr2 = gg.createRadialGradient(64, 64, 4, 64, 64, 64);
+  gr2.addColorStop(0, 'rgba(255,255,255,.9)'); gr2.addColorStop(1, 'rgba(255,255,255,0)');
+  gg.fillStyle = gr2; gg.fillRect(0, 0, 128, 128);
+  const gm = new THREE.Mesh(new THREE.PlaneGeometry(spec.wid + 1.6, spec.len + 1.6), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(gc), color: glowColor, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false }));
+  gm.rotation.x = -Math.PI / 2; gm.position.y = 0.06; grp.add(gm);
+}
+function addBlobShadow(grp, spec) {
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(spec.wid + 0.5, spec.len + 0.5), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false }));
+  shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.03; grp.add(shadow);
+}
+// --- hero car: Tripo GLB visual for the Taiyo Supra nameplate --------------
+// Specs 'taiyo' and 'hero-supra' use the real GLB (assets/hero-car.glb via
+// assets.js) once it resolves; until then — and forever if it fails — they
+// use the exact procedural mesh from makeCarMesh. The GLB has baked wheels
+// (single mesh), so the visual carries four EMPTY wheel pivots at the axle
+// positions purely so drive.js / traffic spin+steer code runs harmlessly,
+// and tailMat/headMat are null (drive.js null-guards tailMat; nothing
+// dereferences headMat) — the brake-light boost is simply skipped.
+// One load is kicked off at module init; every spawn clones the wrapper.
+const HERO_CAR_SPECS = new Set(['taiyo', 'hero-supra']);
+let heroCarWrapper = null;   // resolved template wrapper (never added to a scene)
+let heroCarSettled = false;  // load finished (success or failure)
+const heroCarPending = [];   // { v, spec, glow } procedural spawns awaiting swap
+
+function populateGlbCar(grp, spec, opts) {
+  grp.add(heroCarWrapper.clone(true));
+  addUnderglow(grp, spec, opts);
+  addBlobShadow(grp, spec);
+  const wheels = {};
+  for (const [key, sx, sz] of [['fl', -1, 1], ['fr', 1, 1], ['rl', -1, -1], ['rr', 1, -1]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx * 0.80, 0.34, sz * 1.42);
+    grp.add(pivot);
+    wheels[key] = pivot;
+  }
+  grp.userData.wheels = wheels;
+  grp.userData.wheelR = 0.34;
+  grp.userData.tailMat = null;
+  grp.userData.headMat = null;
+  grp.userData.visualMode = 'glb';
+  return grp;
+}
+function makeGlbCarMesh(spec, opts) {
+  return populateGlbCar(new THREE.Group(), spec, opts);
+}
+// Swap a still-alive procedural hero car to the GLB visual in place: the
+// outer mesh group, position/rotation and ALL vehicle state are kept. Only
+// the children makeCarMesh created at spawn (snapshotted in v._procChildren)
+// are removed, so anything added later — seated driver figure, player
+// spotlights, night glow — survives the swap. Never throws.
+function swapToGlbCar(p) {
+  try {
+    const v = p.v;
+    if (!v || !v.mesh || !v.mesh.parent) return; // vehicle gone
+    if (v.mesh.userData.visualMode === 'glb') return;
+    if (v._procChildren) {
+      for (const c of [...v.mesh.children]) if (v._procChildren.has(c)) v.mesh.remove(c);
+    } else {
+      while (v.mesh.children.length) v.mesh.remove(v.mesh.children[0]);
+    }
+    populateGlbCar(v.mesh, p.spec, { glow: p.glow });
+    v.wheels = v.mesh.userData.wheels;
+    v._procChildren = null;
+  } catch (e) { /* keep the procedural visual */ }
+}
+try {
+  loadHeroAsset('heroCar').then((wrapper) => {
+    try {
+      heroCarSettled = true;
+      if (!wrapper) { heroCarPending.length = 0; return; } // fallback stays
+      heroCarWrapper = wrapper;
+      for (const p of heroCarPending.splice(0)) swapToGlbCar(p);
+    } catch (e) { /* keep the procedural visual */ }
+  }).catch(() => { heroCarSettled = true; heroCarPending.length = 0; });
+} catch (e) { heroCarSettled = true; }
+
 export function spawnVehicle(G, specId, x, z, angle, opts) {
   opts = opts || {};
   const spec = { ...CARS[specId], id: specId };
-  const mesh = makeCarMesh(spec, opts.color, opts);
+  const isHeroCar = HERO_CAR_SPECS.has(specId);
+  const mesh = isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
   mesh.position.set(x, groundH(x, z) + 0.02, z); mesh.rotation.y = angle || 0;
   G.scene.add(mesh);
   const v = { spec, specId, mesh, angle: angle || 0, speed: 0, health: 100, driver: opts.driver || 'parked', color: opts.color != null ? opts.color : spec.color, wheels: mesh.userData.wheels, steerVis: 0, x, z, target: null, lane: opts.lane || 0, smokeT: 0 };
+  if (isHeroCar && !heroCarWrapper && !heroCarSettled) {
+    v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
+    heroCarPending.push({ v, spec, glow: opts.glow });
+  }
   if (!G.vehicles) G.vehicles = [];
   G.vehicles.push(v);
   return v;
