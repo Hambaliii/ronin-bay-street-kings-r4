@@ -15,22 +15,32 @@ const TOP_COLORS = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 
 const PANTS_COLORS = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
 
 // --- GLB citizen models (drop-in pattern) ------------------------------------
-// Each entry designates every Nth spawned ped (spawn index % every === 0) to
-// use that registered GLB instead of the procedural figure, once it loads.
-// Procedural stays as the fallback for everyone (and forever, on load
-// failure). To add citizen2..6 later: register the asset in assets.js and
-// add one entry here.
-// The citizen GLB faces +Z already (toes extend +z), same as the game's
+// Each entry designates an EXCLUSIVE subset of spawned peds: those whose
+// spawn index satisfies idx % every === offset (offset defaults to 0). The
+// first matching entry in array order wins, so subsets never overlap.
+// Designated peds use that registered GLB instead of the procedural figure,
+// once it loads. Procedural stays as the fallback for everyone (and forever,
+// on load failure). To add citizen3..6 later: register the asset in
+// assets.js and add one entry here with its own offset.
+// The citizen GLBs face +Z already (toes extend +z), same as the game's
 // heading convention, so no flip is needed; keep the constant so a future
 // model that faces -Z is a one-line change.
 const PED_GLB_ROT_Y = 0;
 const CITIZEN_MODELS = [
-  { key: 'citizenWoman', every: 3 },
+  { key: 'citizenWoman', every: 3, offset: 0 },
+  { key: 'citizenTeen', every: 3, offset: 1 },
 ];
+
+// citizen-teen.glb ships with NO texture/UVs/material, so its clones all
+// share the loader's plain fallback material. Per Bosku's instruction we
+// color it in-game pragmatically: ONE single-tone outfit tint per clone
+// (no per-part painting), picked deterministically by ped idx from this
+// palette so the teen crowd reads as varied hoodies/backpacks.
+const TEEN_TINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a, 0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
 
 function citizenEntryForIndex(i) {
   for (const entry of CITIZEN_MODELS) {
-    if (entry && entry.every > 0 && i % entry.every === 0) return entry;
+    if (entry && entry.every > 0 && i % entry.every === (entry.offset || 0)) return entry;
   }
   return null;
 }
@@ -87,7 +97,20 @@ export function initPeds(G) {
       if (!template) return;
       const inner = new THREE.Group();
       inner.rotation.y = PED_GLB_ROT_Y;
-      inner.add(template.clone(true));
+      const clone = template.clone(true);
+      if (ped.citizenKey === 'citizenTeen') {
+        // Untextured model: give THIS clone its own material instance(s)
+        // tinted with its deterministic outfit hue. (The woman model has a
+        // real texture — her clones are never tinted.)
+        const tint = TEEN_TINTS[ped.idx % TEEN_TINTS.length];
+        clone.traverse((obj) => {
+          if (obj && obj.isMesh && obj.material && obj.material.color) {
+            obj.material = obj.material.clone();
+            obj.material.color.setHex(tint);
+          }
+        });
+      }
+      inner.add(clone);
       if (ped.visual) ped.fig.remove(ped.visual);
       ped.fig.add(inner);
       ped.visual = inner;

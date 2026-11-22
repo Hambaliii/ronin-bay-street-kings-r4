@@ -166,6 +166,10 @@ export const HERO_ASSETS = {
   mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
   garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
   citizenWoman: { url: 'assets/citizen-woman.glb', scale: 1.68 },
+  // Untextured GLB (POSITION+NORMAL only, no UVs/material/image): parseGLB
+  // returns uv:null, loadGLBModel skips the uv attribute and uses the plain
+  // no-map material; peds.js tints each clone per-ped instead.
+  citizenTeen: { url: 'assets/citizen-teen.glb', scale: 1.62 },
   weaponPistol: { url: 'assets/weapon-pistol.glb', scale: 0.30 },
   weaponSmg: { url: 'assets/weapon-smg.glb', scale: 0.55 },
   weaponBat: { url: 'assets/weapon-bat.glb', scale: 0.90 },
