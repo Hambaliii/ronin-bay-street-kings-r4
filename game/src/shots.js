@@ -226,6 +226,11 @@ export function setupShot(G, name) {
     applyNpcPoliceGlb(p2);
     p1.staged = true; p2.staged = true;
     G.cops.push(p1, p2);
+    // S30: two RBPD officers (policeOfficer GLB via the 'cop' cast
+    // override, procedural navy uniform figure as fallback) flanking
+    // the player car, angled to face it at (165,-140).
+    placeFig(G, 'cop', 162.8, -137.5, 2.42);
+    placeFig(G, 'cop', 167.2, -142.5, -0.72);
     G.wanted = 4;
     try { G.hud?.showBusted?.(); } catch (e) {}
     cam(G, 176, 2.2, -128, 164, 1.0, -141);

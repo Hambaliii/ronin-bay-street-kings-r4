@@ -66,8 +66,11 @@ startMcLoad();
 // visual is swapped once the asset resolves. If the GLB fails to load
 // (loadHeroAsset resolves null) the procedural CAST figure stays — the
 // exact fallback, untouched.
+// S30: CAST.cop (RBPD Officer) likewise renders as the textured
+// 'policeOfficer' GLB (dark blue uniform + gold badge, faces +Z); its
+// procedural fallback is the navy 'uniform' figure with cap+badge.
 const CAST_GLB_ROT_Y = 0;
-const CAST_GLB_OVERRIDE = { shun: 'rivalDriver' };
+const CAST_GLB_OVERRIDE = { shun: 'rivalDriver', cop: 'policeOfficer' };
 const _castGlbTemplates = new Map(); // assetName -> resolved wrapper
 const _castGlbStarted = new Set(); // assetName loads already kicked off
 const _castGlbWaiters = new Map(); // assetName -> Set of figs awaiting swap
