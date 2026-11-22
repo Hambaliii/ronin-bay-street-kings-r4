@@ -3,6 +3,58 @@
 import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
+import { loadHeroAsset } from './assets.js';
+
+// --- Tripo GLB Ren (hero asset 'mc') as the player's on-foot visual --------
+// player.fig is the OUTER group (positioned/rotated by updatePlayer); its
+// visual child is the procedural figure, or — once the GLB resolves — a
+// clone of the loaded wrapper inside an inner group we bob/rock/lean.
+// The procedural figure is the exact fallback: if the asset fails to load
+// (loadHeroAsset resolves null) nothing is ever swapped. Flip this one
+// constant if a screenshot shows Ren facing away from his heading.
+const MC_ROT_Y = 0;
+let _mcTemplate = null; // resolved loadHeroAsset('mc') wrapper (template)
+let _mcLoadStarted = false;
+const _mcWaiters = new Set(); // players created procedurally before load
+function applyGlbVisual(player) {
+  try {
+    if (!player || !_mcTemplate || player.figIsGlb) return false;
+    const inner = new THREE.Group();
+    inner.name = 'mc-glb-inner';
+    inner.rotation.y = MC_ROT_Y;
+    inner.add(_mcTemplate.clone(true));
+    if (player.procFig) player.fig.remove(player.procFig);
+    player.fig.add(inner);
+    // The procedural figure carries a blob shadow (see makeFigure); give
+    // the GLB visual the same treatment, on the outer group so the shadow
+    // stays grounded while the inner wrapper bobs.
+    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
+    shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02;
+    player.fig.add(shadow);
+    player.glbInner = inner;
+    player.glbShadow = shadow;
+    player.visual = inner;
+    player.figIsGlb = true;
+    return true;
+  } catch (e) {
+    return false; // never throw: procedural visual stays in place
+  }
+}
+function startMcLoad() {
+  if (_mcLoadStarted) return;
+  _mcLoadStarted = true;
+  try {
+    loadHeroAsset('mc').then((wrapper) => {
+      try {
+        if (!wrapper) return; // load failed -> procedural fallback stays
+        _mcTemplate = wrapper;
+        for (const player of _mcWaiters) applyGlbVisual(player);
+        _mcWaiters.clear();
+      } catch (e) { /* keep procedural fallback */ }
+    }).catch(() => { /* keep procedural fallback */ });
+  } catch (e) { /* keep procedural fallback */ }
+}
+startMcLoad();
 
 // Deterministic texture noise (no Math.random — simple LCG local to texture gen)
 function texRng(seed) { let s = seed * 7919 + 13; return () => { s = (s * 16807) % 2147483647; return (s & 0xffff) / 0xffff; }; }
@@ -221,12 +273,19 @@ export function poseSeated(fig) {
   u.torsoG.position.y = u.H * 0.48;
 }
 export function createPlayer(G) {
-  const fig = makeFigure(CAST.ren);
+  startMcLoad();
+  const fig = new THREE.Group(); // outer group: positioned/rotated by updatePlayer
+  const procFig = makeFigure(CAST.ren); // procedural visual (fallback)
+  fig.add(procFig);
   const x = -412.5, z = 470;
   fig.position.set(x, groundH(x, z), z);
+  fig.rotation.y = Math.PI;
   G.scene.add(fig);
-  const player = { fig, x, z, angle: Math.PI, speed: 0, phase: 0, health: 100 };
+  const player = { fig, procFig, visual: procFig, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x, z, angle: Math.PI, speed: 0, phase: 0, health: 100 };
   G.player = player;
+  // GLB already resolved -> use a clone of it now; otherwise swap in
+  // place when it resolves (applyGlbVisual, driven by startMcLoad).
+  if (!applyGlbVisual(player)) _mcWaiters.add(player);
   return player;
 }
 export function updatePlayer(G, dt) {
@@ -258,5 +317,23 @@ export function updatePlayer(G, dt) {
   p.x = Math.max(-655, Math.min(655, p.x)); p.z = Math.max(-655, Math.min(655, p.z));
   p.fig.position.set(p.x, groundH(p.x, p.z), p.z);
   p.fig.rotation.y = p.angle;
-  animateFigure(p.fig, p.phase, moving ? 1 : 0.04);
+  p.elapsed = (p.elapsed || 0) + dt;
+  if (p.figIsGlb && p.glbInner) {
+    // GLB Ren has no articulated parts for animateFigure: bob/rock/lean
+    // the inner wrapper instead (outer fig transform untouched above).
+    const inner = p.glbInner;
+    const speedNorm = Math.min(1, Math.abs(p.speed || 0) / 9);
+    if (moving) {
+      inner.position.y = Math.abs(Math.sin(p.phase)) * 0.045;
+      inner.rotation.z = Math.sin(p.phase) * 0.035;
+      inner.rotation.x = 0.05 * speedNorm;
+    } else {
+      inner.position.y = 0.008 * Math.sin(p.elapsed * 1.6);
+      inner.rotation.z = 0;
+      inner.rotation.x = 0;
+    }
+    inner.rotation.y = MC_ROT_Y;
+  } else {
+    animateFigure(p.procFig || p.fig, p.phase, moving ? 1 : 0.04);
+  }
 }

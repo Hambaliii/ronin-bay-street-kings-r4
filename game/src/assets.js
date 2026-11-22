@@ -163,6 +163,9 @@ export async function loadGLBModel(url) {
 export const HERO_ASSETS = {
   helicopter: { url: 'assets/helicopter.glb', scale: 11 },
   heroCar: { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } },
+  mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
+  garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
+  citizenWoman: { url: 'assets/citizen-woman.glb', scale: 1.68 },
 };
 
 const _heroCache = new Map();

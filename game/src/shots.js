@@ -21,7 +21,11 @@ export function setupShot(G, name) {
   G.shot = name;
   if (name === 'city') {
     const v = spawnVehicle(G, 'hero-supra', 165, -165, 0.6, { driver: 'parked' });
-    placeFig(G, 'ren', 168.5, -161.5, -2.2);
+    if (G.player) {
+      G.player.x = 168.5; G.player.z = -161.5; G.player.angle = -2.2;
+      G.player.fig.position.set(168.5, groundH(168.5, -161.5), -161.5);
+      G.player.fig.rotation.y = -2.2;
+    }
     cam(G, 172, 1.6, -156, 165, 1.0, -165);
     void v;
   } else if (name === 'meet') {
@@ -50,7 +54,11 @@ export function setupShot(G, name) {
     ['ren', 'ako', 'mika', 'jun', 'ryo', 'dante', 'cop'].forEach((cid, i) => placeFig(G, cid, -436 + i * 8, 448, Math.PI));
     cam(G, -412, 1.6, 439, -412, 1.0, 448);
   } else if (name === 'mc') {
-    placeFig(G, 'ren', -412.5, 440, Math.PI);
+    if (G.player) {
+      G.player.x = -412.5; G.player.z = 440; G.player.angle = Math.PI;
+      G.player.fig.position.set(-412.5, groundH(-412.5, 440), 440);
+      G.player.fig.rotation.y = Math.PI;
+    }
     cam(G, -412.5, 1.1, 437.8, -412.5, 1.0, 440);
   } else if (name === 'heli') {
     spawnVehicle(G, 'taiyo', -200, 300, 0.4, { driver: 'parked' });
@@ -65,8 +73,8 @@ export function setupShot(G, name) {
     G.flags.openPauseMap = true;
     cam(G, 0, 30, -60, 0, 0, 0);
   }
-  // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom'].includes(name)) {
+  // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
