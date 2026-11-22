@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { CFG, DISTRICTS, TOUGE_POINTS } from './config.js';
 import { rnd, rr, ri, pick } from './random.js';
+import { loadHeroAsset } from './assets.js';
 
 let _glowTex = null;
 function glowTexture() {
@@ -209,24 +210,51 @@ export function buildWorld(G) {
     for (let i = 0; i < 4; i++) { const bench = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.6), new THREE.MeshStandardMaterial({ color: 0x7a5a38 })); bench.position.set(px + rr(-35, 35), 0.3, pz + rr(-35, 35)); scene.add(bench); }
   }
 }
+// Tripo garage GLB: its detailed facade (doors) is the model's -Z face and
+// its other detailed side is +X. Rotating PI turns -Z to face south (+z,
+// toward the apron / garage point / street) and +X to face west (-x,
+// toward the harbor road).
+const GARAGE_ROT_Y = Math.PI;
 function buildHQ(G, scene) {
   const hx = -412.5, hz = 412.5;
+  // All procedural HQ building visuals live in hqGroup so the GLB swap can
+  // remove them in one step. The apron stays outside the group (below): it
+  // is ground surface, not building visual, and must survive the swap.
+  const hqGroup = new THREE.Group(); scene.add(hqGroup);
   const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.9 });
   const hq = new THREE.Mesh(new THREE.BoxGeometry(70, 10, 34), wallMat);
-  hq.position.set(hx, 5, hz); scene.add(hq); G.addCollider(hx, hz, 35, 17, 10);
+  hq.position.set(hx, 5, hz); hqGroup.add(hq);
+  // Collider matches the GLB footprint (targetSize 30x30) so collision is
+  // identical in procedural and GLB modes.
+  G.addCollider(hx, hz, 15, 15, 10);
   const doorMat = new THREE.MeshStandardMaterial({ color: 0x707880, roughness: 0.6, metalness: 0.6 });
   for (let i = -1; i <= 1; i++) {
     const door = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), doorMat);
-    door.position.set(hx + i * 20, 3, hz + 17.2); scene.add(door);
+    door.position.set(hx + i * 20, 3, hz + 17.2); hqGroup.add(door);
   }
   const st = (() => { const c = document.createElement('canvas'); c.width = 512; c.height = 96; const g = c.getContext('2d'); g.fillStyle = '#14100c'; g.fillRect(0, 0, 512, 96); g.font = 'bold 58px sans-serif'; g.textAlign = 'center'; g.shadowColor = '#ff7a1a'; g.shadowBlur = 16; g.fillStyle = '#ff7a1a'; g.fillText('RONIN KAI', 256, 66); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; })();
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(40, 7.5), new THREE.MeshBasicMaterial({ map: st }));
-  sign.position.set(hx, 8.6, hz + 17.3); scene.add(sign);
+  sign.position.set(hx, 8.6, hz + 17.3); hqGroup.add(sign);
   const winMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb35c, emissiveIntensity: 0.6 });
-  for (let i = 0; i < 5; i++) { const w = new THREE.Mesh(new THREE.PlaneGeometry(5, 2.4), winMat); w.position.set(hx - 28 + i * 14, 7.6, hz - 17.2); w.rotation.y = Math.PI; scene.add(w); }
+  for (let i = 0; i < 5; i++) { const w = new THREE.Mesh(new THREE.PlaneGeometry(5, 2.4), winMat); w.position.set(hx - 28 + i * 14, 7.6, hz - 17.2); w.rotation.y = Math.PI; hqGroup.add(w); }
   const apron = new THREE.Mesh(new THREE.PlaneGeometry(80, 30), new THREE.MeshStandardMaterial({ color: 0x8a8578, roughness: 1 }));
   apron.rotation.x = -Math.PI / 2; apron.position.set(hx, 0.04, 455); scene.add(apron);
   G.hq = { x: hx, z: hz, garage: { x: hx, z: 455 } };
+  // Hero asset: Tripo garage GLB replaces the procedural HQ building when
+  // it loads; on null/failure the procedural HQ above stays untouched.
+  try {
+    loadHeroAsset('garage').then((loaded) => {
+      try {
+        if (!loaded) return;
+        scene.remove(hqGroup);
+        const placement = new THREE.Group();
+        placement.position.set(hx, groundH(hx, hz), hz);
+        placement.rotation.y = GARAGE_ROT_Y;
+        placement.add(loaded);
+        scene.add(placement);
+      } catch (e) { /* keep procedural HQ */ }
+    }).catch(() => {});
+  } catch (e) { /* keep procedural HQ */ }
 }
 function buildHarbor(G, scene) {
   const contCols = [0xc0392b, 0x2471a3, 0x229954, 0xd4ac0d, 0x7d3c98, 0xca6f1e];
