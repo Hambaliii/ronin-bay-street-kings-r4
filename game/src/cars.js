@@ -198,6 +198,91 @@ export function makeCarMesh(spec, colorHex, opts) {
   grp.userData.wheels = wheels; grp.userData.wheelR = wr;
   return grp;
 }
+// --- RBPD cruiser: npc-police GLB visual (assets/npc-police.glb) -----------
+// Primary visual for police vehicles (spawned by police.js). `vehicle` is
+// the object returned by spawnVehicle (the buildBody-equivalent here):
+// { spec, specId, mesh, wheels, ... } where mesh is the makeCarMesh group
+// whose userData carries { wheels, wheelR, tailMat, headMat } and, for
+// lightbar specs, userData.lightbar = { red, blue, gr, gb } (the flashing
+// barRed/barBlue pair is lightbar.red / lightbar.blue — there are no
+// top-level barRed/barBlue refs in this build). The procedural body stays
+// in the group, hidden, as the automatic fallback: if the GLB fails to
+// load, loadHeroAsset resolves null and nothing is touched. The lightbar
+// overlay, its glow sprites and the procedural wheels are KEPT (the GLB's
+// baked wheels are static, so the kept wheels are re-seated into its
+// arches and keep spinning via the existing wheel updates). Never throws.
+export function applyNpcPoliceGlb(vehicle) {
+  try {
+    if (!vehicle || vehicle.glbSwapped) return;
+    const grp = vehicle.mesh || vehicle; // vehicle object, or the group itself
+    if (!grp || !grp.children || !grp.userData) return;
+    vehicle.glbSwapped = true; // guard double-swap (incl. concurrent calls)
+    if (grp !== vehicle) grp.userData.glbSwapped = true;
+    loadHeroAsset('npcPolice').then((wrapper) => {
+      try {
+        if (!wrapper) { vehicle.glbSwapped = false; if (grp !== vehicle) grp.userData.glbSwapped = false; return; } // fallback stays
+        const ud = grp.userData;
+        // --- refs to KEEP visible -------------------------------------------
+        const keep = new Set();
+        const wheels = ud.wheels || vehicle.wheels || {};
+        for (const w of Object.values(wheels)) if (w) keep.add(w);
+        // Lightbar flash meshes: real refs are userData.lightbar.{red,blue,
+        // gr,gb}; also honour top-level barRed/barBlue if a build exposes them.
+        const lbParts = [];
+        const lb = ud.lightbar || null;
+        if (lb) for (const k of ['red', 'blue', 'gr', 'gb']) if (lb[k]) lbParts.push(lb[k]);
+        if (ud.barRed) lbParts.push(ud.barRed);
+        if (ud.barBlue) lbParts.push(ud.barBlue);
+        for (const p of lbParts) keep.add(p);
+        // Lightbar base box (not stored in userData): the un-kept mesh
+        // sitting just under the red/blue pair at the same z.
+        let lbBase = null;
+        const refBar = lbParts.find((p) => p && p.position && p.geometry && p.geometry.type === 'BoxGeometry') || lbParts[0];
+        if (refBar) {
+          for (const c of grp.children) {
+            if (keep.has(c) || !c.isMesh || !c.position) continue;
+            if (Math.abs(c.position.z - refBar.position.z) < 0.01 && c.position.y < refBar.position.y && refBar.position.y - c.position.y < 0.2) { lbBase = c; break; }
+          }
+        }
+        if (lbBase) keep.add(lbBase);
+        // Glow sprites (incl. lightbar glow sprites) and the flat ground
+        // planes (underglow / blob shadow: PlaneGeometry rotated flat).
+        for (const c of grp.children) {
+          if (c.isSprite) keep.add(c);
+          else if (c.isMesh && c.geometry && c.geometry.type === 'PlaneGeometry' && Math.abs(c.rotation.x + Math.PI / 2) < 0.01) keep.add(c);
+        }
+        // --- hide the procedural BODY meshes (hide, never remove) -----------
+        for (const c of [...grp.children]) if (!keep.has(c)) c.visible = false;
+        // --- add the GLB wrapper (clone: the cached wrapper is shared) -----
+        const clone = wrapper.clone ? wrapper.clone(true) : wrapper;
+        clone.position.set(0, 0, 0);
+        grp.add(clone);
+        ud.npcPoliceGlb = clone;
+        // --- re-seat the kept wheels into the GLB's wheel arches ------------
+        // GLB wheel clusters: local z +0.27 front / -0.32 rear on a 4.85-long
+        // body -> z +1.31 / -1.55, x +/-0.80. Front vs rear by current z sign.
+        for (const w of Object.values(wheels)) {
+          if (!w || !w.position) continue;
+          const isFront = w.position.z >= 0;
+          w.position.z = isFront ? 1.31 : -1.55;
+          w.position.x = w.position.x < 0 ? -0.80 : 0.80;
+          // y kept as-is (wheel radius / spin behaviour untouched)
+        }
+        // --- re-seat the lightbar assembly on the GLB roof (roof y = 1.42) --
+        // Shift the whole assembly so the bar base sits at y ~ 1.40; flash
+        // materials / behaviour untouched, tailMat/headMat refs left as-is.
+        const assembly = lbBase ? [lbBase, ...lbParts] : lbParts;
+        if (assembly.length) {
+          let delta;
+          if (lbBase) delta = 1.40 - lbBase.position.y;
+          else if (refBar) delta = 1.48 - refBar.position.y; // bar mesh sits 0.08 above its base
+          else delta = 0;
+          if (delta) for (const p of assembly) if (p && p.position) p.position.y += delta;
+        }
+      } catch (e) { /* keep the procedural visual */ }
+    }).catch(() => { vehicle.glbSwapped = false; });
+  } catch (e) { /* keep the procedural visual */ }
+}
 // Shared ground dressing for every car visual (procedural or GLB hero car):
 // the additive underglow plane (when the spec/opts carry a glow colour) and
 // the blob shadow. Kept in one place so both visuals sit identically.

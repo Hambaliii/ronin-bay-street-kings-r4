@@ -3,7 +3,7 @@ import { loadHeroAsset } from './assets.js';
 import { CAST } from './config.js';
 import { rr, ri, pick, chance } from './random.js';
 import { groundH, glowSprite } from './world.js';
-import { spawnVehicle, spawnSmokeAt } from './cars.js';
+import { spawnVehicle, spawnSmokeAt, applyNpcPoliceGlb } from './cars.js';
 import { makeFigure, animateFigure } from './player.js';
 
 // ---------------------------------------------------------------- police.js
@@ -407,6 +407,7 @@ export function initPolice(G) {
     z = THREE.MathUtils.clamp(z, -640, 640);
     const specId = G.wanted >= 3 && G.cops.length % 2 === 1 ? 'police-suv' : 'police';
     const v = spawnVehicle(G, specId, x, z, rr(0, Math.PI * 2), { driver: 'cop', livery: 'police', lights: true });
+    if (v) applyNpcPoliceGlb(v);
     if (v) G.cops.push(v);
     return v;
   }
@@ -444,6 +445,7 @@ export function initPolice(G) {
       const cx = bx + Math.sin(perp) * off;
       const cz = bz + Math.cos(perp) * off;
       const v = spawnVehicle(G, 'police', cx, cz, perp + rr(-0.25, 0.25), { driver: 'parked', livery: 'police', lights: true });
+      if (v) applyNpcPoliceGlb(v);
       if (v) { cars.push(v); G.cops.push(v); }
     }
     // Spike strip between the cars.
