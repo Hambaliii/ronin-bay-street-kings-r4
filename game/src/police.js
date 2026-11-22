@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { loadHeroAsset } from './assets.js';
 import { CAST } from './config.js';
 import { rr, ri, pick, chance } from './random.js';
 import { groundH, glowSprite } from './world.js';
@@ -40,6 +41,139 @@ function rbpdTexture() {
   const t = new THREE.CanvasTexture(c);
   t.anisotropy = 4;
   return t;
+}
+
+// --- GLB heli dressing (RBPD livery + spinning rotor overlays) ---------------
+// Built once in GLB local units and added INSIDE the scaled hero wrapper, so
+// it inherits the registry scale. The Tripo model has its rotors baked in
+// static, so the overlays below are what the updater actually spins.
+function heliSideDecalTexture() {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 256;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 1024, 256);
+  // Dark navy cheatline band across the middle.
+  g.fillStyle = '#16222e';
+  g.fillRect(0, 64, 1024, 128);
+  // Gold badge circle at the left.
+  g.fillStyle = '#c9a227';
+  g.beginPath(); g.arc(112, 128, 54, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#16222e';
+  g.beginPath(); g.arc(112, 128, 40, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#c9a227';
+  g.font = 'bold 44px Arial, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('★', 112, 130);
+  // Lettering.
+  g.fillStyle = '#ffffff';
+  g.font = 'bold 140px Arial, sans-serif';
+  g.fillText('RBPD', 580, 118);
+  g.font = 'bold 44px Arial, sans-serif';
+  g.fillText('P O L I C E', 580, 172);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
+}
+
+function heliRoofTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 512, 512);
+  g.fillStyle = '#16222e';
+  g.font = 'bold 190px Arial, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('RBPD', 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
+}
+
+function makeHeliDressing() {
+  const group = new THREE.Group();
+  group.name = 'rbpd-dressing';
+
+  // Side decals on the cabin flanks (cabin max half-width ~0.185 at z .1-.3).
+  try {
+    const tex = heliSideDecalTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2,
+    });
+    for (const side of [-1, 1]) {
+      const d = new THREE.Mesh(new THREE.PlaneGeometry(0.38, 0.095), mat);
+      d.position.set(side * 0.192, 0.175, 0.16);
+      d.rotation.y = side * Math.PI / 2;
+      d.renderOrder = 2;
+      group.add(d);
+    }
+  } catch (e) { /* headless: decals optional */ }
+
+  // Roof marking, readable from behind/above.
+  try {
+    const tex = heliRoofTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0.85, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2,
+    });
+    const roof = new THREE.Mesh(new THREE.PlaneGeometry(0.30, 0.30), mat);
+    roof.position.set(0, 0.318, 0.10);
+    roof.rotation.x = -Math.PI / 2;
+    roof.renderOrder = 2;
+    group.add(roof);
+  } catch (e) { /* headless: decals optional */ }
+
+  const bladeMat = new THREE.MeshStandardMaterial({ color: 0x14161a, roughness: 0.6, metalness: 0.3 });
+
+  // Main rotor overlay at the mast top (local ~(0, 0.345, +0.10)).
+  const rotor = new THREE.Group();
+  rotor.position.set(0, 0.35, 0.10);
+  const bladeX = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.008, 0.055), bladeMat);
+  rotor.add(bladeX);
+  const bladeZ = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.008, 0.95), bladeMat);
+  bladeZ.rotation.y = 0.6;
+  rotor.add(bladeZ);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 0.045, 10), bladeMat);
+  rotor.add(hub);
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.47, 40),
+    new THREE.MeshBasicMaterial({ color: 0xcfd8e3, transparent: true, opacity: 0.10, side: THREE.DoubleSide, depthWrite: false })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  rotor.add(disc);
+  group.add(rotor);
+
+  // Tail rotor overlay on the fin (local z -0.475), spins on X.
+  const tailRotor = new THREE.Group();
+  tailRotor.position.set(0.035, 0.29, -0.475);
+  for (let i = 0; i < 2; i++) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.16, 0.02), bladeMat);
+    b.rotation.x = i * Math.PI / 2;
+    tailRotor.add(b);
+  }
+  group.add(tailRotor);
+
+  return { group, rotor, tailRotor };
+}
+
+// Swap a heli's visual child from the procedural build to the GLB wrapper.
+// Everything procedural hangs off heli.body (cone/spotlight live on the
+// outer group / in the scene), so clearing body swaps only the visual.
+// Flight state, orbit and spotlight are untouched. Never throws.
+function applyGlbVisual(heli, wrapper, dressing) {
+  try {
+    if (!heli || !wrapper || heli.visualMode === 'glb') return false;
+    if (dressing && dressing.group && dressing.group.parent !== wrapper) wrapper.add(dressing.group);
+    while (heli.body.children.length) heli.body.remove(heli.body.children[0]);
+    wrapper.position.set(0, -1.18, 0); // align skid base with the procedural skid bottom
+    heli.body.add(wrapper);
+    if (dressing) {
+      if (dressing.rotor) heli.rotor = dressing.rotor;
+      if (dressing.tailRotor) heli.tailRotor = dressing.tailRotor;
+    }
+    heli.visualMode = 'glb';
+    return true;
+  } catch (e) { return false; }
 }
 
 // --- Helicopter (rounded build — no plain-box body) --------------------------
@@ -198,7 +332,7 @@ function makeHeli(G) {
 
   group.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
   G.scene.add(group);
-  return { group, body, rotor, tailRotor, cone, spotlight, lensGlow, orbitA: rr(0, Math.PI * 2), leaveT: 0 };
+  return { group, body, rotor, tailRotor, cone, spotlight, lensGlow, orbitA: rr(0, Math.PI * 2), leaveT: 0, visualMode: 'procedural' };
 }
 
 // --- lightbar flashing -------------------------------------------------------
@@ -218,6 +352,23 @@ function flashLightbar(v, t) {
 export function initPolice(G) {
   G.cops = G.cops || [];
   G.heli = null;
+
+  // Hero GLB heli: kick the load off once and build the RBPD dressing once.
+  // When the asset lands it swaps the visual of a flying heli in place, or
+  // is picked up by ensureHeli on first spawn. Any failure (404, parse,
+  // unsupported) resolves null and the procedural heli runs exactly as before.
+  let heliDressing = null;
+  try { heliDressing = makeHeliDressing(); } catch (e) { heliDressing = null; }
+  try { if (G.flags) G.flags.heliDressing = heliDressing; } catch (e) { /* flags optional */ }
+  try {
+    loadHeroAsset('helicopter').then((wrapper) => {
+      try {
+        if (!wrapper) return;
+        if (G.flags) G.flags.heliAsset = wrapper;
+        if (G.heli) applyGlbVisual(G.heli, wrapper, heliDressing);
+      } catch (e) { /* keep the procedural visual */ }
+    }).catch(() => {});
+  } catch (e) { /* keep the procedural visual */ }
 
   const S = {
     t: 0,
@@ -381,6 +532,7 @@ export function initPolice(G) {
   function ensureHeli(atStage) {
     if (G.heli) return;
     const h = makeHeli(G);
+    if (G.flags && G.flags.heliAsset) applyGlbVisual(h, G.flags.heliAsset, heliDressing);
     if (atStage && G.flags.heliStage) {
       h.group.position.set(G.flags.heliStage.x, groundH(G.flags.heliStage.x, G.flags.heliStage.z) + 28, G.flags.heliStage.z);
     } else {
