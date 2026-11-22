@@ -25,6 +25,7 @@ export const CARS = {
   'taiyo': { name: 'Taiyo Supra GT', price: 12500, len: 4.5, wid: 1.85, topSpeed: 242, accel: 0.84, grip: 0.92, drift: 0.9, color: 0xff7a1a, body: 'coupe', hood: 0.65, cabin: 0.52, roof: 'fastback', tail: 'roundWing', roundTail: true, glow: 0xff7a1a, wheels: 0xe0e0e0 },
   'kaze': { name: 'Kaze GT-X', price: 15000, len: 4.6, wid: 1.9, topSpeed: 252, accel: 0.88, grip: 0.94, drift: 0.88, color: 0x35586e, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'quadWing', roundTail: true, glow: 0x57b7ff, wheels: 0xd0d0d0 },
   'gtr35': { name: 'Arakawa GT-R35', price: 18000, len: 4.71, wid: 1.89, topSpeed: 262, accel: 0.93, grip: 0.95, drift: 0.85, color: 0x9aa0a6, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'wing', roundTail: true, glow: 0xff2a2a, wheels: 0xd0d0d0, desc: 'The R35 rival flagship — silver over black, red stripe, all menace.' },
+  'svj': { name: 'SVJ Aventador', price: 45000, len: 4.94, wid: 2.10, topSpeed: 305, accel: 0.99, grip: 0.97, drift: 0.80, color: 0x17181a, body: 'coupe', hood: 0.5, cabin: 0.5, roof: 'coupe', tail: 'wing', roundTail: true, glow: 0xff7a1a, wheels: 0x2a2a2e, desc: 'The dream. Matte black V12 flagship — the Bay Legend\'s final weapon.' },
   'hero-supra': { name: 'TEN-SECOND Taiyo', price: 0, len: 4.5, wid: 1.85, topSpeed: 258, accel: 0.92, grip: 0.93, drift: 0.92, color: 0xff7a1a, body: 'coupe', hood: 0.65, cabin: 0.52, roof: 'fastback', tail: 'roundWing', roundTail: true, glow: 0xffa63f, livery: 'hero-supra', wheels: 0xffd700 },
   'hero-gtr': { name: 'BAYSIDE GHOST Kaze', price: 0, len: 4.6, wid: 1.9, topSpeed: 268, accel: 0.95, grip: 0.96, drift: 0.9, color: 0x2c4a63, body: 'coupe', hood: 0.55, cabin: 0.5, roof: 'coupe', tail: 'quadWing', roundTail: true, glow: 0x7dd7ff, livery: 'hero-gtr', wheels: 0xe8e8e8 },
 };
@@ -50,6 +51,6 @@ export const MISSIONS = [
   { id: 'm9', giver: 'mika', title: 'Data Jack', type: 'jack', district: 'neon', blurb: 'Jack the data terminal in Neon Mile.', reward: { money: 2600, rep: 95 }, need: 3 },
   { id: 'm10', giver: 'ren', title: 'Hold the Mile', type: 'hold', district: 'neon', blurb: 'Defend Ronin territory on the Mile.', reward: { money: 3000, rep: 105 }, need: 4 },
   { id: 'm11', giver: 'shun', title: 'Kings of Coral', type: 'race', district: 'coral', blurb: 'Settle Coral Strip once and for all.', reward: { money: 3500, rep: 110 }, need: 5 },
-  { id: 'm12', giver: 'ryo', title: 'Bayside Ghost', type: 'pinkslip', district: 'hoshino', blurb: "Final run vs Ryo's GHOST. Win takes the hero-gtr.", reward: { money: 4000, rep: 120 }, need: 6 },
+  { id: 'm12', giver: 'ryo', title: 'Bayside Ghost', type: 'pinkslip', district: 'hoshino', blurb: "Final run vs Ryo's matte-black SVJ. Win takes the hero-gtr.", reward: { money: 4000, rep: 120 }, need: 6 },
 ];
 export const TOUGE_POINTS = [[-560,-560],[-470,-600],[-380,-545],[-300,-610],[-215,-560],[-170,-640],[-90,-590],[-60,-500],[-140,-450],[-90,-380],[-190,-330],[-290,-390],[-370,-330],[-450,-390],[-540,-350],[-600,-430],[-560,-560]];

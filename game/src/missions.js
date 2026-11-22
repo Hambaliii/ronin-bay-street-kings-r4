@@ -217,7 +217,7 @@ export function initMissions(G) {
       case 'pinkslip': {
         chain.checkpoints = makeCheckpoints(G, start, dest, 4);
         chain.timer = routeTime(G, start, chain.checkpoints) + 60;
-        const rivalSpec = m.id === 'm12' ? 'hero-gtr' : (m.id === 'm11' ? 'gtr35' : 'taiyo');
+        const rivalSpec = m.id === 'm12' ? 'svj' : (m.id === 'm11' ? 'gtr35' : 'taiyo');
         const rivalCast = m.id === 'm12' ? 'ryo' : (m.id === 'm11' ? 'shun' : 'dante');
         chain.rubberF = rr(0.92, 1.08);
         const rs = start;

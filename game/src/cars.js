@@ -593,13 +593,171 @@ try {
     } catch (e) { /* keep the procedural visual */ }
   }).catch(() => { gtrSettled = true; gtrPending.length = 0; });
 } catch (e) { gtrSettled = true; }
+// --- dream car: Lamborghini SVJ GLB (assets/lambo-svj.glb) -----------------
+// Spec 'svj' follows the exact hero-car pattern above (third hero slot):
+// real GLB once it resolves, exact procedural makeCarMesh fallback until
+// then / on failure. Model bounds x +/-0.259, y 0..0.275, z +/-0.5 with
+// the NOSE at +Z (wedge slopes down toward +z, tall rear deck + big wing
+// at -z), so no rotation is needed. Bosku inspected the raw model and
+// mandated three defect fixes, applied per-clone in applySvjTreatment:
+// (1) no windshield -> tinted glass canopy over the cabin, (2) no
+// taillights -> signature Y-shaped LED units (registered as the vehicle's
+// tailMat so the brake-boost path can brighten them) + front DRL strips,
+// (3) fragmented noise texture -> matte black paint treatment (texture
+// kept only as low-influence detail over a near-black base, satin
+// specular) + red brake discs picked out behind the wheels.
+function svjTailTexture() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 84;
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, 256, 84);
+  g.strokeStyle = '#ff1e1e'; g.lineWidth = 15; g.lineCap = 'round'; g.lineJoin = 'round';
+  g.shadowColor = '#ff1e1e'; g.shadowBlur = 8;
+  g.beginPath();
+  g.moveTo(28, 8); g.lineTo(128, 46); // left arm of the Y
+  g.moveTo(228, 8); g.lineTo(128, 46); // right arm of the Y
+  g.moveTo(128, 46); g.lineTo(128, 76); // stem of the Y
+  g.stroke();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function applySvjTreatment(wrapper, vehicle) {
+  const out = { tailMat: null, drlMat: null };
+  if (!wrapper) return out;
+  // (a) PAINT — matte black: baked texture survives only as subtle detail
+  // (30% strength, mixed 78% toward near-black), satin finish on clones.
+  wrapper.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const applyOne = (orig) => {
+      const mat = orig.clone();
+      mat.roughness = 0.58;
+      mat.metalness = 0.30;
+      mat.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader
+          .replace('#include <map_fragment>', [
+            '#include <map_fragment>',
+            'diffuseColor.rgb = mix(diffuseColor.rgb * 0.30, vec3(0.016, 0.016, 0.018), 0.78);',
+          ].join('\n'));
+      };
+      mat.customProgramCacheKey = () => 'svj-matte';
+      return mat;
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(applyOne) : applyOne(o.material);
+  });
+  // (b) GLASS CANOPY — extruded side profile (z-y plane, GAME units)
+  // following the cabin silhouette (local cabin z -0.2..+0.1, roof peak
+  // y 0.275 -> game z -0.99..+0.49, roof y 1.14). The canopy base sinks
+  // to y 0.74, inside the body, so only the tinted dome shows.
+  const prof = new THREE.Shape();
+  prof.moveTo(0.55, 0.80); // nose of glass
+  prof.lineTo(-0.35, 1.10); // windshield top
+  prof.lineTo(-1.05, 1.08); // roof rear
+  prof.lineTo(-1.45, 0.82); // rear slope
+  prof.lineTo(-1.45, 0.74);
+  prof.lineTo(0.55, 0.74);
+  prof.closePath();
+  const canopyGeo = new THREE.ExtrudeGeometry(prof, { depth: 1.24, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2, steps: 1 });
+  canopyGeo.rotateY(-Math.PI / 2); // shape x -> game +Z, extrusion -> game X
+  canopyGeo.translate(0.62, 0, 0); // center the 1.24 extrusion on x
+  const canopy = new THREE.Mesh(canopyGeo, new THREE.MeshPhongMaterial({ color: 0x0d1216, specular: 0xbdd3e0, shininess: 90, transparent: true, opacity: 0.97 }));
+  wrapper.add(canopy);
+  // (c) TAILLIGHTS — two Y-LED units on the rear face (z = -2.46). The
+  // material is registered as the vehicle's tailMat: the brake-boost
+  // path writes emissiveIntensity on tailMat, so base is 0.85 and
+  // braking brightens the Y's. Small red glow sprite behind each unit.
+  const tailTex = svjTailTexture();
+  const tailMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: tailTex, map: tailTex, transparent: true, emissiveIntensity: 0.85 });
+  for (const s of [-1, 1]) {
+    const unit = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.22), tailMat);
+    unit.position.set(s * 0.56, 0.80, -2.46);
+    unit.rotation.y = Math.PI; // face -Z
+    wrapper.add(unit);
+    const gl = glowSprite(0xff2a22, 1.1);
+    gl.position.set(s * 0.56, 0.80, -2.52);
+    wrapper.add(gl);
+  }
+  out.tailMat = tailMat;
+  // Front DRL — thin emissive-white strips at the nose; the S25 system
+  // (updateDamageFx) layers its headlight glows/cones on top at night.
+  const drlMat = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: 0xf4f8ff, emissiveIntensity: 1.2, roughness: 0.3 });
+  for (const s of [-1, 1]) {
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.07), drlMat);
+    strip.position.set(s * 0.55, 0.52, 2.44); // faces +Z by default
+    wrapper.add(strip);
+  }
+  out.drlMat = drlMat;
+  // (d) BRAKE DISCS — bright red, one behind each wheel pivot.
+  const discGeo = new THREE.CylinderGeometry(0.20, 0.20, 0.06, 20); discGeo.rotateZ(Math.PI / 2); // axis along X
+  const discMat = new THREE.MeshStandardMaterial({ color: 0xe02020, metalness: 0.2, roughness: 0.35 });
+  for (const [sx, sz] of [[-0.86, 1.40], [0.86, 1.40], [-0.86, -1.75], [0.86, -1.75]]) {
+    const disc = new THREE.Mesh(discGeo, discMat);
+    disc.position.set(sx, 0.36, sz);
+    wrapper.add(disc);
+  }
+  if (vehicle) vehicle.svjTreatment = out;
+  return out;
+}
+const SVJ_SPECS = new Set(['svj']);
+let svjWrapper = null;
+let svjSettled = false;
+const svjPending = [];
+function populateSvjCar(grp, spec, opts) {
+  const clone = svjWrapper.clone(true);
+  const treat = applySvjTreatment(clone, null);
+  grp.add(clone);
+  addUnderglow(grp, spec, opts);
+  addBlobShadow(grp, spec);
+  const wheels = {};
+  for (const [key, sx, sz] of [['fl', -0.88, 1.40], ['fr', 0.88, 1.40], ['rl', -0.88, -1.75], ['rr', 0.88, -1.75]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(sx, 0.36, sz);
+    grp.add(pivot);
+    wheels[key] = pivot;
+  }
+  grp.userData.wheels = wheels;
+  grp.userData.wheelR = 0.36;
+  grp.userData.tailMat = treat.tailMat;
+  grp.userData.headMat = treat.drlMat;
+  grp.userData.visualMode = 'glb';
+  return grp;
+}
+function makeSvjCarMesh(spec, opts) {
+  return populateSvjCar(new THREE.Group(), spec, opts);
+}
+function swapToSvjCar(p) {
+  try {
+    const v = p.v;
+    if (!v || !v.mesh || !v.mesh.parent) return;
+    if (v.mesh.userData.visualMode === 'glb') return;
+    if (v._procChildren) {
+      for (const c of [...v.mesh.children]) if (v._procChildren.has(c)) v.mesh.remove(c);
+    } else {
+      while (v.mesh.children.length) v.mesh.remove(v.mesh.children[0]);
+    }
+    populateSvjCar(v.mesh, p.spec, { glow: p.glow });
+    v.wheels = v.mesh.userData.wheels;
+    v._procChildren = null;
+    // Shot staging (shots.js 'svjrear') can pre-arm the brake boost; the
+    // swap is async, so apply it here once the real tailMat exists.
+    if (v._brakeStaged && v.mesh.userData.tailMat) v.mesh.userData.tailMat.emissiveIntensity = 2.4;
+  } catch (e) { /* keep the procedural visual */ }
+}
+try {
+  loadHeroAsset('lamboSvj').then((wrapper) => {
+    try {
+      svjSettled = true;
+      if (!wrapper) { svjPending.length = 0; return; } // fallback stays
+      svjWrapper = wrapper;
+      for (const p of svjPending.splice(0)) swapToSvjCar(p);
+    } catch (e) { /* keep the procedural visual */ }
+  }).catch(() => { svjSettled = true; svjPending.length = 0; });
+} catch (e) { svjSettled = true; }
 
 export function spawnVehicle(G, specId, x, z, angle, opts) {
   opts = opts || {};
   const spec = { ...CARS[specId], id: specId };
   const isHeroCar = HERO_CAR_SPECS.has(specId);
   const isGtrCar = GTR_SPECS.has(specId);
-  const mesh = isGtrCar && gtrWrapper ? makeGtrCarMesh(spec, opts) : isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
+  const isSvjCar = SVJ_SPECS.has(specId);
+  const mesh = isSvjCar && svjWrapper ? makeSvjCarMesh(spec, opts) : isGtrCar && gtrWrapper ? makeGtrCarMesh(spec, opts) : isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
   mesh.position.set(x, groundH(x, z) + 0.02, z); mesh.rotation.y = angle || 0;
   G.scene.add(mesh);
   const v = { spec, specId, mesh, angle: angle || 0, speed: 0, health: 100, driver: opts.driver || 'parked', color: opts.color != null ? opts.color : spec.color, wheels: mesh.userData.wheels, steerVis: 0, x, z, target: null, lane: opts.lane || 0, smokeT: 0 };
@@ -611,6 +769,10 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
   if (isGtrCar && !gtrWrapper && !gtrSettled) {
     v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
     gtrPending.push({ v, spec, glow: opts.glow });
+  }
+  if (isSvjCar && !svjWrapper && !svjSettled) {
+    v._procChildren = new Set(mesh.children); // snapshot for the in-place swap
+    svjPending.push({ v, spec, glow: opts.glow });
   }
   if (!G.vehicles) G.vehicles = [];
   G.vehicles.push(v);

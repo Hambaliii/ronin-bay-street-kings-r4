@@ -98,9 +98,26 @@ export function setupShot(G, name) {
     const v = spawnVehicle(G, 'kaze', -300, -610, 2.2, { driver: 'parked' });
     cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
     void v;
+  } else if (name === 'svj') {
+    // S31: front 3/4 of the HQ showcase SVJ (spawned in main.js at
+    // (-430,452), angle 0.9) — glass canopy readable at tod 10.5.
+    G.timeOfDay = 10.5;
+    cam(G, -424, 1.3, 441, -430.5, 0.75, 452.5);
+  } else if (name === 'svjrear') {
+    // S31: rear 3/4 of the showcase SVJ — Y taillights readable. The GLB
+    // swap is async, so arm the brake boost on the vehicle: swapToSvjCar
+    // applies it to the real tailMat when the swap lands (if the GLB is
+    // already in, boost the live tailMat directly).
+    G.timeOfDay = 10.5;
+    const sv = (G.vehicles || []).find((v) => v && v.specId === 'svj');
+    if (sv) {
+      sv._brakeStaged = true;
+      if (sv.mesh && sv.mesh.userData.tailMat) sv.mesh.userData.tailMat.emissiveIntensity = 2.4;
+    }
+    cam(G, -437, 1.4, 461, -429.5, 0.8, 451.5);
   } else if (name === 'lineup') {
-    const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra','gtr35'];
-    all.forEach((id, i) => spawnVehicle(G, id, -561 + i * 66, 560, Math.PI, { driver: 'parked' }));
+    const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra','gtr35','svj'];
+    all.forEach((id, i) => spawnVehicle(G, id, -558 + i * 62, 560, Math.PI, { driver: 'parked' }));
     cam(G, -40, 10, 592, -40, 0.5, 556);
   } else if (name === 'chars') {
     // S27: 'shun' added at the end of the row. Spacing tightened 8 -> 7

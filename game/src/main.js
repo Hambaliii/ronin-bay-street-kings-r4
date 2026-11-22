@@ -55,6 +55,9 @@ createPlayer(G);
 // starter car parked at HQ garage apron
 const starter = spawnVehicle(G, 'hachi', -412.5, 452, Math.PI, { driver: 'parked' });
 G.starterCar = starter;
+// S31 showcase: the dream car — a static SVJ Aventador on the HQ apron
+// (GLB swap + matte-black/glass/Y-light treatment like any svj spawn).
+spawnVehicle(G, 'svj', -430, 452, 0.9, { driver: 'parked' });
 spawnTraffic(G, 14);
 // Parked life: fixed street-edge cars (deterministic, never hero/police specs).
 spawnVehicle(G, 'sedan', 154, 300, 0, { driver: 'parked' });
