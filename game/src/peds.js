@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { rr, ri, pick, chance } from './random.js';
 import { groundH } from './world.js';
 import { makeFigure, animateFigure } from './player.js';
+import { loadHeroAsset } from './assets.js';
 
 // ------------------------------------------------------------------ peds.js
 // ~26 pedestrians walking Ronin Bay's sidewalks, with panic reactions.
@@ -12,6 +13,27 @@ const HAIR_COLORS = [0x14100e, 0x8c2f1d, 0x6a3fa0, 0x2a2a2e, 0xc9ccd4, 0x1a1512,
 const TOPS = ['tank', 'hoodie', 'jacket'];
 const TOP_COLORS = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a, 0xff8ab0, 0x57b7ff, 0x8a5a34];
 const PANTS_COLORS = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
+
+// --- GLB citizen models (drop-in pattern) ------------------------------------
+// Each entry designates every Nth spawned ped (spawn index % every === 0) to
+// use that registered GLB instead of the procedural figure, once it loads.
+// Procedural stays as the fallback for everyone (and forever, on load
+// failure). To add citizen2..6 later: register the asset in assets.js and
+// add one entry here.
+// The citizen GLB faces +Z already (toes extend +z), same as the game's
+// heading convention, so no flip is needed; keep the constant so a future
+// model that faces -Z is a one-line change.
+const PED_GLB_ROT_Y = 0;
+const CITIZEN_MODELS = [
+  { key: 'citizenWoman', every: 3 },
+];
+
+function citizenEntryForIndex(i) {
+  for (const entry of CITIZEN_MODELS) {
+    if (entry && entry.every > 0 && i % entry.every === 0) return entry;
+  }
+  return null;
+}
 
 function pedParams() {
   const hi = ri(0, HAIR.length - 1);
@@ -54,6 +76,43 @@ export function initPeds(G) {
   G.peds = [];
   const N = 26;
 
+  // Resolved GLB wrapper templates, by citizen-model key. Filled in async;
+  // designated peds are swapped in place whenever a template arrives.
+  const citizenTemplates = {};
+
+  function applyGlbVisual(ped) {
+    try {
+      if (!ped || ped.figIsGlb || !ped.citizenKey) return;
+      const template = citizenTemplates[ped.citizenKey];
+      if (!template) return;
+      const inner = new THREE.Group();
+      inner.rotation.y = PED_GLB_ROT_Y;
+      inner.add(template.clone(true));
+      if (ped.visual) ped.fig.remove(ped.visual);
+      ped.fig.add(inner);
+      ped.visual = inner;
+      ped.glbInner = inner;
+      ped.figIsGlb = true;
+    } catch (e) { /* keep the procedural visual */ }
+  }
+
+  // Kick off the citizen-model load(s); procedural figures are the fallback
+  // until (and unless) each promise resolves with a model.
+  for (const entry of CITIZEN_MODELS) {
+    try {
+      const p = loadHeroAsset(entry.key);
+      if (p && typeof p.then === 'function') {
+        p.then((wrapper) => {
+          try {
+            if (!wrapper) return;
+            citizenTemplates[entry.key] = wrapper;
+            for (const ped of G.peds) applyGlbVisual(ped);
+          } catch (e) { /* fallback stays */ }
+        }).catch(() => {});
+      }
+    } catch (e) { /* fallback stays */ }
+  }
+
   function placePed(ped, spot) {
     ped.x = spot.x; ped.z = spot.z;
     ped.vertical = spot.vertical;
@@ -64,10 +123,20 @@ export function initPeds(G) {
   }
 
   for (let i = 0; i < N; i++) {
-    let fig = null;
-    try { fig = makeFigure(pedParams()); } catch (e) { continue; }
+    let procFig = null;
+    try { procFig = makeFigure(pedParams()); } catch (e) { continue; }
+    // Outer group: all walk/idle/panic logic positions and rotates this.
+    // The visual child (procedural figure or GLB clone) lives inside it.
+    const fig = new THREE.Group();
+    fig.add(procFig);
+    const citizenEntry = citizenEntryForIndex(i);
     const ped = {
       fig,
+      visual: procFig,
+      glbInner: null,
+      figIsGlb: false,
+      citizenKey: citizenEntry ? citizenEntry.key : null,
+      idx: i,
       x: 0, z: 0, angle: 0,
       speed: rr(1.2, 1.8),
       phase: rr(0, 10),
@@ -88,7 +157,7 @@ export function initPeds(G) {
             new THREE.MeshStandardMaterial({ color: 0x111318, roughness: 0.4, metalness: 0.4, emissive: 0x2a4a6a, emissiveIntensity: 0.7 })
           );
           phone.position.set(0.22, 1.05, 0.22);
-          fig.add(phone);
+          procFig.add(phone);
         } catch (e) { /* optional */ }
       }
     } else {
@@ -105,6 +174,8 @@ export function initPeds(G) {
     fig.rotation.y = ped.angle;
     G.scene.add(fig);
     G.peds.push(ped);
+    // If the GLB somehow resolved before this ped spawned, use it at once.
+    applyGlbVisual(ped);
   }
 
   G.updaters.push((G2, dt) => {
@@ -123,7 +194,12 @@ export function initPeds(G) {
 
       if (ped.idle) {
         ped.sway += dt;
-        try { animateFigure(ped.fig, ped.sway * 0.7, 0.12); } catch (e) {}
+        if (ped.figIsGlb && ped.glbInner) {
+          // GLB idle: gentle whole-body bob (ped.sway is accumulated time).
+          try { ped.glbInner.position.y = 0.006 * Math.sin(ped.sway * 1.5 + ped.idx); } catch (e) {}
+        } else {
+          try { animateFigure(ped.visual, ped.sway * 0.7, 0.12); } catch (e) {}
+        }
         ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
         ped.fig.rotation.y = ped.angle + Math.sin(ped.sway * 0.4) * 0.15;
         continue;
@@ -185,7 +261,20 @@ export function initPeds(G) {
         ped.z += ((ped.z - pz) / dPlayer) * push;
       }
 
-      try { animateFigure(ped.fig, ped.phase, ped.panicT > 0 ? 1.6 : 0.55); } catch (e) {}
+      if (ped.figIsGlb && ped.glbInner) {
+        // GLB walk: whole-body bob + rock on the inner wrapper, same phase
+        // the procedural call would have used. While panicking, add a hop
+        // spike in place of the procedural arm-flail (which reads the
+        // figure's userData parts and must never run on a GLB visual).
+        try {
+          let bobY = Math.abs(Math.sin(ped.phase)) * 0.04;
+          if (ped.panicT > 0) bobY += Math.abs(Math.sin(ped.phase * 1.7)) * 0.06;
+          ped.glbInner.position.y = bobY;
+          ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.03;
+        } catch (e) {}
+      } else {
+        try { animateFigure(ped.visual, ped.phase, ped.panicT > 0 ? 1.6 : 0.55); } catch (e) {}
+      }
       ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
       ped.fig.rotation.y = ped.angle;
     }
