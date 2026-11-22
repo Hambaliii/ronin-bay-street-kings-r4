@@ -73,6 +73,12 @@ export function setupShot(G, name) {
     ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 1.5, 451, 0));
     cam(G, -436, 2.4, 464, -410, 1.0, 446);
   } else if (name === 'chase') {
+    // S28: dusk restage — heli searchlight (cone + ground pool) hard-tracks
+    // the player car at wanted 4; the heliShot override drops the heli to
+    // altitude 16 / radius 11 so heli + cone + pool + car share the frame.
+    G.timeOfDay = 18.9;
+    G.wanted = 4;
+    G.heliShot = { altitude: 16, radius: 11 };
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
     v.speed = 22;
     v.health = 45; // S26 amendment B: damage smoke trails from the hood (S25)
@@ -86,7 +92,7 @@ export function setupShot(G, name) {
     p1.staged = true; p2.staged = true;
     G.cops.push(p1, p2);
     G.flags.heliStage = { x: 100, z: 495 };
-    cam(G, 114, 2.6, 480, 97, 1.0, 496);
+    cam(G, 121, 5.5, 468, 99, 1.5, 495);
   } else if (name === 'hero') {
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     const v = spawnVehicle(G, 'kaze', -300, -610, 2.2, { driver: 'parked' });

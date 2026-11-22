@@ -212,6 +212,25 @@ function applyGlbVisual(heli, wrapper, dressing) {
   } catch (e) { return false; }
 }
 
+// --- Searchlight ground-pool texture (S28) -----------------------------------
+// Radial-gradient disc texture: warm white core fading to fully transparent
+// at the rim, so the lit circle reads as a soft pool of light on the asphalt.
+function poolTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  grad.addColorStop(0, 'rgba(255,246,205,1)');
+  grad.addColorStop(0.35, 'rgba(255,240,190,0.75)');
+  grad.addColorStop(0.7, 'rgba(255,232,160,0.28)');
+  grad.addColorStop(1, 'rgba(255,230,150,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
+}
+
 // --- Helicopter (rounded build — no plain-box body) --------------------------
 function makeHeli(G) {
   const group = new THREE.Group();
@@ -366,9 +385,24 @@ function makeHeli(G) {
   G.scene.add(spotlight);
   G.scene.add(spotlight.target);
 
+  // S28: explicit ground light-pool disc. Scene-space (like the spotlight)
+  // so it can sit flat on the ground at the tracked point each frame,
+  // independent of the heli group's orientation.
+  let pool = null;
+  try {
+    const poolMat = new THREE.MeshBasicMaterial({
+      map: poolTexture(), transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    pool = new THREE.Mesh(new THREE.CircleGeometry(6.5, 40), poolMat);
+    pool.rotation.x = -Math.PI / 2;
+    pool.renderOrder = 5;
+    G.scene.add(pool);
+  } catch (e) { /* headless: pool optional, spotlight still lights the ground */ }
+
   group.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
   G.scene.add(group);
-  return { group, body, rotor, tailRotor, cone, spotlight, lensGlow, orbitA: rr(0, Math.PI * 2), leaveT: 0, visualMode: 'procedural' };
+  return { group, body, rotor, tailRotor, cone, spotlight, lensGlow, pool, trackX: null, trackZ: null, orbitA: rr(0, Math.PI * 2), leaveT: 0, visualMode: 'procedural' };
 }
 
 // --- lightbar flashing -------------------------------------------------------
@@ -550,6 +584,7 @@ export function initPolice(G) {
     if (!G.heli) return;
     G.scene.remove(G.heli.group);
     if (G.heli.spotlight) { G.scene.remove(G.heli.spotlight); G.scene.remove(G.heli.spotlight.target); }
+    if (G.heli.pool) G.scene.remove(G.heli.pool);
     G.heli = null;
   }
   if (G.shot === 'chase' || G.shot === 'heli') ensureHeli(G.shot === 'heli');
@@ -782,24 +817,60 @@ export function initPolice(G) {
       if (G.heli) {
         h.orbitA += dt * 0.35;
         const stage = G.flags.heliStage ? G.flags.heliStage : p;
-        const radius = G.shot === 'heli' ? 6 : 20;
+        // S28 shot staging override (shots.js 'chase'): a lower, tighter
+        // orbit so heli + cone + pool + player car share the dossier frame.
+        // Normal play never sets G.heliShot, so flight is unchanged.
+        const shotCfg = G.heliShot || null;
+        const radius = shotCfg && typeof shotCfg.radius === 'number' ? shotCfg.radius : (G.shot === 'heli' ? 6 : 20);
+        const altitude = shotCfg && typeof shotCfg.altitude === 'number' ? shotCfg.altitude : 29;
         const hx = stage.x + Math.sin(h.orbitA) * radius;
         const hz = stage.z + Math.cos(h.orbitA) * radius;
-        const hy = groundH(hx, hz) + 29 + Math.sin(S.t * 0.9) * 1.6;
+        const hy = groundH(hx, hz) + altitude + Math.sin(S.t * 0.9) * 1.6;
+        // S28 searchlight tracking. One tracked point drives the cone, the
+        // SpotLight, its target and the ground pool together:
+        //  - wanted >= 3 and the player is in a car (or a shot is staged):
+        //    hard-track the car, smoothed at ~2.2/s, plus a small slow
+        //    sin/cos sweep wander (radius ~2.2 m) so the pool breathes
+        //    around the car instead of locking dead-center.
+        //  - below that, the previous behavior stands: the light sits on
+        //    the player's current position (the staged point in shots).
+        const tracking = (G.wanted >= 3 && inCar) || shotHeli;
+        let srcX = p.x, srcZ = p.z;
+        if (shotHeli && G.flags.heliStage) { srcX = G.flags.heliStage.x; srcZ = G.flags.heliStage.z; }
+        if (G.flags.flashCar && shotHeli) { srcX = G.flags.flashCar.x; srcZ = G.flags.flashCar.z; }
+        else if (tracking && G.car) { srcX = G.car.x; srcZ = G.car.z; }
+        let tx = srcX, tz = srcZ;
+        if (tracking) {
+          if (h.trackX === null || h.trackX === undefined) { h.trackX = srcX; h.trackZ = srcZ; }
+          const k = 1 - Math.exp(-2.2 * Math.max(0, dt));
+          h.trackX += (srcX - h.trackX) * k;
+          h.trackZ += (srcZ - h.trackZ) * k;
+          tx = h.trackX + Math.sin(S.t * 0.6) * 2.2;
+          tz = h.trackZ + Math.cos(S.t * 0.45) * 2.2;
+        } else {
+          h.trackX = srcX; h.trackZ = srcZ;
+        }
+        const tGroundY = groundH(tx, tz);
         h.group.position.set(hx, hy, hz);
-        h.group.lookAt(p.x, groundH(p.x, p.z) + 1, p.z);
+        h.group.lookAt(tx, tGroundY + 1, tz);
         h.body.rotation.z = 0.38; // banking roll into the orbit
         h.body.rotation.x = 0.06;
         h.rotor.rotation.y += dt * 28;
         h.tailRotor.rotation.x += dt * 40;
-        // Spotlight tracks the player.
+        // Spotlight follows the tracked point.
         h.spotlight.position.copy(h.group.position);
-        h.spotlight.target.position.set(p.x, groundH(p.x, p.z), p.z);
+        h.spotlight.target.position.set(tx, tGroundY, tz);
         h.spotlight.target.updateMatrixWorld();
-        // Beam cone: stretch from heli toward the ground under the player.
-        const beamLen = Math.max(10, hy - groundH(p.x, p.z));
+        // Beam cone: stretch from heli toward the tracked ground point.
+        const beamLen = Math.max(10, hy - tGroundY);
         h.cone.scale.set(1, beamLen / 30, 1);
         h.cone.position.set(0, -beamLen / 2, 0.6);
+        // S28 ground pool: flat disc on the ground at the tracked point.
+        if (h.pool) {
+          h.pool.position.set(tx, tGroundY + 0.06, tz);
+          h.pool.material.opacity = tracking ? 0.55 : 0.25;
+          h.pool.visible = true;
+        }
       }
     }
 
