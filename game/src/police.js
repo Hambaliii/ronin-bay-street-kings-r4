@@ -884,9 +884,11 @@ export function initPolice(G) {
       let nearCops = 0;
       for (const v of G.cops) if (dist2d(v.x, v.z, p.x, p.z) < 13) nearCops++;
       if ((G.wanted || 0) < 2) G.bustMeter = 0;
-      else if (pSpeed < 1.2 && nearCops >= 2) G.bustMeter = Math.min(1, (G.bustMeter || 0) + 0.28 * dt);
+      // S34: while a shot is staged, the bust meter can neither accumulate
+      // nor fire (virtual-time dt spikes otherwise jump it past the pin).
+      else if (!G.shot && !G.shotMode && pSpeed < 1.2 && nearCops >= 2) G.bustMeter = Math.min(1, (G.bustMeter || 0) + 0.28 * dt);
       else G.bustMeter = Math.max(0, (G.bustMeter || 0) - 0.5 * dt);
-      if ((G.bustMeter || 0) >= 1) {
+      if (!G.shot && !G.shotMode && (G.bustMeter || 0) >= 1) {
         G.bustMeter = 0;
         G.audio?.play?.('busted');
         try { G.hud?.showBusted?.(); } catch (e) {}

@@ -224,3 +224,25 @@ export async function loadHeroAsset(name) {
   }
   return _heroCache.get(name);
 }
+
+// --- S34: eager registry loads + readiness gate ------------------------------
+// Start loading EVERY registry entry at module init so all GLB swaps race
+// from the same t=0 instead of whenever each caller happens to ask. The
+// per-asset procedural fallbacks are untouched: a failed load still
+// resolves null and callers keep the procedural visual exactly as before.
+for (const _name of Object.keys(HERO_ASSETS)) {
+  try { loadHeroAsset(_name); } catch (e) { /* fallback stays procedural */ }
+}
+// Settles when every registry load started above has finished (success or
+// failure). Never rejects (allSettled).
+export const heroAssetsReady = Promise.allSettled([..._heroCache.values()]);
+// Same gate, evaluated at call time: allSettled over every load started so
+// far plus the full registry list (registry loads are all started above,
+// so the cache already covers the registry; the extra pass is a no-op
+// safety net for any entry somehow not yet started).
+export function whenHeroAssetsReady() {
+  for (const name of Object.keys(HERO_ASSETS)) {
+    try { loadHeroAsset(name); } catch (e) { /* fallback stays procedural */ }
+  }
+  return Promise.allSettled([..._heroCache.values()]);
+}

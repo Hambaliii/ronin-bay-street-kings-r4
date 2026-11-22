@@ -82,6 +82,14 @@ export function setupShot(G, name) {
     G.wanted = 4;
     G.heliShot = { altitude: 16, radius: 11 };
     const v = spawnVehicle(G, 'taiyo', 100, 495, Math.PI / 2, { driver: 'parked' });
+    // S34: move the player ENTITY onto the staged car so the live police /
+    // heli systems target the car at (100,495), not the HQ spawn point.
+    // ('chase' is in the hide-exclusion list at the bottom, so this sticks.)
+    if (G.player) {
+      G.player.x = 100; G.player.z = 495; G.player.angle = Math.PI / 2;
+      G.player.fig.position.set(100, groundH(100, 495), 495);
+      G.player.fig.rotation.y = Math.PI / 2;
+    }
     v.speed = 22;
     v.health = 45; // S26 amendment B: damage smoke trails from the hood (S25)
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
@@ -97,13 +105,11 @@ export function setupShot(G, name) {
     cam(G, 121, 5.5, 468, 99, 1.5, 495);
   } else if (name === 'hero') {
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    // S33: offset +14 m along the car's facing (angle 2.2 -> heading
-    // (sin 2.2, cos 2.2) = (0.808, -0.589); delta (+11.3, -8.2)) so the car
-    // no longer sits on the cash pickup at Touge (-296,-606) — it is now
-    // ~14.2 m clear. Camera position AND look target shift by the same
-    // delta, so the framing relative to the car is unchanged.
-    const v = spawnVehicle(G, 'kaze', -288.7, -618.2, 2.2, { driver: 'parked' });
-    cam(G, -279.7, groundH(-279.7, -608.2) + 2.0, -608.2, -288.7, groundH(-288.7, -618.2) + 0.8, -618.2);
+    // S34: S33 offset reverted — car back at (-300,-610) with the original
+    // camera; the Touge cash pickup that washed the frame was moved
+    // instead (main.js PICKUP_SPOTS: now at (-322,-590)).
+    const v = spawnVehicle(G, 'kaze', -300, -610, 2.2, { driver: 'parked' });
+    cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
     void v;
   } else if (name === 'svj') {
     // S31: front 3/4 of the HQ showcase SVJ (spawned in main.js at
@@ -121,14 +127,14 @@ export function setupShot(G, name) {
       sv._brakeStaged = true;
       if (sv.mesh && sv.mesh.userData.tailMat) sv.mesh.userData.tailMat.emissiveIntensity = 2.4;
     }
-    cam(G, -437.5, 1.2, 445.0, -429.8, 0.75, 452.2);
+    cam(G, -435.2, 0.95, 447.8, -430.2, 0.72, 452.2);
   } else if (name === 'lineup') {
+    // S34: the row sits on the real east-west road (centre z=495) at
+    // z=487, angle PI/2 — facing +x/east, profile to the southern camera.
+    // The old z=560 row is gone entirely.
     const all = ['hachi','sora15','kei','sedan','wagon','van','suv','truck','taxi','police','police-suv','hatch','roadster','hoshi7','taiyo','kaze','hero-supra','gtr35','svj'];
-    all.forEach((id, i) => spawnVehicle(G, id, -558 + i * 62, 560, Math.PI, { driver: 'parked' }));
-    // S33: camera relative to the row start (startX -558, rowZ 560):
-    // (startX - 26, 5.5, rowZ + 26) looking to (startX + 190, 0.8, rowZ)
-    // — a long elevated diagonal down the row (was inside a building).
-    cam(G, -584, 5.5, 586, -368, 0.8, 560);
+    all.forEach((id, i) => spawnVehicle(G, id, -558 + i * 62, 487, Math.PI / 2, { driver: 'parked' }));
+    cam(G, -584, 4.5, 522, -320, 1, 490);
   } else if (name === 'chars') {
     // S27: 'shun' added at the end of the row. Spacing tightened 8 -> 7
     // so the now-8-wide row stays centered on the camera target (-412):
@@ -219,6 +225,15 @@ export function setupShot(G, name) {
     const v = spawnVehicle(G, 'taiyo', -412.5, 446, 0.6, { driver: 'parked' });
     v.health = 12;
     primeDamageSmoke(G, v, 12);
+    // S34: the screenshot lands at the END of the virtual-time budget, so
+    // the one-shot primed puffs (1.4 s life) are long dead by then. A
+    // shot-local updater re-primes the plume every 0.9 s for as long as
+    // the shot runs, so a live column always exists at frame time.
+    let smokeAcc = 0;
+    G.updaters.push((G2, dt) => {
+      smokeAcc += dt || 0;
+      if (smokeAcc >= 0.9) { smokeAcc = 0; primeDamageSmoke(G, v, 12); }
+    });
     cam(G, -407.5, 1.5, 440.5, -412.5, 1.0, 446);
   } else if (name === 'night') {
     // S25 verify: taiyo staged in-car on the avenue at night (tod 21.5,
@@ -268,7 +283,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }

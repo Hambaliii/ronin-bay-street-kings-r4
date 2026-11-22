@@ -14,6 +14,7 @@ import { initMissions } from './missions.js';
 import { initHUD } from './hud.js';
 import { initAudio } from './audio.js';
 import { initWeapons } from './weapons.js';
+import { heroAssetsReady } from './assets.js';
 
 const params = new URLSearchParams(location.search);
 const seed = parseInt(params.get('seed') || '1', 10) || 1;
@@ -106,7 +107,7 @@ const PICKUP_SPOTS = [
   { type: 'cash', amount: 150, x: 322, z: 545 },    // Port south quay
   { type: 'cash', amount: 90, x: -174, z: 156 },    // Neon District
   { type: 'cash', amount: 110, x: -488, z: -174 },  // Harborview
-  { type: 'cash', amount: 150, x: -296, z: -606 },  // Touge summit
+  { type: 'cash', amount: 150, x: -322, z: -590 },  // Touge summit (S34: moved off the 'hero' shot frame)
   { type: 'cash', amount: 75, x: -338, z: 338 },    // Hoshino blocks
   { type: 'health', amount: 30, x: 326, z: -322 },  // Hospital corner
   { type: 'health', amount: 30, x: -404, z: 460 },  // HQ garage apron
@@ -169,8 +170,16 @@ G.updaters.push((G2, dt) => {
   }
 });
 if (shot) {
-  setupShot(G, shot);
-  const menu = document.getElementById('menu'); if (menu) menu.style.display = 'none';
+  // S34: defer ONLY the shot staging until the hero-asset loads settle
+  // (6 s cap) so GLB swaps have landed before the scene is staged and
+  // captured. Gameplay boot above is NOT delayed — every init ran
+  // synchronously as before; without ?shot this block never runs.
+  const applyShot = () => {
+    setupShot(G, shot);
+    const menu = document.getElementById('menu'); if (menu) menu.style.display = 'none';
+  };
+  const shotTimeout = new Promise((resolve) => setTimeout(resolve, 6000));
+  Promise.race([heroAssetsReady, shotTimeout]).then(applyShot);
 }
 
 // input

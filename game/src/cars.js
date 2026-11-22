@@ -554,6 +554,10 @@ let gtrSettled = false;
 const gtrPending = [];
 function populateGtrCar(grp, spec, opts) {
   const clone = gtrWrapper.clone(true);
+  // S34: the GT-R model's nose is -Z in wrapper space (every other hero
+  // GLB faces +Z) — rotate the wrapper PI about Y so the nose aligns
+  // with vehicle forward +Z like the hero car. GT-R only.
+  clone.rotation.y = Math.PI;
   applyGtrLivery(clone);
   grp.add(clone);
   addUnderglow(grp, spec, opts);
@@ -668,12 +672,13 @@ function applySvjTreatment(wrapper, vehicle) {
   wrapper.add(canopy);
   // (c) TAILLIGHTS — two Y-LED units on the rear face (z = -2.46). The
   // material is registered as the vehicle's tailMat: the brake-boost
-  // path writes emissiveIntensity on tailMat, so base is 0.85 and
-  // braking brightens the Y's. Small red glow sprite behind each unit.
+  // path writes emissiveIntensity on tailMat, so base is 1.1 (S34:
+  // enlarged Y units) and braking brightens the Y's. Small red glow
+  // sprite behind each unit.
   const tailTex = svjTailTexture();
-  const tailMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: tailTex, map: tailTex, transparent: true, emissiveIntensity: 0.85 });
+  const tailMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: tailTex, map: tailTex, transparent: true, emissiveIntensity: 1.1 });
   for (const s of [-1, 1]) {
-    const unit = new THREE.Mesh(new THREE.PlaneGeometry(0.66, 0.22), tailMat);
+    const unit = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.28), tailMat);
     unit.position.set(s * 0.56, 0.80, -2.46);
     unit.rotation.y = Math.PI; // face -Z
     wrapper.add(unit);
