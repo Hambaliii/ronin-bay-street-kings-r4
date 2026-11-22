@@ -105,6 +105,13 @@ export function setupShot(G, name) {
     spawnVehicle(G, 'police-suv', -192, 292, -2.4, { driver: 'cop' });
     G.flags.heliStage = { x: -200, z: 300 };
     cam(G, -186, 2.0, 314, -198, 1.2, 298);
+  } else if (name === 'street') {
+    // S16 verify: taiyo stopped at the (150,-150) intersection approach —
+    // low corner view of the marked avenue, crosswalk and NE traffic light.
+    // (150,-150) is the staging label; the actual grid point is (165,-165).
+    G.timeOfDay = 10.5;
+    spawnVehicle(G, 'taiyo', 150, -128, Math.PI, { driver: 'parked' });
+    cam(G, 161, 1.7, -133, 149, 1.5, -156);
   } else if (name === 'mapzoom') {
     if (G.player) { G.player.x = 300; G.player.z = -300; G.player.fig.position.set(300, groundH(300, -300), -300); }
     G.flags.mapZoom = true;

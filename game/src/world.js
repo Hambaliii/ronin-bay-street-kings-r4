@@ -161,7 +161,22 @@ export function buildWorld(G) {
   const beach = new THREE.Mesh(new THREE.PlaneGeometry(1320, 100), new THREE.MeshStandardMaterial({ color: 0xe3cf9e, roughness: 1 }));
   beach.rotation.x = -Math.PI / 2; beach.position.set(0, 0.03, 610); scene.add(beach);
   // roads
-  const dashTex = canvasTex(64, 256, (g, w, h) => { g.fillStyle = '#33373d'; g.fillRect(0, 0, w, h); g.fillStyle = '#e8e4d0'; g.fillRect(w / 2 - 2, 20, 4, 60); g.fillRect(w / 2 - 2, 150, 4, 60); });
+  // S16 marked asphalt: texture U = across the road, V = along its length.
+  // 4-lane cross-section: solid edge lines, dashed lane dividers at U .25/.75
+  // (dash fills 45% of the V tile, so it tiles seamlessly), double solid
+  // pale-yellow centre lines. Speckle/crack noise over the base as before.
+  const dashTex = canvasTex(64, 256, (g, w, h) => {
+    g.fillStyle = '#33373c'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 700; i++) { const v = 40 + Math.floor(rnd() * 36); g.fillStyle = `rgba(${v},${v},${v + 4},.18)`; g.fillRect(rnd() * w, rnd() * h, 2, 2); }
+    for (let i = 0; i < 130; i++) { g.fillStyle = 'rgba(255,255,255,.045)'; g.fillRect(rnd() * w, rnd() * h, 2, 2); }
+    g.strokeStyle = 'rgba(0,0,0,.16)'; g.lineWidth = 1;
+    for (let i = 0; i < 7; i++) { g.beginPath(); let x = rnd() * w, y = rnd() * h; g.moveTo(x, y); for (let s = 0; s < 3; s++) { x += rr(-9, 9); y += rr(4, 14); g.lineTo(x, y); } g.stroke(); }
+    const line = (u, col, wU) => { g.fillStyle = col; const lw = Math.max(1, w * wU); g.fillRect(w * u - lw / 2, 0, lw, h); };
+    line(0.03, '#d8d8d2', 0.012); line(0.97, '#d8d8d2', 0.012); // edge lines
+    line(0.478, '#e8d9a0', 0.008); line(0.522, '#e8d9a0', 0.008); // double centre
+    g.fillStyle = '#ffffff'; // lane divider dashes: filled 45% of the V tile
+    for (const u of [0.25, 0.75]) { const lw = Math.max(1, w * 0.010); g.fillRect(w * u - lw / 2, 0, lw, h * 0.45); }
+  });
   dashTex.wrapS = dashTex.wrapT = THREE.RepeatWrapping;
   const roadMat = new THREE.MeshStandardMaterial({ map: dashTex, roughness: 0.95 });
   const plainRoadMat = new THREE.MeshStandardMaterial({ color: 0x33373d, roughness: 0.95 });
@@ -197,6 +212,91 @@ export function buildWorld(G) {
       }
     }
     inst.instanceMatrix.needsUpdate = true; scene.add(inst);
+  }
+  // ---- S16 traffic lights: two signal poles at diagonal corners of every
+  // intersection (NE pole = X-axis head, discs facing +x; SW pole = Z-axis
+  // head, discs facing +z). Poles: one merged geometry, one InstancedMesh.
+  // Lamps: 12 InstancedMeshes (3 colours x on/off x 2 axes); the cycle only
+  // toggles .visible at phase changes. Cycle: NS green 5.5s, NS yellow 1.5s,
+  // all-red 0.75s, EW green 5.5s, EW yellow 1.5s, all-red 0.75s (15.5s loop).
+  {
+    const mergeGeos = (geos) => {
+      let vtx = 0, idx = 0;
+      for (const g of geos) { vtx += g.attributes.position.count; idx += g.index.count; }
+      const pos = new Float32Array(vtx * 3), nor = new Float32Array(vtx * 3), uv = new Float32Array(vtx * 2);
+      const ind = new Uint32Array(idx);
+      let vo = 0, io = 0;
+      for (const g of geos) {
+        pos.set(g.attributes.position.array, vo * 3); nor.set(g.attributes.normal.array, vo * 3);
+        if (g.attributes.uv) uv.set(g.attributes.uv.array, vo * 2);
+        for (let i = 0; i < g.index.count; i++) ind[io + i] = g.index.getX(i) + vo;
+        vo += g.attributes.position.count; io += g.index.count;
+      }
+      const out = new THREE.BufferGeometry();
+      out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+      out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      out.setIndex(new THREE.BufferAttribute(ind, 1));
+      return out;
+    };
+    // canonical pole: arm reaches toward +z, head box at its end
+    const poleGeo = mergeGeos([
+      new THREE.CylinderGeometry(0.07, 0.09, 4.6, 8).translate(0, 2.3, 0),
+      new THREE.BoxGeometry(0.12, 0.12, 1.0).translate(0, 4.5, 0.5),
+      new THREE.BoxGeometry(0.34, 0.9, 0.3).translate(0, 4.15, 0.95),
+    ]);
+    const poleMat2 = new THREE.MeshStandardMaterial({ color: 0x22262a, roughness: 0.6, metalness: 0.6 });
+    const intersections = [];
+    for (const cx of G.roadX) for (const cz of G.roadZ) intersections.push([cx, cz]);
+    const poles = new THREE.InstancedMesh(poleGeo, poleMat2, intersections.length * 2);
+    const lampGeo = new THREE.CircleGeometry(0.11, 12);
+    const ON_COL = [0xff2a1e, 0xffb020, 0x2aff5a]; // red, yellow, green
+    const lampMeshes = { x: [], z: [] }; // per colour: { on, off }
+    for (const axis of ['x', 'z']) for (let ci = 0; ci < 3; ci++) {
+      const on = new THREE.InstancedMesh(lampGeo, new THREE.MeshBasicMaterial({ color: ON_COL[ci] }), intersections.length);
+      const off = new THREE.InstancedMesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0x1a1c1e }), intersections.length);
+      lampMeshes[axis].push({ on, off }); scene.add(on); scene.add(off);
+    }
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), one = new THREE.Vector3(1, 1, 1), pv = new THREE.Vector3();
+    let pi = 0;
+    intersections.forEach(([cx, cz], ii) => {
+      // [poleX, poleZ, rotY, axis] — rotY 0: arm/head toward +z; PI/2: toward +x
+      for (const [px, pz, ry, axis] of [[cx + 13, cz + 13, Math.PI / 2, 'x'], [cx - 13, cz - 13, 0, 'z']]) {
+        q.setFromEuler(e.set(0, ry, 0));
+        poles.setMatrixAt(pi++, m4.compose(pv.set(px, 0, pz), q, one));
+        const cos = Math.cos(ry), sin = Math.sin(ry);
+        for (let ci = 0; ci < 3; ci++) {
+          const ly = 4.15 + [0.28, 0, -0.28][ci], lz = 1.11; // lamp disc on the head face
+          const wx = px + lz * sin, wz = pz + lz * cos; // RotY applied to (0, ly, lz)
+          const lm = m4.compose(pv.set(wx, ly, wz), q, one);
+          lampMeshes[axis][ci].on.setMatrixAt(ii, lm);
+          lampMeshes[axis][ci].off.setMatrixAt(ii, lm);
+        }
+      }
+    });
+    poles.instanceMatrix.needsUpdate = true; scene.add(poles);
+    for (const axis of ['x', 'z']) for (const s of lampMeshes[axis]) { s.on.instanceMatrix.needsUpdate = true; s.off.instanceMatrix.needsUpdate = true; }
+    // cycle state
+    let lightT = 0, phase = -1, curX = 'red', curZ = 'green';
+    const applyLights = () => {
+      for (const [axis, st] of [['x', curX], ['z', curZ]]) {
+        const active = st === 'red' ? 0 : st === 'yellow' ? 1 : 2;
+        lampMeshes[axis].forEach((s, ci) => { s.on.visible = ci === active; s.off.visible = ci !== active; });
+      }
+    };
+    applyLights();
+    G.lightState = (axis) => (axis === 'x' ? curX : curZ);
+    G.updaters.push((G2, dt) => {
+      lightT = (lightT + dt) % 15.5;
+      let ph, nx = 'red', nz = 'red';
+      if (lightT < 5.5) { ph = 0; nz = 'green'; }
+      else if (lightT < 7) { ph = 1; nz = 'yellow'; }
+      else if (lightT < 7.75) { ph = 2; }
+      else if (lightT < 13.25) { ph = 3; nx = 'green'; }
+      else if (lightT < 14.75) { ph = 4; nx = 'yellow'; }
+      else { ph = 5; }
+      if (ph !== phase) { phase = ph; curX = nx; curZ = nz; applyLights(); }
+    });
   }
   // buildings
   const bases = ['#8a8f96', '#a39a8b', '#7d7468', '#94867a', '#9a6a58', '#5a6d7d'];

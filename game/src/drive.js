@@ -5,7 +5,45 @@ import { groundH } from './world.js';
 import { makeFigure, poseSeated } from './player.js';
 import { spawnSmokeAt, damageVehicle } from './cars.js';
 
+// ---- S16 traffic-light compliance for NPC traffic ----
+// drive.js cannot edit cars.js' updateTraffic, so this hook registers once
+// on G.updaters (which main.js runs BEFORE updateTraffic each frame). It
+// pre-brakes by scaling each traffic car's cruise speed: updateTraffic then
+// applies its own obstacle-braking clamp (max -8*dt toward target speed) to
+// ease the car to a stop 2 m before the intersection edge. On green the
+// original cruise is restored and normal logic resumes.
+function updateTrafficLights(G) {
+  if (!G.traffic || typeof G.lightState !== 'function') return;
+  const half = 15; // CFG.roadW / 2 — intersection box half-extent
+  for (const v of G.traffic) {
+    if (v.driver !== 'traffic' || v.cruise == null) continue;
+    if (v._cruiseOrig == null) v._cruiseOrig = v.cruise;
+    let target = v._cruiseOrig;
+    const axis = v.onX ? 'z' : 'x'; // onX cars travel along z, and vice versa
+    const st = G.lightState(axis);
+    if (st === 'red' || st === 'yellow') {
+      const crossArr = v.onX ? G.roadZ : G.roadX;
+      const along = v.onX ? v.z : v.x;
+      const dirRaw = v.onX ? Math.cos(v.angle) : Math.sin(v.angle);
+      const dirS = dirRaw !== 0 ? Math.sign(dirRaw) : (v.dirSign || 1);
+      for (const c of crossArr || []) {
+        const dEdge = (c - along) * dirS - half; // distance to the near edge of the intersection
+        if (dEdge > 0 && dEdge <= 14) { // approaching, not yet inside (inside => dEdge <= 0)
+          if (st === 'red' || dEdge > 6) target = Math.min(target, v._cruiseOrig * Math.min(1, Math.max(0, dEdge - 2) / 12));
+          break;
+        }
+      }
+    }
+    v.cruise = target;
+  }
+}
+function ensureLightHook(G) {
+  if (!G || G._lightHook || !Array.isArray(G.updaters)) return;
+  G._lightHook = true;
+  G.updaters.push((G2) => { try { updateTrafficLights(G2); } catch (e) {} });
+}
 export function enterCar(G, v) {
+  ensureLightHook(G);
   if (!G.player) return;
   G.player.fig.visible = false;
   if (!v.driverFig) {
@@ -34,6 +72,7 @@ export function exitCar(G) {
   p.fig.position.set(p.x, groundH(p.x, p.z), p.z);
 }
 export function updateDriving(G, dt) {
+  ensureLightHook(G);
   const v = G.car; if (!v) return;
   const spec = v.spec; const k = G.keys;
   const topMs = spec.topSpeed / 3.6;
@@ -78,7 +117,28 @@ export function updateDriving(G, dt) {
       v.speed *= -0.25;
     }
   }
-  void prevX; void prevZ;
+  // S16: player running a red INTO an intersection box adds wanted heat.
+  // weapons.js escalates via its internal addWanted() whose whole effect is
+  // this clamp on G.wanted (it is not exported), so apply the same clamp.
+  try {
+    if (typeof G.lightState === 'function' && Math.abs(v.speed) > 6) {
+      const inBox = (x, z) => {
+        for (const cx of G.roadX) if (Math.abs(x - cx) < 12) for (const cz of G.roadZ) if (Math.abs(z - cz) < 12) return cx + ',' + cz;
+        return null;
+      };
+      const nowBox = inBox(v.x, v.z);
+      if (nowBox && !inBox(prevX, prevZ)) {
+        const axis = Math.abs(Math.sin(v.angle)) > Math.abs(Math.cos(v.angle)) ? 'x' : 'z';
+        if (G.lightState(axis) === 'red') {
+          const now = G.elapsed || 0;
+          if (G._lastRedKey !== nowBox || now - (G._lastRedT || -10) > 4) {
+            G._lastRedKey = nowBox; G._lastRedT = now;
+            G.wanted = Math.min(5, Math.max(0, (G.wanted || 0) + 0.15));
+          }
+        }
+      }
+    }
+  } catch (e) {}
   // traffic collision
   if (G.traffic) for (const o of G.traffic) {
     if (o === v) continue;
