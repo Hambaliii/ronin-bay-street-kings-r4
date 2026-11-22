@@ -167,6 +167,7 @@ export const HERO_ASSETS = {
   npcSedan: { url: 'assets/npc-sedan.glb', targetSize: { x: 4.75, y: 1.45, z: 1.80 } },
   npcTaxi: { url: 'assets/npc-taxi.glb', targetSize: { x: 1.82, y: 1.50, z: 4.80 } },
   npcVespa: { url: 'assets/npc-vespa.glb', targetSize: { x: 0.75, y: 1.55, z: 1.95 } },
+  npcSportbike: { url: 'assets/npc-sportbike.glb', targetSize: { x: 2.05, y: 1.15, z: 0.80 } },
   gtr35: { url: 'assets/gtr35.glb', targetSize: { x: 1.89, y: 1.36, z: 4.71 } },
   mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
   rivalDriver: { url: 'assets/rival-driver.glb', scale: 1.80 },

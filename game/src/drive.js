@@ -107,6 +107,7 @@ export function initVespas(G) {
   G._vespasInit = true;
   G._vespas = [];
   G.updaters.push((G2, dt) => { try { updateVespas(G2, dt); } catch (e) {} });
+  initSportbikes(G); // S29: sportbikes hang off the vespa init (no main.js change)
   loadHeroAsset('npcVespa').then((wrapper) => {
     try {
       if (!wrapper) return; // garnish only — no fallback, spawn nothing
@@ -126,6 +127,82 @@ export function initVespas(G) {
         group.rotation.y = p.angle;
         G.scene.add(group);
         G._parkedVespas.push(group);
+      }
+    } catch (e) { /* garnish only — never break the game */ }
+  }).catch(() => {});
+}
+// ---- S29 Sportbike traffic ---------------------------------------------
+// 3 fast lane-weaving sport motorcycles (npc-sportbike GLB, rider baked
+// in) running alongside the S20 vespas. Same road/lane/respawn
+// conventions (placeVespaOnRoad, 5 m lane offset, groundH, teleport-
+// respawn after ~500 m / at the map edge), same clone+tint helper and
+// the same G.updaters hook pattern. Garnish only: if the GLB fails to
+// load, loadHeroAsset resolves null and nothing spawns (no fallback).
+// NOTE: like the vespas these travel straight along roads and respawn —
+// there are no intersection turns, so the weave IS the cornering and
+// the lean banks into the weave (see updateSportbikes).
+const SPORTBIKE_TINTS = [0xffffff, 0xdfe8ff, 0xffe3f2, 0xe8ffe3]; // near-white only (dark fairing texture)
+function makeSportbikeInstance(wrapper, tintHex) {
+  // Outer group carries position + heading yaw (identical math to the
+  // vespas); the inner group re-aims the model: the GLB's length is
+  // along X with the nose at +X, so rotation.y = -PI/2 maps +X -> +Z
+  // (the vespa forward). The inner group also carries the lean roll on
+  // rotation.z, applied in the model's re-aimed local frame.
+  const outer = new THREE.Group();
+  const inner = new THREE.Group();
+  inner.rotation.y = -Math.PI / 2;
+  inner.add(makeVespaInstance(wrapper, tintHex)); // shared clone + per-material tint multiply
+  outer.add(inner);
+  outer.userData.inner = inner;
+  return outer;
+}
+function updateSportbikes(G, dt) {
+  if (!G._sportbikes || !dt) return;
+  const t = G.elapsed || 0;
+  for (const s of G._sportbikes) {
+    s.travel += s.speed * dt;
+    s.along += s.dirSign * s.speed * dt;
+    if (s.travel > 500 || Math.abs(s.along) > 655) placeVespaOnRoad(G, s);
+    // Weave: lateral sin, phase rate ~1.7, amplitude 1.1 (vespas: 0.9 / 0.8).
+    const weavePhase = t * 1.7 + s.weavePhase;
+    const weave = Math.sin(weavePhase) * 1.1;
+    // d(lateralOffset)/dt — the lateral velocity the bike must bank into.
+    const weaveVelocity = Math.cos(weavePhase) * 1.1 * 1.7;
+    const weaveYaw = Math.cos(weavePhase) * 0.06;
+    let base;
+    if (s.onX) {
+      s.x = s.line + 5 * s.dirSign + weave; s.z = s.along;
+      base = s.dirSign > 0 ? 0 : Math.PI;
+    } else {
+      s.x = s.along; s.z = s.line - 5 * s.dirSign + weave;
+      base = s.dirSign > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    s.angle = base + weaveYaw;
+    s.group.position.set(s.x, groundH(s.x, s.z) + 0.02, s.z);
+    s.group.rotation.y = s.angle;
+    // LEAN: roll the inner group into the lateral motion. Sign: with the
+    // nose re-aimed to +Z, a negative rotation.z tips the top of the bike
+    // toward the side it is weaving toward when weaveVelocity is positive
+    // (leaning INTO the weave, not away from it), hence the leading minus.
+    if (s.inner) s.inner.rotation.z = THREE.MathUtils.clamp(-weaveVelocity * 0.30, -0.38, 0.38);
+  }
+}
+export function initSportbikes(G) {
+  if (!G || G._sportbikesInit || !Array.isArray(G.updaters)) return;
+  G._sportbikesInit = true;
+  G._sportbikes = [];
+  G.updaters.push((G2, dt) => { try { updateSportbikes(G2, dt); } catch (e) {} });
+  loadHeroAsset('npcSportbike').then((wrapper) => {
+    try {
+      if (!wrapper) return; // garnish only — no fallback, spawn nothing
+      for (let i = 0; i < 3; i++) {
+        const group = makeSportbikeInstance(wrapper, SPORTBIKE_TINTS[i % SPORTBIKE_TINTS.length]);
+        G.scene.add(group);
+        const s = { group, inner: group.userData.inner, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, speed: rr(19, 26), weavePhase: rr(0, Math.PI * 2) };
+        placeVespaOnRoad(G, s);
+        group.position.set(s.onX ? s.line + 5 * s.dirSign : s.along, 0, s.onX ? s.along : s.line - 5 * s.dirSign);
+        group.position.y = groundH(group.position.x, group.position.z) + 0.02;
+        G._sportbikes.push(s);
       }
     } catch (e) { /* garnish only — never break the game */ }
   }).catch(() => {});
