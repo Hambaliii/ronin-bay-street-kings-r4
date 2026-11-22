@@ -27,8 +27,9 @@ const PANTS_COLORS = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e
 // model that faces -Z is a one-line change.
 const PED_GLB_ROT_Y = 0;
 const CITIZEN_MODELS = [
-  { key: 'citizenWoman', every: 3, offset: 0 },
-  { key: 'citizenTeen', every: 3, offset: 1 },
+  { key: 'citizenWoman', every: 4, offset: 0 },
+  { key: 'citizenTeen', every: 4, offset: 1 },
+  { key: 'citizenOffice', every: 4, offset: 2 },
 ];
 
 // citizen-teen.glb ships with NO texture/UVs/material, so its clones all
@@ -37,6 +38,9 @@ const CITIZEN_MODELS = [
 // (no per-part painting), picked deterministically by ped idx from this
 // palette so the teen crowd reads as varied hoodies/backpacks.
 const TEEN_TINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a, 0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
+// citizenOffice has NO tint entry: its GLB is textured (white shirt + dark
+// trousers baked in), so office clones keep the model's own texture — the
+// tint branch in applyGlbVisual below matches citizenTeen only.
 
 function citizenEntryForIndex(i) {
   for (const entry of CITIZEN_MODELS) {
@@ -100,8 +104,8 @@ export function initPeds(G) {
       const clone = template.clone(true);
       if (ped.citizenKey === 'citizenTeen') {
         // Untextured model: give THIS clone its own material instance(s)
-        // tinted with its deterministic outfit hue. (The woman model has a
-        // real texture — her clones are never tinted.)
+        // tinted with its deterministic outfit hue. (The woman and office
+        // models have real textures — their clones are never tinted.)
         const tint = TEEN_TINTS[ped.idx % TEEN_TINTS.length];
         clone.traverse((obj) => {
           if (obj && obj.isMesh && obj.material && obj.material.color) {
