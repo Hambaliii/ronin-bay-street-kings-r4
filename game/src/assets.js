@@ -175,6 +175,9 @@ export const HERO_ASSETS = {
   // returns uv:null, loadGLBModel skips the uv attribute and uses the plain
   // no-map material; peds.js tints each clone per-ped instead.
   citizenTeen: { url: 'assets/citizen-teen.glb', scale: 1.62 },
+  // Textured GLB (face + dark hoodie + backpack baked in): peds.js uses it
+  // as the primary teen — its clones keep the model's own texture, no tint.
+  citizenTeen2: { url: 'assets/citizen-teen2.glb', scale: 1.62 },
   citizenOffice: { url: 'assets/citizen-office.glb', scale: 1.76 },
   weaponPistol: { url: 'assets/weapon-pistol.glb', scale: 0.30 },
   weaponSmg: { url: 'assets/weapon-smg.glb', scale: 0.55 },

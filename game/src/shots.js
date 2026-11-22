@@ -28,6 +28,39 @@ export function setupShot(G, name) {
     }
     cam(G, 156.5, 1.35, -141.5, 150.5, 0.95, -148.5);
     void v;
+    // S22 cover staging (city only): relocate 3 citizens onto the sidewalk
+    // in the camera's view so the dossier cover shows peds mid-stride, not
+    // an empty street. Prefer GLB-visual peds (figIsGlb) when knowable.
+    // The ped system's own placement helper (placePed in peds.js) is a
+    // closure inside initPeds and is not exported, so mirror it here: set
+    // BOTH the ped's logical position (x/z) and its fig position, and give
+    // it a live walk segment — horizontal along its staged z, with
+    // line+off === z so the normal updater keeps it on that sidewalk line
+    // and keeps walking (idle cleared, phase/speed untouched, not frozen).
+    try {
+      const spots = [[140, -138], [146, -133], [136, -143]];
+      const allPeds = Array.isArray(G.peds) ? G.peds.filter((p) => p && p.fig && !p.downed) : [];
+      const stagedPeds = [
+        ...allPeds.filter((p) => p.figIsGlb),
+        ...allPeds.filter((p) => !p.figIsGlb),
+      ].slice(0, spots.length);
+      stagedPeds.forEach((ped, i) => {
+        const sx = spots[i][0];
+        const sz = spots[i][1];
+        ped.x = sx; ped.z = sz;
+        ped.idle = false;
+        ped.fleeT = 0; ped.fleeDir = null;
+        ped.vertical = false;
+        ped.off = (typeof ped.off === 'number' && ped.off !== 0) ? ped.off : 17.2;
+        ped.line = sz - ped.off;
+        ped.dir = 1;
+        ped.angle = Math.PI / 2;
+        try {
+          ped.fig.position.set(sx, groundH(sx, sz), sz);
+          ped.fig.rotation.y = ped.angle;
+        } catch (e) { /* updater repositions it next frame anyway */ }
+      });
+    } catch (e) { /* cover staging is dressing only — never break the shot */ }
   } else if (name === 'meet') {
     const ids = ['hachi', 'sora15', 'hoshi7', 'kaze'];
     const xs = [-434, -422, -410, -398];

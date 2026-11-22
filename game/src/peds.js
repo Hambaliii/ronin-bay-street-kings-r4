@@ -27,9 +27,11 @@ const PANTS_COLORS = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e
 // model that faces -Z is a one-line change.
 const PED_GLB_ROT_Y = 0;
 const CITIZEN_MODELS = [
-  { key: 'citizenWoman', every: 4, offset: 0 },
-  { key: 'citizenTeen', every: 4, offset: 1 },
-  { key: 'citizenOffice', every: 4, offset: 2 },
+  { key: 'citizenWoman', every: 5, offset: 0 },
+  { key: 'citizenTeen2', every: 5, offset: 1 },
+  { key: 'citizenOffice', every: 5, offset: 2 },
+  { key: 'citizenTeen', every: 5, offset: 3 },
+  // offset 4 of every 5: no entry — procedural figure (the fallback visual).
 ];
 
 // citizen-teen.glb ships with NO texture/UVs/material, so its clones all
@@ -38,9 +40,11 @@ const CITIZEN_MODELS = [
 // (no per-part painting), picked deterministically by ped idx from this
 // palette so the teen crowd reads as varied hoodies/backpacks.
 const TEEN_TINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a, 0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
-// citizenOffice has NO tint entry: its GLB is textured (white shirt + dark
-// trousers baked in), so office clones keep the model's own texture — the
-// tint branch in applyGlbVisual below matches citizenTeen only.
+// citizenOffice and citizenTeen2 have NO tint entry: their GLBs are
+// textured (office: white shirt + dark trousers; teen2: face + dark hoodie
+// + backpack, all baked in), so those clones keep the model's own texture —
+// the tint branch in applyGlbVisual below matches citizenTeen only (exact
+// key match, so 'citizenTeen2' is never tinted).
 
 function citizenEntryForIndex(i) {
   for (const entry of CITIZEN_MODELS) {
@@ -104,8 +108,9 @@ export function initPeds(G) {
       const clone = template.clone(true);
       if (ped.citizenKey === 'citizenTeen') {
         // Untextured model: give THIS clone its own material instance(s)
-        // tinted with its deterministic outfit hue. (The woman and office
-        // models have real textures — their clones are never tinted.)
+        // tinted with its deterministic outfit hue. (The woman, office and
+        // teen2 models have real textures — their clones are never tinted;
+        // the exact 'citizenTeen' match above keeps teen2 out of here.)
         const tint = TEEN_TINTS[ped.idx % TEEN_TINTS.length];
         clone.traverse((obj) => {
           if (obj && obj.isMesh && obj.material && obj.material.color) {
@@ -236,9 +241,14 @@ export function initPeds(G) {
         ped.angle = Math.atan2(ped.fleeDir.x, ped.fleeDir.z);
         ped.phase += 3.4 * dt * 2.4;
         if (ped.figIsGlb && ped.glbInner) {
+          // GLB flee: same walk cycle as the normal GLB walk below, but
+          // scaled up for the flee speed — bigger/faster bob (phase already
+          // advances at flee pace), wider sway, and a much stronger forward
+          // lean (rotation.x tips the top of the +Z-facing model forward).
           try {
-            ped.glbInner.position.y = Math.abs(Math.sin(ped.phase)) * 0.05;
-            ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.03;
+            ped.glbInner.position.y = Math.abs(Math.sin(ped.phase)) * 0.06;
+            ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.05;
+            ped.glbInner.rotation.x = 0.13;
           } catch (e) {}
         } else {
           try { animateFigure(ped.visual, ped.phase, 1.6); } catch (e) {}
@@ -257,8 +267,13 @@ export function initPeds(G) {
       if (ped.idle) {
         ped.sway += dt;
         if (ped.figIsGlb && ped.glbInner) {
-          // GLB idle: gentle whole-body bob (ped.sway is accumulated time).
-          try { ped.glbInner.position.y = 0.006 * Math.sin(ped.sway * 1.5 + ped.idx); } catch (e) {}
+          // GLB idle: gentle whole-body bob (ped.sway is accumulated time),
+          // with any walk/flee lean and sway relaxed back to neutral.
+          try {
+            ped.glbInner.position.y = 0.006 * Math.sin(ped.sway * 1.5 + ped.idx);
+            ped.glbInner.rotation.z = 0.01 * Math.sin(ped.sway * 0.9 + ped.idx);
+            ped.glbInner.rotation.x = 0;
+          } catch (e) {}
         } else {
           try { animateFigure(ped.visual, ped.sway * 0.7, 0.12); } catch (e) {}
         }
@@ -324,15 +339,22 @@ export function initPeds(G) {
       }
 
       if (ped.figIsGlb && ped.glbInner) {
-        // GLB walk: whole-body bob + rock on the inner wrapper, same phase
-        // the procedural call would have used. While panicking, add a hop
-        // spike in place of the procedural arm-flail (which reads the
+        // GLB walk: the static GLB mesh must read as WALKING, not gliding —
+        // whole-body vertical bob + lateral sway (rotation.z) + a slight
+        // forward lean (rotation.x) on the inner wrapper, all on the same
+        // phase the procedural call would have used, and scaled by the
+        // ped's current speed state: panic (moveSpeed ~2.1x, see above)
+        // bobs higher, sways wider and leans further; the flee branch
+        // above leans/bobs harder still. While panicking, the extra hop
+        // spike stands in for the procedural arm-flail (which reads the
         // figure's userData parts and must never run on a GLB visual).
         try {
+          const panicking = ped.panicT > 0;
           let bobY = Math.abs(Math.sin(ped.phase)) * 0.04;
-          if (ped.panicT > 0) bobY += Math.abs(Math.sin(ped.phase * 1.7)) * 0.06;
+          if (panicking) bobY += Math.abs(Math.sin(ped.phase * 1.7)) * 0.06;
           ped.glbInner.position.y = bobY;
-          ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.03;
+          ped.glbInner.rotation.z = Math.sin(ped.phase) * (panicking ? 0.05 : 0.04);
+          ped.glbInner.rotation.x = panicking ? 0.10 : 0.05;
         } catch (e) {}
       } else {
         try { animateFigure(ped.visual, ped.phase, ped.panicT > 0 ? 1.6 : 0.55); } catch (e) {}
