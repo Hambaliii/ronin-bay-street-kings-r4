@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { CFG } from './config.js';
 import { srand } from './random.js';
 import { buildWorld, updateWorld, groundH, glowSprite } from './world.js';
+import { initSky, updateSky } from './sky.js';
 import { spawnTraffic, updateTraffic, updateSmoke, spawnVehicle } from './cars.js';
 import { createPlayer, updatePlayer } from './player.js';
 import { updateDriving, enterCar, exitCar, initVespas } from './drive.js';
@@ -52,6 +53,7 @@ window.G = G;
 
 initSave(G);
 buildWorld(G);
+initSky(G);
 createPlayer(G);
 // starter car parked at HQ garage apron
 const starter = spawnVehicle(G, 'hachi', -412.5, 452, Math.PI, { driver: 'parked' });
@@ -221,6 +223,7 @@ function loop(now) {
   }
   updateSmoke(G, dt);
   updateWorld(G, dt);
+  updateSky(G, dt);
   // camera
   if (G.shotCam) { G.shotCam(); }
   else if (G.mode === 'play') {

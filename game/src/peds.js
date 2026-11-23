@@ -5,13 +5,16 @@ import { makeFigure, animateFigure } from './player.js';
 import { loadHeroAsset } from './assets.js';
 
 // ------------------------------------------------------------------ peds.js
-// ~26 pedestrians walking Ronin Bay's sidewalks, with panic reactions.
+// ~44 pedestrians living in Ronin Bay: sidewalk walkers, walking pairs,
+// chat groups at gathering points, and crosswalk crossers who wait at the
+// curb (timed — the city has no shared traffic-light phase) before
+// crossing. All keep the panic / flee / downed reactions below.
 
 const SKIN = [0xf0c8a0, 0xe8b48c, 0xc98d64, 0xb97a4e, 0x8a5a34];
 const HAIR = ['black topknot', 'red ponytail', 'violet bob', 'buzz', 'silver undercut', 'slick black', 'cap', 'long', 'bun'];
 const HAIR_COLORS = [0x14100e, 0x8c2f1d, 0x6a3fa0, 0x2a2a2e, 0xc9ccd4, 0x1a1512, 0x24406e, 0x3a2415, 0x101010];
 const TOPS = ['tank', 'hoodie', 'jacket'];
-const TOP_COLORS = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a, 0xff8ab0, 0x57b7ff, 0x8a5a34];
+const TOP_COLORS = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a, 0xff8ab0, 0x57b7ff, 0x8a5a34, 0xffb7d5, 0xa8e6cf, 0xfff0b3];
 const PANTS_COLORS = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
 
 // --- GLB citizen models (drop-in pattern) ------------------------------------
@@ -90,9 +93,29 @@ function sidewalkPoint(G, nearX, nearZ, minD, maxD) {
   return { x: line + 17.2, z: rr(-300, 300), vertical: true, line, off: 17.2 };
 }
 
+// A parallel session is adding G.landmarks (incl. a supermarket "market");
+// it may land before or after peds spawn, so every access is conditional
+// and the position shape is probed defensively ({x,z} / {pos} / Vector3).
+function landmarkPos(lm) {
+  try {
+    if (!lm) return null;
+    const cands = [lm, lm.pos, lm.position, lm.at];
+    for (const c of cands) {
+      if (c && Number.isFinite(c.x) && Number.isFinite(c.z)) return { x: c.x, z: c.z };
+    }
+  } catch (e) { /* no landmark */ }
+  return null;
+}
+function marketPos(G) {
+  try {
+    if (G.landmarks && G.landmarks.market) return landmarkPos(G.landmarks.market);
+  } catch (e) { /* not landed yet */ }
+  return null;
+}
+
 export function initPeds(G) {
   G.peds = [];
-  const N = 26;
+  const N = 44;
 
   // Resolved GLB wrapper templates, by citizen-model key. Filled in async;
   // designated peds are swapped in place whenever a template arrives.
@@ -154,6 +177,72 @@ export function initPeds(G) {
     ped.angle = ped.vertical ? (ped.dir > 0 ? 0 : Math.PI) : (ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
   }
 
+  // Chat group: stand the ped on a small ring around (cx, cz), facing in.
+  function placeChat(ped, cx, cz, slot, slots) {
+    const a = (slot / slots) * Math.PI * 2 + rr(-0.25, 0.25);
+    ped.x = cx + Math.sin(a) * 1.25;
+    ped.z = cz + Math.cos(a) * 1.25;
+    ped.chatCx = cx; ped.chatCz = cz;
+    ped.chat = true; ped.idle = true;
+    ped.angle = Math.atan2(cx - ped.x, cz - ped.z);
+  }
+
+  // Crosswalk plan: corner -> curb (wait, look) -> across -> far sidewalk.
+  // Spawned crossers snap to the corner; re-armed walkers keep their
+  // position and walk to the corner first (stage 'toCorner').
+  function setupCross(ped, cx, cz, sx, sz, snap) {
+    ped.mode = 'cross';
+    ped.crosser = true;
+    const kx = cx + sx * 17.2, kz = cz + sz * 17.2;
+    if (snap) { ped.x = kx; ped.z = kz; }
+    const far = Math.hypot(kx - ped.x, kz - ped.z) > 2;
+    ped.cross = {
+      stage: far ? 'toCorner' : 'toCurb', cx, cz, sx, sz, waitT: 0,
+      tx: far ? kx : cx + sx * 17.2, tz: far ? kz : cz + sz * 9,
+      faceAngle: Math.atan2(-sx, 0),
+    };
+    ped.angle = Math.atan2(ped.cross.tx - ped.x, ped.cross.tz - ped.z);
+  }
+
+  // After a chat ped scatters (flee), re-derive a sidewalk walk from
+  // wherever it ended up so it rejoins pedestrian flow instead of
+  // standing frozen at the flee spot forever.
+  function deriveWalk(ped) {
+    let line = G.roadX[0], best = Infinity;
+    for (const lx of G.roadX) { const d = Math.abs(ped.x - lx); if (d < best) { best = d; line = lx; } }
+    ped.vertical = true; ped.line = line;
+    ped.off = THREE.MathUtils.clamp(ped.x - line, -17.2, 17.2);
+    if (Math.abs(ped.off) < 13) ped.off = (ped.off < 0 ? -1 : 1) * 17.2;
+    ped.x = line + ped.off;
+    ped.dir = chance(0.5) ? 1 : -1;
+    ped.mode = 'walk';
+  }
+
+  // Shared walk/idle visual step for the new activity branches (pairs,
+  // crossers): same GLB-vs-procedural split as the main walk below.
+  function stepVisual(ped, amt) {
+    if (ped.figIsGlb && ped.glbInner) {
+      try {
+        ped.glbInner.position.y = Math.abs(Math.sin(ped.phase)) * 0.04 * amt * 2;
+        ped.glbInner.rotation.z = Math.sin(ped.phase) * 0.04;
+        ped.glbInner.rotation.x = 0.05;
+      } catch (e) {}
+    } else {
+      try { animateFigure(ped.visual, ped.phase, amt); } catch (e) {}
+    }
+  }
+  function idleVisual(ped) {
+    if (ped.figIsGlb && ped.glbInner) {
+      try {
+        ped.glbInner.position.y = 0.006 * Math.sin(ped.sway * 1.5 + ped.idx);
+        ped.glbInner.rotation.z = 0.01 * Math.sin(ped.sway * 0.9 + ped.idx);
+        ped.glbInner.rotation.x = 0;
+      } catch (e) {}
+    } else {
+      try { animateFigure(ped.visual, ped.sway * 0.7, 0.12); } catch (e) {}
+    }
+  }
+
   for (let i = 0; i < N; i++) {
     let procFig = null;
     try { procFig = makeFigure(pedParams()); } catch (e) { continue; }
@@ -175,15 +264,27 @@ export function initPeds(G) {
       vertical: true, line: 0, off: 17.2, dir: 1,
       panicT: 0, idle: false, sway: rr(0, 6),
       startleT: 0, fleeT: 0, fleeDir: null,
+      mode: 'walk', follow: null, chat: false, scattered: false,
+      crosser: false, cross: null, chatGroup: null, marketPlaced: false,
     };
-    if (i < 6) {
-      // Idle groups: HQ apron + Neon Mile corner.
+    if (i < 12) {
+      // CHAT GROUPS (idx 0-11): four stationary groups of 3 at gathering
+      // points — HQ garage apron, Neon Mile corner, a downtown corner, and
+      // the supermarket (G.landmarks.market when the parallel world build
+      // has landed; a harbour corner until then — the updater relocates
+      // this group if the market appears later, see chatGroup 'market').
       ped.idle = true;
-      if (i < 3) { ped.x = -412.5 + rr(-14, 14); ped.z = 412.5 + rr(-10, 16); }
-      else { ped.x = 330 + rr(-16, 16); ped.z = -330 + rr(-16, 16); }
-      ped.angle = rr(0, Math.PI * 2);
+      if (i < 3) placeChat(ped, -410, 418, i, 3);
+      else if (i < 6) placeChat(ped, 330, -330, i - 3, 3);
+      else if (i < 9) placeChat(ped, 182.2, 147.8, i - 6, 3);
+      else {
+        ped.chatGroup = 'market';
+        const mp = marketPos(G);
+        if (mp) { placeChat(ped, mp.x + 13, mp.z + 9, i - 9, 3); ped.marketPlaced = true; }
+        else placeChat(ped, -312.8, -147.8, i - 9, 3);
+      }
       if (i === 1 || i === 4) {
-        // One phone accessory in each group.
+        // One phone accessory in each of the first two groups.
         try {
           const phone = new THREE.Mesh(
             new THREE.BoxGeometry(0.09, 0.16, 0.02),
@@ -193,8 +294,39 @@ export function initPeds(G) {
           procFig.add(phone);
         } catch (e) { /* optional */ }
       }
+    } else if (i < 24) {
+      // PAIRS (idx 12-23): six walking pairs — even idx leads on a normal
+      // sidewalk path, odd idx follows at a small offset behind/beside.
+      const anchors = [
+        { x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 },
+        { x: -330, z: -330 }, { x: -412.5, z: 412.5 }, { x: 0, z: 0 },
+        { x: 250, z: 420 }, { x: -480, z: -255 },
+      ];
+      if (i % 2 === 0) {
+        const a = pick(anchors);
+        placePed(ped, sidewalkPoint(G, a.x, a.z, 0, 190));
+      } else {
+        const leader = G.peds[G.peds.length - 1];
+        ped.follow = leader || null;
+        if (leader) {
+          ped.x = leader.x - Math.sin(leader.angle) * 2.3 + Math.cos(leader.angle) * 0.85;
+          ped.z = leader.z - Math.cos(leader.angle) * 2.3 - Math.sin(leader.angle) * 0.85;
+          ped.angle = leader.angle;
+          ped.speed = leader.speed;
+        } else {
+          const a = pick(anchors);
+          placePed(ped, sidewalkPoint(G, a.x, a.z, 0, 190));
+        }
+      }
+    } else if (i < 32) {
+      // CROSSERS (idx 24-31): start at an intersection corner, walk to the
+      // curb, wait (timed — no shared traffic-light phase exists), cross
+      // the street on the crosswalk line, then join sidewalk flow.
+      const cx = pick([-330, -165, 0, 165, 330]);
+      const cz = pick([-330, -165, 0, 165, 330]);
+      setupCross(ped, cx, cz, chance(0.5) ? 1 : -1, chance(0.5) ? 1 : -1, true);
     } else {
-      // Spawn near district centers / HQ / parks so streets feel lived-in.
+      // Plain sidewalk walkers near district centers / HQ / parks.
       const anchors = [
         { x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 },
         { x: -330, z: -330 }, { x: -412.5, z: 412.5 }, { x: 0, z: 0 },
@@ -268,12 +400,14 @@ export function initPeds(G) {
           try { ped.fig.rotation.set(0, ped.angle, 0); } catch (e) {}
           placePed(ped, sidewalkPoint(G, px, pz, 60, 180));
           ped.idle = false;
+          ped.chat = false; ped.mode = 'walk'; ped.follow = null; ped.scattered = false;
           ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
           ped.fig.rotation.y = ped.angle;
         }
         continue;
       }
       if (ped.fleeT > 0 && ped.fleeDir) {
+        if (ped.chat) ped.scattered = true; // chat groups scatter when danger hits
         ped.fleeT -= dt;
         ped.x += ped.fleeDir.x * 3.4 * dt;
         ped.z += ped.fleeDir.z * 3.4 * dt;
@@ -297,14 +431,49 @@ export function initPeds(G) {
         continue;
       }
 
-      // Respawn far peds near the action.
-      if (dPlayer > 350) {
+      // A scattered chat ped rejoins sidewalk flow once the flee ends.
+      if (ped.scattered) {
+        ped.scattered = false; ped.chat = false; ped.idle = false;
+        deriveWalk(ped);
+      }
+
+      // Respawn far peds near the action. Chat groups, crossers and pair
+      // followers are exempt: gatherings must persist, crossers are
+      // mid-plan, and followers are tied to their leader.
+      if (dPlayer > 350 && !ped.chat && ped.mode !== 'cross' && !ped.follow) {
         placePed(ped, sidewalkPoint(G, px, pz, 150, 250));
         ped.idle = false;
       }
 
       if (ped.idle) {
         ped.sway += dt;
+        if (ped.chat) {
+          // Supermarket gathering point: if the market landmark landed
+          // after spawn, move this group onto it exactly once.
+          if (ped.chatGroup === 'market' && !ped.marketPlaced) {
+            const mp = marketPos(G);
+            if (mp) {
+              placeChat(ped, mp.x + 13, mp.z + 9, ped.idx % 3, 3);
+              ped.marketPlaced = true;
+            }
+          }
+          // Face the group centre; a slow "talk" cycle swells the gesture
+          // amplitude so members read as taking turns chatting.
+          ped.angle = Math.atan2(ped.chatCx - ped.x, ped.chatCz - ped.z);
+          const talk = 0.5 + 0.5 * Math.sin(ped.sway * 0.33 + ped.idx * 2.1);
+          if (ped.figIsGlb && ped.glbInner) {
+            try {
+              ped.glbInner.position.y = (0.006 + talk * 0.008) * Math.sin(ped.sway * 1.5 + ped.idx);
+              ped.glbInner.rotation.z = (0.01 + talk * 0.014) * Math.sin(ped.sway * 0.9 + ped.idx);
+              ped.glbInner.rotation.x = 0;
+            } catch (e) {}
+          } else {
+            try { animateFigure(ped.visual, ped.sway * 0.7, 0.12 + talk * 0.2); } catch (e) {}
+          }
+          ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+          ped.fig.rotation.y = ped.angle + Math.sin(ped.sway * 0.4) * 0.15;
+          continue;
+        }
         if (ped.figIsGlb && ped.glbInner) {
           // GLB idle: gentle whole-body bob (ped.sway is accumulated time),
           // with any walk/flee lean and sway relaxed back to neutral.
@@ -318,6 +487,84 @@ export function initPeds(G) {
         }
         ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
         ped.fig.rotation.y = ped.angle + Math.sin(ped.sway * 0.4) * 0.15;
+        continue;
+      }
+
+      // PAIR FOLLOWER: trail the leader at a small offset, same heading
+      // and phase, so the pair reads as walking together.
+      if (ped.follow) {
+        const L = ped.follow;
+        if (!L || L.downed) {
+          ped.sway += dt;
+          idleVisual(ped);
+          ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+          ped.fig.rotation.y = ped.angle;
+          continue;
+        }
+        const fx = L.x - Math.sin(L.angle) * 2.3 + Math.cos(L.angle) * 0.85;
+        const fz = L.z - Math.cos(L.angle) * 2.3 - Math.sin(L.angle) * 0.85;
+        const fd = Math.hypot(fx - ped.x, fz - ped.z);
+        if (fd > 25) { ped.x = fx; ped.z = fz; } // leader teleported (respawn)
+        else {
+          const k = Math.min(1, dt * 4.5);
+          ped.x += (fx - ped.x) * k;
+          ped.z += (fz - ped.z) * k;
+        }
+        ped.angle = L.angle;
+        ped.phase = L.phase;
+        if (fd > 0.25) stepVisual(ped, 0.55);
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+        ped.fig.rotation.y = ped.angle;
+        continue;
+      }
+
+      // CROSSWALK CROSSER: corner -> curb wait (look both ways) -> cross
+      // -> far sidewalk, then convert to a normal walker on that side.
+      if (ped.mode === 'cross' && ped.cross) {
+        const c = ped.cross;
+        if (c.stage === 'wait') {
+          c.waitT -= dt;
+          ped.sway += dt;
+          idleVisual(ped);
+          ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+          // Head-scan toward/away from traffic while waiting at the curb.
+          ped.fig.rotation.y = c.faceAngle + Math.sin(ped.sway * 1.7) * 0.55;
+          if (c.waitT <= 0) {
+            c.stage = 'cross';
+            c.tx = c.cx - c.sx * 17.2; c.tz = c.cz + c.sz * 9;
+          }
+          continue;
+        }
+        const dx = c.tx - ped.x, dz = c.tz - ped.z;
+        const dd = Math.hypot(dx, dz);
+        const spd = ped.speed * (c.stage === 'cross' ? 1.2 : 1);
+        if (dd < 0.35) {
+          if (c.stage === 'toCorner') {
+            c.stage = 'toCurb';
+            c.tx = c.cx + c.sx * 17.2; c.tz = c.cz + c.sz * 9;
+          } else if (c.stage === 'toCurb') {
+            c.stage = 'wait';
+            c.waitT = rr(1.4, 3.8); // timed curb wait (no traffic-light phase exists)
+            ped.sway = rr(0, 6);
+          } else if (c.stage === 'cross') {
+            c.stage = 'toWalk';
+            c.tx = c.cx - c.sx * 17.2; c.tz = c.cz + c.sz * 17.2;
+          } else { // toWalk: arrived — join sidewalk flow on the far side
+            ped.mode = 'walk';
+            ped.vertical = true; ped.line = c.cx; ped.off = -c.sx * 17.2;
+            ped.x = c.cx + ped.off;
+            ped.dir = c.sz > 0 ? 1 : -1;
+            ped.cross = null;
+          }
+        } else {
+          ped.x += (dx / dd) * Math.min(dd, spd * dt);
+          ped.z += (dz / dd) * Math.min(dd, spd * dt);
+          ped.angle = Math.atan2(dx, dz);
+          ped.phase += spd * dt * 2.4;
+          stepVisual(ped, 0.55);
+        }
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+        ped.fig.rotation.y = ped.angle;
         continue;
       }
 
@@ -347,10 +594,19 @@ export function initPeds(G) {
       }
       ped.phase += moveSpeed * dt * 2.4;
 
-      // Random turn at intersections (crossing road lines).
+      // Random turn at intersections (crossing road lines). Crossers
+      // sometimes re-arm a full curb-wait + crossing at an intersection
+      // instead of turning, so crossing activity never dies out.
       const crossLines = ped.vertical ? G.roadZ : G.roadX;
       const along = ped.vertical ? ped.z : ped.x;
+      let reCrossed = false;
       for (const cl of crossLines) {
+        if (ped.crosser && Math.abs(along - cl) < 1.2 && chance(0.30)) {
+          if (ped.vertical) setupCross(ped, ped.line, cl, Math.sign(ped.off) || 1, ped.dir);
+          else setupCross(ped, cl, ped.line, ped.dir, Math.sign(ped.off) || 1);
+          reCrossed = true;
+          break;
+        }
         if (Math.abs(along - cl) < 1.2 && chance(0.012)) {
           // Turn onto the crossing road.
           const oldLine = ped.line, oldOff = ped.off;
@@ -362,6 +618,11 @@ export function initPeds(G) {
           else { ped.z = ped.line + ped.off; ped.x = oldLine + oldOff; }
           break;
         }
+      }
+      if (reCrossed) {
+        ped.fig.position.set(ped.x, groundH(ped.x, ped.z) + startleHop, ped.z);
+        ped.fig.rotation.y = ped.angle;
+        continue;
       }
       // Bounce at the island edge.
       if (ped.x > 640 || ped.x < -640 || ped.z > 640 || ped.z < -640) {

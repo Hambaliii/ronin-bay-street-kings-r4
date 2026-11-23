@@ -813,16 +813,21 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
   return v;
 }
 // --- traffic ---
-const TRAFFIC_COLORS = [0xb9c0c7, 0x3f8cff, 0xd95555, 0x44484e, 0xf2f2f2, 0x5a7d4f, 0xffd23f, 0x707880, 0x8a4fd0, 0x2a9d8f];
+// Realistic palette + a pastel block (Bosku, 23 Nov: neon-coastal vibe —
+// soft pink / mint / cream / baby blue / peach make up ~1/3 of picks).
+const TRAFFIC_COLORS = [0xb9c0c7, 0x3f8cff, 0xd95555, 0x44484e, 0xf2f2f2, 0x5a7d4f, 0xffd23f, 0x707880, 0x8a4fd0, 0x2a9d8f, 0xffb7d5, 0xb8e6c9, 0xfff3d6, 0xaed6f7, 0xffcf9f];
 const TRAFFIC_IDS = ['sedan', 'hatch', 'suv', 'wagon', 'kei', 'hachi', 'van', 'sora15', 'roadster', 'taxi', 'sedan', 'hatch', 'suv', 'taxi'];
 // Realistic per-instance tints for GLB traffic sedans (luminance recolor —
 // the GLB's baked electric blue never survives). Cycled deterministically
 // by sedan spawn index.
-const NPC_SEDAN_TINTS = [0xc0c4c8, 0xe9e9e6, 0x3a3d42, 0x6e1420, 0x44586e, 0x77694f];
+const NPC_SEDAN_TINTS = [0xc0c4c8, 0xe9e9e6, 0x3a3d42, 0x6e1420, 0x44586e, 0x77694f, 0xe8a7bf, 0x9fc3e8];
 let npcSedanSpawnIndex = 0;
 export function spawnTraffic(G, n) {
   if (!G.traffic) G.traffic = [];
-  for (let i = 0; i < n; i++) {
+  // F2 traffic life: ~50% more ambient traffic than the caller asked for,
+  // same vehicle classes / spawn rules / respawn behaviour as before.
+  const total = n + Math.round(n * 0.5);
+  for (let i = 0; i < total; i++) {
     const onX = rnd() < 0.5;
     const line = pick(onX ? G.roadX : G.roadZ);
     const along = rr(-600, 600);
