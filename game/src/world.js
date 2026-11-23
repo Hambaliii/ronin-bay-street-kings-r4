@@ -469,7 +469,13 @@ function buildBoulevardFrontage(G, scene) {
         scene.add(sign);
         const sg = glowSprite(new THREE.Color(col), 13); sg.position.set(cx, 4.6 + gy, fz + side.faceDir * 0.05); sg.material.opacity = 0; scene.add(sg); _signGlows.push(sg);
       }
-      const awnMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(pick(['#ff5da2', '#39d5ff', '#ffb35c', '#7dffb0'])), roughness: 0.85 });
+      // B3 second pass: awning accent alternates by building index
+      // parity (counts[side.key] is this building's index on its side,
+      // incremented at the loop's end) — even buildings take the warm
+      // accents, odd buildings the cool ones, so neighbouring storefronts
+      // never share an accent family.
+      const awnAccent = counts[side.key] % 2 === 0 ? pick(['#ff5da2', '#ffb35c']) : pick(['#39d5ff', '#7dffb0']);
+      const awnMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(awnAccent), roughness: 0.85 });
       const awn = new THREE.Mesh(new THREE.BoxGeometry(Math.min(15, w * 0.72), 0.15, 2.2), awnMat);
       awn.position.set(cx, 3.6 + gy, fz + side.faceDir * 1.05); awn.rotation.x = side.faceDir * 0.3; awn.castShadow = true; scene.add(awn);
       G.addCollider(cx, cz, w / 2, d / 2, tall);
@@ -493,6 +499,42 @@ function buildBoulevardPalms(G, scene) {
     }
   }
   G.boulevardPalmsAdded = added;
+  return added;
+}
+// 2b. (B3 second pass) Planter-boxed palms on the boulevard's SOUTH
+// sidewalk, like the concept frames: each palm rises out of a square
+// pale-concrete planter box (1.6 x 0.55 x 1.6 m) with small green shrub
+// blobs tucked at its base. Row at z=513 — between the road's south
+// edge and the z=518 south frontage — every ~40 m from x=-320 to 520.
+// Skips: cross streets (|x-r|<13 for every vertical road), any collider
+// within pad 2, and the GS1 gather-spot footprint (|x-100|<10) so the
+// social cluster keeps its open floor.
+function v5PlanterPalm() {
+  const grp = new THREE.Group();
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 1.6), stdMat(0xd8d2c4, 1));
+  box.position.y = 0.275; grp.add(box);
+  const soil = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 1.4), stdMat(0x4a3826, 1));
+  soil.position.y = 0.56; grp.add(soil);
+  const shrubMat = new THREE.MeshStandardMaterial({ color: 0x3d8b4f, roughness: 1, flatShading: true });
+  for (const [sx, sz] of [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.55], [0.55, 0.55]]) {
+    const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(rr(0.22, 0.3), 1), shrubMat);
+    blob.position.set(sx, 0.68, sz); grp.add(blob);
+  }
+  const palm = makePalm(rr(4.5, 6));
+  palm.position.y = 0.55; palm.rotation.y = rr(0, 6.28); grp.add(palm);
+  return v5Cast(grp); // planter, shrubs and palm all cast (B3)
+}
+function buildBoulevardPlanters(G, scene) {
+  let added = 0;
+  for (let x = -320; x <= 520; x += 40) {
+    if (G.roadX.some(r => Math.abs(x - r) < 13)) continue; // cross street
+    if (Math.abs(x - 100) < 10) continue; // GS1 gather-spot footprint
+    if (v5HitsPoint(G, x, 513, 2)) continue; // collider, pad 2
+    const unit = v5PlanterPalm();
+    unit.position.set(x, groundH(x, 513), 513);
+    scene.add(unit); added++;
+  }
+  G.boulevardPlantersAdded = added;
   return added;
 }
 // 3. Gather spots: benches + planters (+ vendor stalls on two).
@@ -1119,6 +1161,7 @@ export function buildWorld(G) {
   buildBoulevardPalms(G, scene);
   buildGatherSpots(G, scene);
   buildHoshinoRows(G, scene);
+  buildBoulevardPlanters(G, scene); // B3 second pass: planter-boxed palms, last so every collider above gates its placement
   // parks
   for (const [px, pz] of [[412, 412], [-412, -80]]) {
     const park = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), new THREE.MeshStandardMaterial({ color: 0x4d8a4a, roughness: 1 }));

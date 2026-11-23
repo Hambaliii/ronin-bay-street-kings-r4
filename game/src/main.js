@@ -25,6 +25,8 @@ srand(seed);
 
 const canvas = document.getElementById('gameCanvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.shadowMap.enabled = true; // V5 (B3): real sun shadows on
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 const scene = new THREE.Scene();
@@ -34,6 +36,22 @@ const camera = new THREE.PerspectiveCamera(66, innerWidth / innerHeight, 0.1, 30
 camera.position.set(-412, 4, 486);
 const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x8a7f6a, 0.9); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff2d8, 1.3); sun.position.set(200, 260, 120); scene.add(sun);
+// V5 (B3) shadow boot: the sun is the one shadow caster. Ortho box
+// ±110 m around the light axis, 2048px map; bias/normalBias tuned
+// conservatively so the low-poly facades don't acne. world.js'
+// updateWorld repositions this light from the tod every frame (and
+// never touches its target), so gameplay recentring works by moving
+// sun.target + position together in the loop (G.shadowFollow, below),
+// and shot modes tighten the box to ±85 around their look-at point
+// (shots.js pinShadow).
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -110; sun.shadow.camera.right = 110;
+sun.shadow.camera.top = 110; sun.shadow.camera.bottom = -110;
+sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
+sun.shadow.bias = -0.0005;
+sun.shadow.normalBias = 0.5;
+sun.shadow.camera.updateProjectionMatrix();
 
 const G = {
   scene, camera, renderer, canvas, mode: shot ? 'play' : 'menu', shot, seed,
@@ -52,6 +70,7 @@ const G = {
   roadX: [], roadZ: [], touge: [], missionIndex: 0, flags: {},
   districtState: { port: { control: 50, owner: 'ronin' }, coral: { control: 30, owner: 'neutral' }, neon: { control: 20, owner: 'rival' }, hoshino: { control: 10, owner: 'rival' } },
   audio: null, heli: null, cops: [], peds: [], vehicles: [], traffic: [],
+  shadowFollow: true, // V5 (B3): loop keeps the sun's shadow box on the player (see loop)
   camYaw: Math.PI, camDist: 7, elapsed: 0, sun, hemi, hq: null, water: null,
   enterCar: null, exitCar: null, garage: ['hachi'], ownedCars: ['hachi'],
 };
@@ -60,6 +79,9 @@ G.exitCar = () => exitCar(G);
 window.G = G;
 
 initSave(G);
+// V5 (B3): world.js reads G.maxAniso (guarded) for its ground/road
+// textures — it must be set BEFORE buildWorld runs.
+G.maxAniso = renderer.capabilities.getMaxAnisotropy();
 buildWorld(G);
 initSky(G);
 createPlayer(G);
@@ -232,6 +254,23 @@ function loop(now) {
   updateSmoke(G, dt);
   updateWorld(G, dt);
   updateSky(G, dt);
+  // V5 (B3) shadow follow: updateWorld has just reset sun.position to
+  // the pure tod offset (aimed at the origin), so that vector IS the
+  // sun direction — re-anchor it on the player/car: target moves to
+  // the anchor, position becomes anchor + tod offset, direction and
+  // tod elevation are preserved exactly and the ±110 shadow box stays
+  // centred on the action instead of the map origin. Shot modes are
+  // exempt: shots.js pins sun.target on the staged look-at point.
+  if (G.shadowFollow && G.sun && !G.shotCam) {
+    const anchor = G.car || G.player;
+    if (anchor && G.sun.target) {
+      const off = G.sun.position.clone();
+      G.sun.target.position.set(anchor.x, groundH(anchor.x, anchor.z), anchor.z);
+      G.sun.position.copy(G.sun.target.position).add(off);
+      if (!G.sun.target.parent) scene.add(G.sun.target);
+      G.sun.target.updateMatrixWorld();
+    }
+  }
   // camera
   if (G.shotCam) { G.shotCam(); }
   else if (G.mode === 'play') {

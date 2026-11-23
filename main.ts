@@ -46,3 +46,4 @@ try {
 }
 
 // V5 density round (B1): boulevard frontage, gather spots, Hoshino rows.
+// V5 density round (B3): close-angle bright-day shots, shadow boot.

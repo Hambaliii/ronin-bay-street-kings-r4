@@ -10,6 +10,34 @@ import { spawnVehicle, applyNpcPoliceGlb, primeDamageSmoke } from './cars.js';
 // below read their tod from here so the dusk staging stays in sync.
 const VICE_TOD = { vice: 17.9, street: 18.1, markings: 17.9, houses: 17.8 };
 
+// V5 density round (B3): bright-day tod table for the four close-angle
+// v5 modes — every value inside Bosku's bright airy window (11.5–13.5),
+// the window sky.js' V5 day grade keys off (dayFactor full 11.0–14.5).
+const V5_TOD = { strip: 12.4, boulevard: 12.0, houses: 12.8, markings: 11.6 };
+
+// V5 shadow tightening for shot modes: main.js boots the sun's shadow
+// camera at ±110 for gameplay; a staged shot only needs the frame
+// around its look-at point, so narrow the ortho box to ±85 and centre
+// the light's target on that point. world.js' updateWorld repositions
+// G.sun from the tod every frame but never touches sun.target, so the
+// recentred target (and the tightened frustum) survives the frame loop;
+// the per-mode pin updater below re-asserts it anyway.
+function pinShadow(G, lx, lz) {
+  const sun = G.sun;
+  if (!sun || !sun.shadow || !sun.shadow.camera) return;
+  try {
+    const sc = sun.shadow.camera;
+    sc.left = -85; sc.right = 85; sc.top = 85; sc.bottom = -85;
+    sc.near = 10; sc.far = 600;
+    sc.updateProjectionMatrix();
+    if (sun.target) {
+      sun.target.position.set(lx, groundH(lx, lz), lz);
+      if (G.scene && !sun.target.parent) G.scene.add(sun.target);
+      sun.target.updateMatrixWorld();
+    }
+  } catch (e) { /* shadow dressing only — never break the shot */ }
+}
+
 function placeFig(G, castId, x, z, angle) {
   const fig = makeFigure(CAST[castId]);
   // Thread the cast key explicitly so GLB cast overrides (player.js
@@ -548,6 +576,84 @@ export function setupShot(G, name) {
       G.player.fig.rotation.y = Math.PI;
     }
     spawnVehicle(G, 'wagon', -404, -342, Math.PI / 2, { driver: 'parked' });
+  } else if (name === 'v5-strip') {
+    // V5 (B3): ON the Coral boulevard inside B1's new frontage density,
+    // CLOSE and bright (tod 12.4). Camera on the carriageway at z=493
+    // looking west along the road: the GS1 gather cluster at (100,511)
+    // sits left-mid-frame, the new frontage rows (facades z=470 north /
+    // z=518 south) fill both sides, and Ren stands in the south lane
+    // facing back toward the camera (+x-ish). Parked pastel cars sit on
+    // the road edges (z=486 north edge / z=504 south edge, angle ±PI/2
+    // along the boulevard, same staging as the vice modes).
+    cam(G, 128, groundH(128, 493) + 2.0, 493, 52, groundH(52, 500) + 1.4, 500);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, 52, 500); }); // camera + shadow pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = V5_TOD.strip;
+    pinShadow(G, 52, 500);
+    spawnVehicle(G, 'sedan', 88, 504, Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'hatch', 64, 486, -Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'wagon', 150, 504, Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = 112; G.player.z = 503; G.player.angle = Math.atan2(128 - 112, 493 - 503);
+      G.player.fig.position.set(112, groundH(112, 503), 503);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+  } else if (name === 'v5-boulevard') {
+    // V5 (B3): the SOCIAL CLUSTER hero shot, tod 12.0. Tight street-level
+    // camera west of GS1 looking ESE at the stall + benches + NPC cluster
+    // at (100,511): the cluster fills the frame, the south frontage row
+    // (facade z=518) rises directly behind it, and the boulevard with its
+    // staged cars runs out of frame right. Ren stands at the cluster's
+    // edge facing the stall.
+    cam(G, 85, groundH(85, 500) + 1.7, 500, 103, groundH(103, 510) + 1.2, 510);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, 103, 510); }); // camera + shadow pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = V5_TOD.boulevard;
+    pinShadow(G, 103, 510);
+    spawnVehicle(G, 'roadster', 70, 499, -Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'sedan', 128, 491, Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = 95; G.player.z = 505; G.player.angle = Math.atan2(100 - 95, 511 - 505);
+      G.player.fig.position.set(95, groundH(95, 505), 505);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+  } else if (name === 'v5-houses') {
+    // V5 (B3): Hoshino Heights street level, CLOSE, tod 12.8 — the
+    // vice-houses framing pulled in tight: camera on the z=-330 road's
+    // south edge looking SSW at the B1 house row (fronts at z≈-378), so
+    // house fronts fill the frame, parked cars sit on the carriageway
+    // between camera and houses, and the road itself (not grass) is the
+    // foreground. Heights groundH-anchored (foothill terrain, F4 lesson).
+    cam(G, -452, groundH(-452, -334) + 1.7, -334, -436, groundH(-436, -376) + 1.5, -376);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -436, -376); }); // camera + shadow pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = V5_TOD.houses;
+    pinShadow(G, -436, -376);
+    spawnVehicle(G, 'wagon', -420, -341, Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'sedan', -398, -352, -Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = -444; G.player.z = -350; G.player.angle = Math.atan2(-452 + 444, -334 + 350);
+      G.player.fig.position.set(-444, groundH(-444, -350), -350);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+  } else if (name === 'v5-markings') {
+    // V5 (B3): the (0,495) boulevard crossing, LOW and CLOSE, tod 11.6.
+    // Camera just north of the crossing looking south across it: the
+    // boulevard's stop line + zebra fill the foreground, and B1's
+    // frontage, the z=481/509 boulevard palms and staged traffic close
+    // the background — no skyline, no wide framing.
+    cam(G, 10.5, groundH(10.5, 472) + 1.35, 472, -2, groundH(-2, 496) + 0.4, 496);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -2, 496); }); // camera + shadow pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = V5_TOD.markings;
+    pinShadow(G, -2, 496);
+    spawnVehicle(G, 'hatch', -24, 491, Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'sedan', 30, 499, -Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = 17; G.player.z = 479; G.player.angle = Math.atan2(10.5 - 17, 472 - 479);
+      G.player.fig.position.set(17, groundH(17, 479), 479);
+      G.player.fig.rotation.y = G.player.angle;
+    }
   } else if (name === 'mapzoom') {
     if (G.player) { G.player.x = 300; G.player.z = -300; G.player.fig.position.set(300, groundH(300, -300), -300); }
     G.flags.mapZoom = true;
@@ -609,7 +715,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night', 'vice', 'vice-street', 'vice-markings', 'vice-houses'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night', 'vice', 'vice-street', 'vice-markings', 'vice-houses', 'v5-strip', 'v5-boulevard', 'v5-houses', 'v5-markings'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
