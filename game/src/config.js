@@ -6,6 +6,29 @@ export const DISTRICTS = [
   { id: 'neon', name: 'Neon Mile', cx: 330, cz: -330, color: 0x7a4fd0, accent: '#e879ff' },
   { id: 'hoshino', name: 'Hoshino Heights', cx: -330, cz: -330, color: 0x3f7d5a, accent: '#7dffb0' },
 ];
+// ---- Vice round palette (consumed by world.js) ----
+// Pastel art-deco beachfront: bright treated grounds (no bare dirt),
+// high-saturation Coral pastels, mid-tone downtown, neon trim that is
+// already ON by dusk (onset 17.0-17.2, full by 17.8, not night-only).
+export const VICE = {
+  ground: {
+    base: '#d6ccb4',          // base land: bright warm, never olive/dirt
+    paving: '#ded7c6',        // sidewalk / plaza slabs (light warm grey)
+    pavingAlt: '#d2cbbb',
+    pavingGrout: '#97907c',   // slab grout lines
+    grass: '#43a047',         // saturated park / yard green
+    grassLight: '#83cf62',
+    grassDark: '#2f7d33',
+    sand: '#f7e3ac',          // bright warm beach sand
+    sandSpeckle: '#dbba7a',
+    hill: '#58a34c',
+  },
+  coralPastels: ['#ff8fab', '#ffb35c', '#ffd93d', '#5eeab7', '#4cc9f0', '#c39bff', '#ff7a6b', '#7dd7ff'],
+  downtown: ['#7f9bb3', '#a26769', '#8d99ae', '#b08968', '#6d8ea0', '#9c7bb5', '#5f8d7d', '#c08552'],
+  neonTrim: [0xff5da2, 0x39d5ff, 0xffb35c, 0x7dffb0, 0xe879ff],
+  neon: { cyan: 0x39d5ff, magenta: 0xff4fd8 },
+  dusk: { neonOnset: 17.0, onset: 17.2, full: 17.8 },
+};
 export const CLUB_RANKS = ['Rookie', 'Runner', 'Drifter', 'Street Ace', 'Night Captain', 'Bay Legend', 'Street King'];
 export const CARS = {
   'hachi': { name: 'Hachi-Roku GT', price: 0, len: 4.2, wid: 1.7, topSpeed: 168, accel: 0.55, grip: 0.8, drift: 0.9, color: 0xf2f2f2, body: 'hatch', hood: 0.55, cabin: 0.45, roof: 'hatch', popups: true, tail: 'lip', twoTone: true, glow: null, wheels: 0xc0c0c0 },
