@@ -143,6 +143,7 @@ export function initPeds(G) {
           }
         });
       }
+      inner.traverse((o) => { if (o && o.isMesh) o.castShadow = true; });
       inner.add(clone);
       if (ped.visual) ped.fig.remove(ped.visual);
       ped.fig.add(inner);
@@ -336,12 +337,163 @@ export function initPeds(G) {
       const a = pick(anchors);
       placePed(ped, sidewalkPoint(G, a.x, a.z, 0, 190));
     }
+    fig.traverse((o) => { if (o && o.isMesh) o.castShadow = true; });
     fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
     fig.rotation.y = ped.angle;
     G.scene.add(fig);
     G.peds.push(ped);
     // If the GLB somehow resolved before this ped spawned, use it at once.
     applyGlbVisual(ped);
+  }
+
+  // ---- V5 density round: crowd 44 -> 92 --------------------------------
+  // HARD PERF RULE (Bosku's density round): every ped added below is a
+  // PROCEDURAL figure — spawnExtraPed never assigns a citizenKey, so the
+  // GLB citizen clones (woman / teen / office / teen2) keep exactly their
+  // original counts from the 44 above and applyGlbVisual skips these peds
+  // forever. All spawns happen AFTER the original loop, so the seeded RNG
+  // order (and therefore the placement) of the existing cast is unchanged.
+  // Breakdown: social clusters 5/spot (+3 at stall spots) + 20 boulevard /
+  // boardwalk walkers + 4 at the RONIN MART front + 4 downtown = +48.
+  function spawnExtraPed() {
+    let procFig = null;
+    try { procFig = makeFigure(pedParams()); } catch (e) { return null; }
+    const fig = new THREE.Group();
+    fig.add(procFig);
+    fig.traverse((o) => { if (o && o.isMesh) o.castShadow = true; });
+    return {
+      fig,
+      visual: procFig,
+      glbInner: null,
+      figIsGlb: false,
+      citizenKey: null, // procedural only — never a GLB citizen clone
+      idx: G.peds.length,
+      x: 0, z: 0, angle: 0,
+      speed: rr(1.2, 1.8),
+      phase: rr(0, 10),
+      vertical: true, line: 0, off: 17.2, dir: 1,
+      panicT: 0, idle: false, sway: rr(0, 6),
+      startleT: 0, fleeT: 0, fleeDir: null,
+      mode: 'walk', follow: null, chat: false, scattered: false,
+      crosser: false, cross: null, chatGroup: null, marketPlaced: false,
+    };
+  }
+  function finishExtraPed(ped) {
+    if (!ped) return;
+    ped.fig.position.set(ped.x, groundH(ped.x, ped.z), ped.z);
+    ped.fig.rotation.y = ped.angle;
+    G.scene.add(ped.fig);
+    G.peds.push(ped);
+  }
+  // Standing ped facing a fixed heading. chat=true pins it in place (chat
+  // peds are exempt from the far-respawn shuffle, so clusters persist for
+  // staged shots); the chat centre sits 3 m along the facing, which is
+  // what the updater's chat branch turns the ped toward every frame.
+  function placeStand(ped, x, z, faceAngle) {
+    ped.x = x; ped.z = z;
+    ped.idle = true; ped.chat = true;
+    ped.chatCx = x + Math.sin(faceAngle) * 3;
+    ped.chatCz = z + Math.cos(faceAngle) * 3;
+    ped.angle = faceAngle;
+  }
+  // Horizontal lane walker on the boulevard road line (z=495): off is the
+  // sidewalk offset from that line, so z=486 -> -9, z=505 -> +10 and the
+  // boardwalk z=552 -> +57. Directions alternate so both ways flow.
+  function placeLaneWalker(ped, off, xMin, xMax, dirSign) {
+    ped.vertical = false; ped.line = 495; ped.off = off;
+    ped.x = rr(xMin, xMax); ped.z = 495 + off;
+    ped.dir = dirSign;
+    ped.angle = ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    ped.mode = 'walk'; ped.idle = false;
+  }
+
+  // 1) SOCIAL CLUSTERS at the world's gathering spots. world.js is built
+  // by a parallel session and G.gatherSpots may not exist (or may land
+  // after peds init in some load order), so it is read defensively right
+  // here at spawn time — the same pattern marketPos() uses for landmarks.
+  // Missing/malformed spots fall back to the boulevard / boardwalk /
+  // harbour coords from the round brief.
+  const FALLBACK_SPOTS = [
+    { x: 100, z: 511, ry: 0, stall: false },
+    { x: 300, z: 552, ry: 0, stall: false },
+    { x: -60, z: -238, ry: 0, stall: false },
+    { x: -210, z: 481, ry: 0, stall: false },
+  ];
+  let liveSpots = null;
+  try {
+    if (Array.isArray(G.gatherSpots) && G.gatherSpots.length) liveSpots = G.gatherSpots;
+  } catch (e) { /* gatherSpots not landed — fallback below */ }
+  const clusterSpots = liveSpots || FALLBACK_SPOTS;
+  for (const rawSpot of clusterSpots) {
+    if (!rawSpot || !Number.isFinite(rawSpot.x) || !Number.isFinite(rawSpot.z)) continue;
+    const ry = Number.isFinite(rawSpot.ry) ? rawSpot.ry : 0;
+    const fwdX = Math.sin(ry), fwdZ = Math.cos(ry);   // spot facing
+    const perpX = Math.cos(ry), perpZ = -Math.sin(ry); // spot sideways
+    // Chatting circle of 3, offset sideways so bench / stall stay clear.
+    const ccx = rawSpot.x + perpX * 4.5, ccz = rawSpot.z + perpZ * 4.5;
+    for (let s = 0; s < 3; s++) {
+      const ped = spawnExtraPed();
+      if (ped) { placeChat(ped, ccx, ccz, s, 3); finishExtraPed(ped); }
+    }
+    // 2 peds at the benches, behind the circle, facing the spot heading.
+    for (const sgn of [-1, 1]) {
+      const ped = spawnExtraPed();
+      if (ped) {
+        placeStand(ped,
+          rawSpot.x - fwdX * 3.5 + perpX * sgn * 2.2,
+          rawSpot.z - fwdZ * 3.5 + perpZ * sgn * 2.2, ry);
+        finishExtraPed(ped);
+      }
+    }
+    // Stall spots: 2 customers at the counter facing in + 1 vendor
+    // behind the counter facing out.
+    if (rawSpot.stall) {
+      for (const sgn of [-1, 1]) {
+        const ped = spawnExtraPed();
+        if (ped) {
+          placeStand(ped,
+            rawSpot.x + fwdX * 1.9 + perpX * sgn * 0.95,
+            rawSpot.z + fwdZ * 1.9 + perpZ * sgn * 0.95, ry + Math.PI);
+          finishExtraPed(ped);
+        }
+      }
+      const vendor = spawnExtraPed();
+      if (vendor) {
+        placeStand(vendor, rawSpot.x - fwdX * 1.6, rawSpot.z - fwdZ * 1.6, ry);
+        finishExtraPed(vendor);
+      }
+    }
+  }
+
+  // 2) WALKERS: +20 concentrated on the Coral boulevard sidewalks and the
+  // boardwalk — 8 on the z=486 lane, 7 on z=505 (both x -420..560), 5 on
+  // the z=552 boardwalk (x -380..600), directions alternating.
+  const LANE_PLAN = [
+    { off: -9, n: 8, xMin: -420, xMax: 560 },  // z = 486
+    { off: 10, n: 7, xMin: -420, xMax: 560 },  // z = 505
+    { off: 57, n: 5, xMin: -380, xMax: 600 },  // z = 552 boardwalk
+  ];
+  for (const lane of LANE_PLAN) {
+    for (let s = 0; s < lane.n; s++) {
+      const ped = spawnExtraPed();
+      if (ped) {
+        placeLaneWalker(ped, lane.off, lane.xMin, lane.xMax, s % 2 === 0 ? 1 : -1);
+        finishExtraPed(ped);
+      }
+    }
+  }
+
+  // 3) RONIN MART front: a second chatting circle of 4 near (-82.5,-255),
+  // in addition to the existing market chat group from the first 44.
+  for (let s = 0; s < 4; s++) {
+    const ped = spawnExtraPed();
+    if (ped) { placeChat(ped, -79.5, -251, s, 4); finishExtraPed(ped); }
+  }
+
+  // 4) Downtown: +4 plain sidewalk walkers around the (0,0) crossing.
+  for (let s = 0; s < 4; s++) {
+    const ped = spawnExtraPed();
+    if (ped) { placePed(ped, sidewalkPoint(G, 0, 0, 0, 70)); finishExtraPed(ped); }
   }
 
   // ---- S23 horn reaction -------------------------------------------------

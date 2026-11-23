@@ -82,6 +82,14 @@ const DOME_TOP = new THREE.Color(0x2a1458); // deep violet zenith
 // instead of reaching for the individual constants at each use site.
 const SUNSET_GRADIENT_STOPS = [DOME_HOR, DOME_MID, DOME_TOP];
 const DUSK_FOG_COLOR = DUSK_FOG;
+// V5 bright-day targets: pale airy haze and a warm-white high sun. The
+// fog near/far bases mirror world.js' scene creation (Fog 220..1500) —
+// world.js rewrites fog colour from its keyframes every frame but never
+// touches near/far after creation, so sky.js can assign them absolutely.
+const DAY_FOG = new THREE.Color(0xdfeef2);
+const DAY_SUN_TINT = new THREE.Color(0xfff6e8);
+const FOG_NEAR_BASE = 220;
+const FOG_FAR_BASE = 1500;
 
 function smoothstep(a, b, x) {
   const f = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -228,6 +236,41 @@ export function updateSky(G, dt) {
       // Key light: a little extra warm sun so the low disc's side of the
       // boulevard still models the cars/facades at dusk.
       if (G.sun) { G.sun.intensity += sunset * 0.3; G.sun.color.lerp(LOW_SUN, sunset * 0.45); }
+    }
+
+    // --- V5 bright airy day -------------------------------------------------
+    // Smooth day window over tod [10.5, 15]: dayFactor is 0 outside, ramps
+    // in by 11.0, sits at 1 across [11, 14.5] and is gone by 15.0. The
+    // sunset factor above is only nonzero from ~16.6 (peak 18.2, width
+    // 1.6) and the morning one ends ~7.4, so the two windows never overlap
+    // and never fight over the same levers.
+    const dayFactor = smoothstep(10.5, 11.0, t) * (1 - smoothstep(14.5, 15.0, t));
+    if (dayFactor > 0) {
+      // Hemisphere fill: world.js' noon value is 0.25 + 0.65 = 0.90; the
+      // +0.5 lift is what makes pastel facades and the pale road read
+      // bright and airy instead of midday-flat.
+      if (G.hemi) G.hemi.intensity += 0.5 * dayFactor;
+      // High sun: stronger, tinted warm-white (never orange at noon).
+      if (G.sun) {
+        G.sun.intensity += 0.35 * dayFactor;
+        if (G.sun.color) G.sun.color.lerp(DAY_SUN_TINT, dayFactor * 0.6);
+      }
+      if (G.scene && G.scene.fog) {
+        // Airy pale haze, pushed far out so the boulevard stays crisp.
+        G.scene.fog.color.lerp(DAY_FOG, dayFactor * 0.85);
+        G.scene.fog.near = FOG_NEAR_BASE + dayFactor * 160;
+        G.scene.fog.far = FOG_FAR_BASE + dayFactor * 700;
+      }
+      // The sunset gradient dome must never pink-wash a bright day.
+      if (sky.dome) {
+        sky.dome.material.opacity *= (1 - dayFactor);
+        sky.dome.visible = sky.dome.material.opacity > 0.02;
+      }
+    } else if (G.scene && G.scene.fog && (G.scene.fog.near !== FOG_NEAR_BASE || G.scene.fog.far !== FOG_FAR_BASE)) {
+      // Outside the day window, hand fog distance back to the base values
+      // (the dusk grade only ever touches fog colour, so nothing fights).
+      G.scene.fog.near = FOG_NEAR_BASE;
+      G.scene.fog.far = FOG_FAR_BASE;
     }
 
     // --- clouds ------------------------------------------------------------

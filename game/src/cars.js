@@ -352,6 +352,7 @@ export function applyNpcSedanGlb(vehicle, tintHex) {
         clone.position.set(0, 0, 0);
         clone.rotation.y = -Math.PI / 2; // model +X nose -> +Z forward
         applyLuminanceTint(clone, tintHex);
+        clone.traverse((o) => { if (o && o.isMesh) o.castShadow = true; }); // V5: GLB body casts too
         grp.add(clone);
         ud.npcSedanGlb = clone;
         // --- re-seat the kept wheels into the GLB's wheel arches ------------
@@ -407,6 +408,7 @@ export function applyNpcTaxiGlb(vehicle) {
         const clone = wrapper.clone ? wrapper.clone(true) : wrapper;
         clone.position.set(0, 0, 0);
         // no rotation — model nose already +Z; no tint — baked yellow kept
+        clone.traverse((o) => { if (o && o.isMesh) o.castShadow = true; }); // V5: GLB body casts too
         grp.add(clone);
         ud.npcTaxiGlb = clone;
         // --- re-seat the kept wheels into the GLB's wheel arches ------------
@@ -793,6 +795,12 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
   const isGtrCar = GTR_SPECS.has(specId);
   const isSvjCar = SVJ_SPECS.has(specId);
   const mesh = isSvjCar && svjWrapper ? makeSvjCarMesh(spec, opts) : isGtrCar && gtrWrapper ? makeGtrCarMesh(spec, opts) : isHeroCar && heroCarWrapper ? makeGlbCarMesh(spec, opts) : makeCarMesh(spec, opts.color, opts);
+  // V5 density round: long soft shadows — every car body mesh casts. The
+  // flat ground planes (underglow / blob shadow) are excluded: they lie
+  // on the road and would stamp a dark rectangle instead of a shadow.
+  mesh.traverse((o) => {
+    if (o && o.isMesh && !(o.geometry && o.geometry.type === 'PlaneGeometry' && Math.abs(o.rotation.x + Math.PI / 2) < 0.01)) o.castShadow = true;
+  });
   mesh.position.set(x, groundH(x, z) + 0.02, z); mesh.rotation.y = angle || 0;
   G.scene.add(mesh);
   const v = { spec, specId, mesh, angle: angle || 0, speed: 0, health: 100, driver: opts.driver || 'parked', color: opts.color != null ? opts.color : spec.color, wheels: mesh.userData.wheels, steerVis: 0, x, z, target: null, lane: opts.lane || 0, smokeT: 0 };
@@ -815,8 +823,10 @@ export function spawnVehicle(G, specId, x, z, angle, opts) {
 }
 // --- traffic ---
 // Realistic palette + a pastel block (Bosku, 23 Nov: neon-coastal vibe —
-// soft pink / mint / cream / baby blue / peach make up ~1/3 of picks).
-const TRAFFIC_COLORS = [0xb9c0c7, 0x3f8cff, 0xd95555, 0x44484e, 0xf2f2f2, 0x5a7d4f, 0xffd23f, 0x707880, 0x8a4fd0, 0x2a9d8f, 0xffb7d5, 0xb8e6c9, 0xfff3d6, 0xaed6f7, 0xffcf9f];
+// soft pink / mint / cream / baby blue / peach). V5 density round: the
+// pastel block was widened to 10 of 20 entries, so ~1/2 of traffic colour
+// picks read pastel against the bright boulevard.
+const TRAFFIC_COLORS = [0xb9c0c7, 0x3f8cff, 0xd95555, 0x44484e, 0xf2f2f2, 0x5a7d4f, 0xffd23f, 0x707880, 0x8a4fd0, 0x2a9d8f, 0xffb7d5, 0xb8e6c9, 0xfff3d6, 0xaed6f7, 0xffcf9f, 0xd5f5e3, 0xfdebd0, 0xd6eaf8, 0xf5c6e0, 0xe8daef];
 const TRAFFIC_IDS = ['sedan', 'hatch', 'suv', 'wagon', 'kei', 'hachi', 'van', 'sora15', 'roadster', 'taxi', 'sedan', 'hatch', 'suv', 'taxi'];
 // Realistic per-instance tints for GLB traffic sedans (luminance recolor —
 // the GLB's baked electric blue never survives). Cycled deterministically
@@ -825,12 +835,24 @@ const NPC_SEDAN_TINTS = [0xc0c4c8, 0xe9e9e6, 0x3a3d42, 0x6e1420, 0x44586e, 0x776
 let npcSedanSpawnIndex = 0;
 export function spawnTraffic(G, n) {
   if (!G.traffic) G.traffic = [];
-  // F2 traffic life: ~50% more ambient traffic than the caller asked for,
-  // same vehicle classes / spawn rules / respawn behaviour as before.
-  const total = n + Math.round(n * 0.5);
+  // Traffic density: F2 lifted the caller's count by ~50% (main.js asks
+  // for 14 -> 21 on the road). V5 density round raises the on-road target
+  // to 32, so the request is scaled by 16/7 (14 * 16 / 7 = 32). Same
+  // vehicle classes / spawn rules / respawn behaviour as before.
+  const total = Math.round(n * 16 / 7);
   for (let i = 0; i < total; i++) {
-    const onX = rnd() < 0.5;
-    const line = pick(onX ? G.roadX : G.roadZ);
+    let onX = rnd() < 0.5;
+    let line = pick(onX ? G.roadX : G.roadZ);
+    // V5 route weighting: routes are free-roam (cars pick a road line and
+    // may turn at intersections), so weighting is applied at spawn —
+    // ~45% of cars start on the Coral boulevard (z=495) or the x=0 / z=0
+    // mains, which keeps the staged streets visibly busy.
+    if (rnd() < 0.45) {
+      const main = pick(['blvd', 'blvd', 'x0', 'z0']);
+      if (main === 'blvd' && Array.isArray(G.roadZ) && G.roadZ.includes(495)) { onX = false; line = 495; }
+      else if (main === 'x0' && Array.isArray(G.roadX) && G.roadX.includes(0)) { onX = true; line = 0; }
+      else if (main === 'z0' && Array.isArray(G.roadZ) && G.roadZ.includes(0)) { onX = false; line = 0; }
+    }
     const along = rr(-600, 600);
     const dirSign = rnd() < 0.5 ? 1 : -1;
     const laneOff = 5 * dirSign;
