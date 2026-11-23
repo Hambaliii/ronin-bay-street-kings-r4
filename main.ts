@@ -44,3 +44,5 @@ try {
   console.error(`buildDossier failed: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
+
+// V5 density round (B1): boulevard frontage, gather spots, Hoshino rows.
