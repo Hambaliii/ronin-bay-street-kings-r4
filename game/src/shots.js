@@ -605,17 +605,17 @@ export function setupShot(G, name) {
       G.player.fig.rotation.y = G.player.angle;
     }
   } else if (name === 'v5-boulevard') {
-    // V5 (B3): the SOCIAL CLUSTER hero shot, tod 12.0. Tight street-level
-    // camera west of GS1 looking ESE at the stall + benches + NPC cluster
+    // V5 (B3): the SOCIAL CLUSTER hero shot, tod 12.0 — V6 tighter framing.
+    // Tight street-level camera west of GS1 looking ESE at the stall + benches + NPC cluster
     // at (100,511): the cluster fills the frame, the south frontage row
     // (facade z=518) rises directly behind it, and the boulevard with its
     // staged cars runs out of frame right. Ren stands at the cluster's
     // edge facing the stall.
-    cam(G, 85, groundH(85, 500) + 1.7, 500, 103, groundH(103, 510) + 1.2, 510);
-    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, 103, 510); }); // camera + shadow pin
+    cam(G, 90, groundH(90, 502) + 1.6, 502, 101, groundH(101, 511) + 1.3, 511);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, 101, 511); }); // camera + shadow pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     G.timeOfDay = V5_TOD.boulevard;
-    pinShadow(G, 103, 510);
+    pinShadow(G, 101, 511);
     spawnVehicle(G, 'roadster', 70, 499, -Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'sedan', 128, 491, Math.PI / 2, { driver: 'parked' });
     if (G.player) {
@@ -624,20 +624,20 @@ export function setupShot(G, name) {
       G.player.fig.rotation.y = G.player.angle;
     }
   } else if (name === 'v5-houses') {
-    // V5 (B3): Hoshino Heights street level, CLOSE, tod 12.8 — the
-    // vice-houses framing pulled in tight: camera on the z=-330 road's
-    // south edge looking SSW at the B1 house row (fronts at z≈-378), so
-    // house fronts fill the frame, parked cars sit on the carriageway
-    // between camera and houses, and the road itself (not grass) is the
-    // foreground. Heights groundH-anchored (foothill terrain, F4 lesson).
-    // B5 tightening: camera closer + lower than B3's framing, so the
-    // house fronts + road fill the frame and the grass hill behind
-    // shrinks to a backdrop strip.
-    cam(G, -448, groundH(-448, -336) + 1.6, -336, -434, groundH(-434, -375) + 1.4, -375);
-    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -434, -375); }); // camera + shadow pin
+    // V5 (B3): Hoshino Heights street level, CLOSE, tod 12.8 — V6
+    // re-stage: road-level along-street framing. Camera ON the z=-330
+    // road at its west end looking ESE along the house row, so the
+    // road is the foreground and house fronts fill the frame. The
+    // previous grass-slope framing (camera over the Hoshino hillside
+    // looking at (-434,-375)) failed Bosku's no-grass-foreground rule:
+    // the frame was dominated by the grass slope, houses were small in
+    // the back and the road was not in frame. Heights groundH-anchored
+    // (foothill terrain, F4 lesson).
+    cam(G, -472, groundH(-472, -331) + 1.7, -331, -420, groundH(-420, -352) + 1.5, -352);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -420, -352); }); // camera + shadow pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     G.timeOfDay = V5_TOD.houses;
-    pinShadow(G, -434, -375);
+    pinShadow(G, -420, -352);
     spawnVehicle(G, 'wagon', -420, -341, Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'sedan', -398, -352, -Math.PI / 2, { driver: 'parked' });
     if (G.player) {
