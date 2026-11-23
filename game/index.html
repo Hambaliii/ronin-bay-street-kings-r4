@@ -12,6 +12,12 @@
   #gameCanvas { width: 100%; height: 100%; display: block; }
   .glass { background: rgba(8, 12, 22, .72); border: 1px solid rgba(87, 183, 255, .35); border-radius: 10px; backdrop-filter: blur(6px); box-shadow: 0 4px 24px rgba(0,0,0,.45); }
   .hud { position: fixed; z-index: 10; pointer-events: none; }
+  /* Left-column layout contract (V6): the map is a 150px circle at
+     left:14px / top:198px (#mapWrap below — overflow:hidden with
+     border-radius:50%, so no canvas spill can escape the circle);
+     hud.js caps mapZoom at 1.45; #healthWrap is bottom-anchored.
+     Keep a ≥10px clear gap between the map's bottom edge and the
+     health panel at 540p — do not reintroduce the collision B8 fixed. */
   #objective { top: 14px; left: 14px; padding: 10px 14px; max-width: 340px; }
   #objective .objTitle { font-size: 15px; font-weight: 700; letter-spacing: .12em; color: #ffb35c; text-transform: uppercase; }
   #objective .objSub { font-size: 12.5px; color: #cfe3f2; margin-top: 3px; letter-spacing: .03em; }

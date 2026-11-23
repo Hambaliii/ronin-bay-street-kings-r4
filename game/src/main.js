@@ -27,6 +27,7 @@ const canvas = document.getElementById('gameCanvas');
 // V5 (B6): the sun's shadow-boot numbers, named once — the boot block
 // below reads every value from here so retuning is a one-line change.
 const SHADOW_CFG = { mapSize: 2048, box: 110, near: 10, far: 600, bias: -0.0005, normalBias: 0.5 };
+const SUN_OFF = new THREE.Vector3(); // V6 fix pass 2: shadow-follow scratch vector — reused every frame instead of cloning the sun offset per frame.
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.shadowMap.enabled = true; // V5 (B3): real sun shadows on
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -269,7 +270,7 @@ function loop(now) {
   if (G.shadowFollow && G.sun && !G.shotCam) {
     const anchor = G.car || G.player;
     if (anchor && G.sun.target) {
-      const off = G.sun.position.clone();
+      const off = SUN_OFF.copy(G.sun.position);
       G.sun.target.position.set(anchor.x, groundH(anchor.x, anchor.z), anchor.z);
       G.sun.position.copy(G.sun.target.position).add(off);
       if (!G.sun.target.parent) scene.add(G.sun.target);

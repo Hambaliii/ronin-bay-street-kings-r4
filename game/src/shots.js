@@ -15,6 +15,10 @@ const VICE_TOD = { vice: 17.9, street: 18.1, markings: 17.9, houses: 17.8 };
 // the window sky.js' V5 day grade keys off (dayFactor full 11.0–14.5).
 const V5_TOD = { strip: 12.4, boulevard: 12.0, houses: 12.8, markings: 11.6, park: 12.2 };
 
+// V6 fix pass 2: pinShadow's tightened shadow frustum, named once —
+// same values pinShadow used inline (±85 ortho box, near 10, far 600).
+const SHADOW_PIN = { box: 85, near: 10, far: 600 };
+
 // V5 shadow tightening for shot modes: main.js boots the sun's shadow
 // camera at ±110 for gameplay; a staged shot only needs the frame
 // around its look-at point, so narrow the ortho box to ±85 and centre
@@ -27,8 +31,8 @@ function pinShadow(G, lx, lz) {
   if (!sun || !sun.shadow || !sun.shadow.camera) return;
   try {
     const sc = sun.shadow.camera;
-    sc.left = -85; sc.right = 85; sc.top = 85; sc.bottom = -85;
-    sc.near = 10; sc.far = 600;
+    sc.left = -SHADOW_PIN.box; sc.right = SHADOW_PIN.box; sc.top = SHADOW_PIN.box; sc.bottom = -SHADOW_PIN.box;
+    sc.near = SHADOW_PIN.near; sc.far = SHADOW_PIN.far;
     sc.updateProjectionMatrix();
     if (sun.target) {
       sun.target.position.set(lx, groundH(lx, lz), lz);

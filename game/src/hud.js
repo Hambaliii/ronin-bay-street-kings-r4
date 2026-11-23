@@ -669,6 +669,14 @@ export function initHUD(G) {
     return c;
   }
 
+  // V6 fix pass 2: centre-hub styling, named once — drawMinimap's hub
+  // medallion reads radius/fill/ring/line-width from here instead of
+  // restating the literals every frame (identical rendering).
+  const MAP_HUB_R = 13;
+  const MAP_HUB_FILL = 'rgba(10,12,16,0.55)';
+  const MAP_HUB_RING = 'rgba(255,255,255,0.85)';
+  const MAP_HUB_LINE = 2;
+
   function drawMinimap(t) {
     if (!mm || !E.minimap) return;
     const W = E.minimap.width, H = E.minimap.height;
@@ -722,11 +730,11 @@ export function initHUD(G) {
     // it as the player marker; the arrow (half-height 10.4) sits
     // inside the r=13 ring.
     mm.beginPath();
-    mm.arc(W / 2, H / 2, 13, 0, Math.PI * 2);
-    mm.fillStyle = 'rgba(10,12,16,0.55)';
+    mm.arc(W / 2, H / 2, MAP_HUB_R, 0, Math.PI * 2);
+    mm.fillStyle = MAP_HUB_FILL;
     mm.fill();
-    mm.lineWidth = 2;
-    mm.strokeStyle = 'rgba(255,255,255,0.85)';
+    mm.lineWidth = MAP_HUB_LINE;
+    mm.strokeStyle = MAP_HUB_RING;
     mm.stroke();
     // V5 (B6): blip layer x1.3 at the smaller wrap — player arrow
     // (8 -> 10.4) and the letter chips for HQ / garage / objective
