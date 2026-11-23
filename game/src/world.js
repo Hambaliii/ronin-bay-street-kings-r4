@@ -494,15 +494,25 @@ function buildHQ(G, scene) {
   G.hq = { x: hx, z: hz, garage: { x: hx, z: 455 } };
   // Hero asset: Tripo garage GLB replaces the procedural HQ building when
   // it loads; on null/failure the procedural HQ above stays untouched.
-  try {
+  // S35: the swap is retried (a null load no longer ends it — assets.js
+  // evicts null results from its cache, so a re-call refetches) and the
+  // wrapper is CLONED like every other GLB swap site in the game (cars,
+  // player, peds all clone the shared cached wrapper; this site used to
+  // add the cached instance itself). The S13 neon dressing below is
+  // untouched: it is added to `placement`, keyed off placement's own
+  // position/rotation, never off the loaded wrapper.
+  const attemptGarageSwap = (triesLeft) => {
     loadHeroAsset('garage').then((loaded) => {
       try {
-        if (!loaded) return;
+        if (!loaded) {
+          if (triesLeft > 0) setTimeout(() => attemptGarageSwap(triesLeft - 1), 1500);
+          return; // procedural HQ stays until a load lands
+        }
         scene.remove(hqGroup);
         const placement = new THREE.Group();
         placement.position.set(hx, groundH(hx, hz), hz);
         placement.rotation.y = GARAGE_ROT_Y;
-        placement.add(loaded);
+        placement.add(loaded.clone ? loaded.clone(true) : loaded);
         // Club dressing (GLB mode only): the bare GLB reads as a dark
         // monolith and lost the RONIN KAI identity, so re-dress its
         // world-south face. Sign-side reasoning (verified): placement
@@ -547,8 +557,9 @@ function buildHQ(G, scene) {
         placement.add(signGlow);
         scene.add(placement);
       } catch (e) { /* keep procedural HQ */ }
-    }).catch(() => {});
-  } catch (e) { /* keep procedural HQ */ }
+    }).catch(() => { if (triesLeft > 0) setTimeout(() => attemptGarageSwap(triesLeft - 1), 1500); });
+  };
+  try { attemptGarageSwap(3); } catch (e) { /* keep procedural HQ */ }
 }
 function buildHarbor(G, scene) {
   const contCols = [0xc0392b, 0x2471a3, 0x229954, 0xd4ac0d, 0x7d3c98, 0xca6f1e];

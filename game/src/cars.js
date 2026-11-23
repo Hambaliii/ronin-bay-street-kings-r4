@@ -554,10 +554,14 @@ let gtrSettled = false;
 const gtrPending = [];
 function populateGtrCar(grp, spec, opts) {
   const clone = gtrWrapper.clone(true);
-  // S34: the GT-R model's nose is -Z in wrapper space (every other hero
-  // GLB faces +Z) — rotate the wrapper PI about Y so the nose aligns
-  // with vehicle forward +Z like the hero car. GT-R only.
-  clone.rotation.y = Math.PI;
+  // S35: GT-R nose settled by vertex data (game/assets/gtr35.glb,
+  // POSITION accessor, local units): mean vertex Y for the z>0.25 half
+  // = 0.110111 (n=18392); for the z<-0.25 half = 0.134280 (n=19024).
+  // The z+ half is LOWER — that is the hood/front; the higher z- half
+  // is the rear deck + wing. So the nose already points +Z (vehicle
+  // forward) and NO rotation is applied. This reverts S34's PI turn,
+  // which had the car driving tail-first.
+  clone.rotation.y = 0;
   applyGtrLivery(clone);
   grp.add(clone);
   addUnderglow(grp, spec, opts);

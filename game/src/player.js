@@ -43,16 +43,31 @@ function applyGlbVisual(player) {
 function startMcLoad() {
   if (_mcLoadStarted) return;
   _mcLoadStarted = true;
-  try {
-    loadHeroAsset('mc').then((wrapper) => {
-      try {
-        if (!wrapper) return; // load failed -> procedural fallback stays
-        _mcTemplate = wrapper;
-        for (const player of _mcWaiters) applyGlbVisual(player);
-        _mcWaiters.clear();
-      } catch (e) { /* keep procedural fallback */ }
-    }).catch(() => { /* keep procedural fallback */ });
-  } catch (e) { /* keep procedural fallback */ }
+  // S35: a null resolution is retried, not terminal. Root cause of the
+  // Ren GLB regression: since S34's eager registry loading, all 19 GLBs
+  // race at module init and 'mc' (10th in registry order) could lose
+  // loadGLBModel's 8 s fetch-abort race; assets.js cached that null
+  // forever and this handler simply returned, leaving every waiter on
+  // the procedural figure for the whole session — while earlier-queue
+  // assets (heroCar, gtr35, svj, helicopter) swapped fine. assets.js
+  // now retries internally and evicts nulls from its cache, so this
+  // second request refetches; waiters are only cleared on success.
+  const attempt = (triesLeft) => {
+    try {
+      loadHeroAsset('mc').then((wrapper) => {
+        try {
+          if (!wrapper) {
+            if (triesLeft > 0) setTimeout(() => attempt(triesLeft - 1), 1500);
+            return; // load failed -> procedural fallback stays for now
+          }
+          _mcTemplate = wrapper;
+          for (const player of _mcWaiters) applyGlbVisual(player);
+          _mcWaiters.clear();
+        } catch (e) { /* keep procedural fallback */ }
+      }).catch(() => { if (triesLeft > 0) setTimeout(() => attempt(triesLeft - 1), 1500); });
+    } catch (e) { /* keep procedural fallback */ }
+  };
+  attempt(3);
 }
 startMcLoad();
 

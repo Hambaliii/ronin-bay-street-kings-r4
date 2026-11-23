@@ -162,6 +162,12 @@ export async function loadGLBModel(url) {
 
 export const HERO_ASSETS = {
   helicopter: { url: 'assets/helicopter.glb', scale: 11 },
+  // S35: garage promoted to the front of the registry — the eager loop
+  // below starts loads in registry order and the browser only runs a
+  // handful of fetches concurrently, so a late entry's fetch can lose
+  // loadGLBModel's 8 s abort race behind ~30 MB of earlier GLBs. The
+  // garage is a landmark swap with no second caller, so it goes second.
+  garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
   heroCar: { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } },
   npcPolice: { url: 'assets/npc-police.glb', targetSize: { x: 1.82, y: 1.42, z: 4.85 } },
   npcSedan: { url: 'assets/npc-sedan.glb', targetSize: { x: 4.75, y: 1.45, z: 1.80 } },
@@ -173,7 +179,6 @@ export const HERO_ASSETS = {
   mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
   rivalDriver: { url: 'assets/rival-driver.glb', scale: 1.80 },
   policeOfficer: { url: 'assets/police-officer.glb', scale: 1.78 },
-  garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
   citizenWoman: { url: 'assets/citizen-woman.glb', scale: 1.68 },
   // Untextured GLB (POSITION+NORMAL only, no UVs/material/image): parseGLB
   // returns uv:null, loadGLBModel skips the uv attribute and uses the plain
@@ -203,8 +208,17 @@ export async function loadHeroAsset(name) {
   if (!entry) return null;
   if (!_heroCache.has(name)) {
     const p = (async () => {
-      const model = await loadGLBModel(entry.url);
-      if (!model) return null;
+      // S35: one in-promise retry on a null load. A transient failure
+      // (the 8 s fetch abort in loadGLBModel losing the eager-load
+      // concurrency race) used to be cached forever: the cache stored
+      // this promise permanently, so a single abort poisoned the asset
+      // for the whole session and every swap site (garage HQ, player
+      // MC Ren) silently kept its procedural fallback. The retry runs
+      // after the first wave of fetches has drained, and a still-null
+      // result evicts the cache entry so a later caller can try again.
+      let model = await loadGLBModel(entry.url);
+      if (!model) model = await loadGLBModel(entry.url);
+      if (!model) { _heroCache.delete(name); return null; }
       const wrapper = new THREE.Group();
       wrapper.name = 'hero:' + name;
       if (entry.targetSize) {
