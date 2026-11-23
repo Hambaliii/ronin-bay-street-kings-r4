@@ -164,9 +164,17 @@ export function initHUD(G) {
   const sp = E.speedo ? E.speedo.getContext('2d') : null;
 
   if (G.flags.mapZoom && E.mapWrap) {
-    E.mapWrap.style.transform = 'scale(1.9)';
-    // V5 B4: the wrap now anchors top-left (see index.html #mapWrap), so
-    // the zoom grows from that corner instead of the old bottom-right.
+    // V6 fix: zoom scale capped at 1.45 (was 1.9). The wrap's outer
+    // diameter is 150px anchored at top:198px (see index.html #mapWrap),
+    // so 1.9 grew the visual circle to 285px and pushed its bottom edge
+    // to 198 + 285 = 483px — at 540p that crosses #healthWrap's top
+    // edge (540 - 16 bottom offset - ~93 panel height = 431px) by
+    // ~52px and the circle sits on top of the health/vehicle panel.
+    // At 1.45 the visual size is 217.5px and the bottom edge lands at
+    // 415.5px: 15.5px clear of the health panel at 540p, 195.5px at
+    // 720p. Origin stays top-left (V5 B4: the wrap anchors top-left,
+    // so the zoom grows from that corner instead of bottom-right).
+    E.mapWrap.style.transform = 'scale(1.45)';
     E.mapWrap.style.transformOrigin = 'top left';
   }
 
@@ -669,8 +677,15 @@ export function initHUD(G) {
     const s = W / view;
     const toMap = (x, z) => [W / 2 + (x - p.x) * s, H / 2 + (z - p.z) * s];
     mm.save();
+    // V6 fix: clip to a TRUE circle (was a roundRect rounded square).
+    // The square clip let the map art fill the bitmap's corners, which
+    // the wrap's circular CSS mask then sliced off unevenly — the drawn
+    // frame and the corner 'N' never followed the rim, so the circle
+    // read as spilled/untidy over its panel. Now the bitmap art, the
+    // frame stroke and the CSS rim all share one circle: centre
+    // (W/2, H/2), radius W/2.
     mm.beginPath();
-    if (mm.roundRect) mm.roundRect(0, 0, W, H, 18); else mm.rect(0, 0, W, H);
+    mm.arc(W / 2, H / 2, W / 2, 0, Math.PI * 2);
     mm.clip();
     // Static base blit (covers the whole view; water fills any overflow).
     mm.fillStyle = '#3a7bd5';
@@ -700,20 +715,40 @@ export function initHUD(G) {
         }
       } catch (e) { /* route optional */ }
     }
+    // V6 fix: centre hub medallion under the player arrow. drawBlips
+    // already places the arrow at toMap(player) = exactly (W/2, H/2),
+    // but alone the small white glyph read as a stray mouse cursor on
+    // the circle. A dark, white-ringed hub at the exact centre anchors
+    // it as the player marker; the arrow (half-height 10.4) sits
+    // inside the r=13 ring.
+    mm.beginPath();
+    mm.arc(W / 2, H / 2, 13, 0, Math.PI * 2);
+    mm.fillStyle = 'rgba(10,12,16,0.55)';
+    mm.fill();
+    mm.lineWidth = 2;
+    mm.strokeStyle = 'rgba(255,255,255,0.85)';
+    mm.stroke();
     // V5 (B6): blip layer x1.3 at the smaller wrap — player arrow
     // (8 -> 10.4) and the letter chips for HQ / garage / objective
     // (13 -> 16.9; the objective chip adds its own +2 on top). The
     // pause map passes its own larger opts and is unaffected.
     drawBlips(mm, toMap, t, { chipSize: 13 * 1.3, arrowSize: 8 * 1.3 });
     mm.restore();
-    // Frame + north label (outside clip so the corner stays crisp).
+    // Frame + north label (outside clip so the rim stays crisp). V6
+    // fix: the frame is the SAME circle as the clip (radius W/2 - 1.5
+    // keeps the 3px stroke inside the bitmap), and 'N' sits at top
+    // CENTRE inside the circle — it used to sit at the top-right
+    // corner (W-8, 6), outside the inscribed circle, where the
+    // circular mask clipped it away.
     mm.beginPath();
-    if (mm.roundRect) mm.roundRect(0, 0, W, H, 18); else mm.rect(0, 0, W, H);
+    mm.arc(W / 2, H / 2, W / 2 - 1.5, 0, Math.PI * 2);
     mm.lineWidth = 3; mm.strokeStyle = 'rgba(10,12,16,0.85)'; mm.stroke();
     mm.fillStyle = '#ffffff';
     mm.font = 'bold 13px Arial, sans-serif';
-    mm.textAlign = 'right'; mm.textBaseline = 'top';
-    mm.fillText('N', W - 8, 6);
+    mm.textAlign = 'center'; mm.textBaseline = 'top';
+    mm.shadowColor = 'rgba(0,0,0,0.8)'; mm.shadowBlur = 3;
+    mm.fillText('N', W / 2, 7);
+    mm.shadowBlur = 0;
   }
 
   function drawBigMap() {

@@ -39,21 +39,27 @@
   .barOuter { height: 10px; background: rgba(255,255,255,.12); border-radius: 5px; overflow: hidden; margin: 4px 0 8px; }
   #healthBar { height: 100%; width: 100%; background: linear-gradient(90deg, #3ddc74, #7dffb0); transition: width .25s; }
   #carBar { height: 100%; width: 100%; background: linear-gradient(90deg, #ff7a1a, #ffb35c); transition: width .25s; }
-  /* V5 B4: minimap moved bottom-right -> top-left, smaller (Bosku: classic
-     GTA framing). It sits BELOW #objective (top 14, ~74px tall) and
-     #missionCard (top 108, ~80px tall) so nothing overlaps: top 198px
-     clears both, and hud.js' dispatch line (top 172px) ends just above
-     it. Outer diameter ~148px = 136px canvas CSS + padding + border;
-     the canvas bitmap stays 220x220 and CSS-scales down.
-     V5 B6 frame polish: GTA-style dark rim — 3px solid near-black
-     border + a tighter drop shadow, overriding the .glass defaults by
-     ID specificity. Padding drops 6px -> 4px so the thicker border
-     keeps the outer diameter at exactly 150px (136 + 2x4 + 2x3), and
-     position/size are otherwise B4's. Stacking: .hud z-index 10 sits
-     above the 3D canvas (no z-index) and below #pauseMenu (40) —
-     already correct, left as is. */
-  #mapWrap { left: 14px; top: 198px; padding: 4px; border: 3px solid rgba(15,15,20,.9); box-shadow: 0 2px 10px rgba(0,0,0,.45); border-radius: 50%; overflow: hidden; }
-  #minimap { display: block; border-radius: 50%; width: 136px; height: 136px; }
+  /* V5 B4: minimap top-left, smaller (Bosku: classic GTA framing),
+     below #objective (top 14, ~74px tall) and #missionCard (top 108,
+     ~80px tall); hud.js' dispatch line (top 172px) ends just above it.
+     V6 fix (Bosku: "maps buletnya aja kaga rapi"): the wrap IS the
+     circle — one explicit panel, no shrink-to-fit sizing. width/height
+     150px with the global border-box sizing = the FULL outer diameter
+     (3px rim included); border-radius 50%, panel background + shadow
+     live on the wrap itself; the canvas fills the resulting 144x144
+     content box exactly and is flex-centred, so nothing of the circle
+     extends past the rim and nothing else sits inside the panel. The
+     canvas bitmap stays 220x220 and CSS-scales down; hud.js now also
+     clips/draws the bitmap as a true circle so the art follows the rim.
+     Spacing vs #healthWrap (bottom:16px; height ~93px = 20 padding +
+     2 border + 2x ~13.3px label lines + 2x 22px bar rows): its top
+     edge is 540-16-93 = 431px at 540p and 720-16-93 = 611px at 720p.
+     Map bottom edge = 198 + 150 = 348px -> gaps of 83px (540p) /
+     263px (720p), both well over the 10px minimum; the hud.js mapZoom
+     scale is capped so the zoomed circle stays clear too (see hud.js).
+     Stacking unchanged: .hud z-index 10, below #pauseMenu (40). */
+  #mapWrap { left: 14px; top: 198px; width: 150px; height: 150px; padding: 0; border: 3px solid rgba(15,15,20,.9); background: rgba(8, 12, 22, .85); box-shadow: 0 2px 10px rgba(0,0,0,.45); border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  #minimap { display: block; border-radius: 50%; width: 144px; height: 144px; flex: none; }
   #speedo { right: 14px; bottom: 16px; padding: 4px; }
   #speedoCanvas { display: block; }
   #briefing { left: 50%; bottom: 120px; transform: translateX(-50%); width: min(560px, 90vw); padding: 12px 16px; display: none; }
