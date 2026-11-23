@@ -36,7 +36,14 @@ const sun = new THREE.DirectionalLight(0xfff2d8, 1.3); sun.position.set(200, 260
 
 const G = {
   scene, camera, renderer, canvas, mode: shot ? 'play' : 'menu', shot, seed,
-  keys: {}, timeOfDay: shot === 'chase' ? 17.8 : CFG.startHour,
+  // Vice round: shot captures boot at dusk (17.9), not CFG.startHour's
+  // flat noon. setupShot is deferred behind the assets-ready gate (up
+  // to 6 s below), and modes that never set their own tod ('city' /
+  // 'cover' among them) used to render — and could be captured — at
+  // noon; every mode that needs another hour still overrides this in
+  // setupShot ('chase' included: it sets 17.6 itself). Non-shot play
+  // is untouched: the live clock still starts at CFG.startHour.
+  keys: {}, timeOfDay: shot ? 17.9 : CFG.startHour,
   money: 500, rep: 0, rankIdx: 0, wanted: 0, speedKmh: 0,
   car: null, player: null, paused: false, shotCam: null,
   updaters: [], colliders: [],

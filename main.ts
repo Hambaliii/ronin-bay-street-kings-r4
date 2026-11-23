@@ -5,6 +5,7 @@
 // The root is this file's own directory, never process.cwd().
 // Fix round (Bosku's 6-item review): GTA pause map + minimap, full road markings, sun + clouds, livelier NPC activity, houses + district variety, RONIN MART supermarket.
 // Fix round session 2: pause-map + minimap rebuild (district labels, landmark icons, legend, zoom/pan).
+// Vice round session V2: sunset gradient sky + dusk ambient grade (sky.js), vice shot modes forced to sunset (shots.js), shot captures boot at dusk (main.js).
 // Vice round: ground/color pass — paving/grass/sand ground treatments, saturated Coral pastels + neon trim, dusk glow onset from 17.2 (full by 17.8).
 
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';

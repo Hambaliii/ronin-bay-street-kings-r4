@@ -144,7 +144,7 @@ export function setupShot(G, name) {
     cam(G, 114, 1.5, 479, 97, 0.9, 493);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    G.timeOfDay = 18.0;
+    G.timeOfDay = 17.9; // Vice round: peak sunset band (was 18.0)
     const v = spawnVehicle(G, 'taiyo', 100, 491, 1.2, { driver: 'parked' });
     void v;
   } else if (name === 'svj') {
@@ -453,6 +453,81 @@ export function setupShot(G, name) {
     }
     cam(G, -42, 3.4, -212, -80, 3.2, -250);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'vice') {
+    // Vice round: CORAL STRIP WIDE — the dossier's Vice-City proof.
+    // Camera high at the boulevard's east end looking WSW ALONG the
+    // z=495 beach boulevard: pastel deco facades (cz=577.5 row) and
+    // boardwalk palms fill the south side of the frame, the boulevard
+    // with staged pastel traffic runs diagonally through it, and the
+    // beach + ocean (z +610) close the background under the sunset
+    // gradient (sky.js dome, tod forced 17.9). Player stands on the
+    // boardwalk as a dusk pedestrian. Camera FIRST (S35 lesson), then
+    // tod, then the spawns.
+    cam(G, 205, 4.2, 458, 55, 1.2, 512);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = 17.9;
+    spawnVehicle(G, 'sedan', 150, 491, Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'roadster', 108, 491, Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'hatch', 62, 499, -Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'wagon', -18, 499, -Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = 122; G.player.z = 528; G.player.angle = Math.PI;
+      G.player.fig.position.set(122, groundH(122, 528), 528);
+      G.player.fig.rotation.y = Math.PI;
+    }
+  } else if (name === 'vice-street') {
+    // Vice round: STREET LEVEL on the Coral boulevard at tod 18.1 —
+    // deep enough into dusk that the z=495 main's lamp rhythm (glow
+    // heads + ground pools) and the facades' neon trim are fully on
+    // (updateWorld's night factor is 1.0 by 18.1), while the sky.js
+    // sunset dome still holds the pink-orange gradient overhead.
+    // Low camera on the north sidewalk looking east along the
+    // carriageway: staged pastel traffic in both lanes, lamps
+    // repeating into the distance, deco facades behind the cars.
+    cam(G, 38, 1.6, 481, 128, 1.1, 497);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = 18.1;
+    spawnVehicle(G, 'taiyo', 66, 492, 1.35, { driver: 'parked' });
+    spawnVehicle(G, 'sedan', 102, 499, -Math.PI / 2, { driver: 'parked' });
+    spawnVehicle(G, 'hatch', 142, 491, Math.PI / 2, { driver: 'parked' });
+    if (G.player) {
+      G.player.x = 52; G.player.z = 483; G.player.angle = Math.PI / 2;
+      G.player.fig.position.set(52, groundH(52, 483), 483);
+      G.player.fig.rotation.y = Math.PI / 2;
+    }
+  } else if (name === 'vice-markings') {
+    // Vice round: road-markings close-up where the x=0 main crosses
+    // the Coral boulevard (0,495) — the boulevard's own stop line +
+    // zebra crossing, lane dashes running into the foreground, Coral
+    // facades + palms behind the intersection. Same low over-the-
+    // asphalt framing as F4 'markings', moved to the beachfront and
+    // forced to tod 17.9 so the markings read under dusk light, not
+    // the old mode's flat noon.
+    cam(G, 7.5, 1.25, 460, -1.5, 0.3, 497);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
+    G.timeOfDay = 17.9;
+    if (G.player) {
+      G.player.x = 16; G.player.z = 470;
+      G.player.fig.position.set(16, groundH(16, 470), 470);
+    }
+  } else if (name === 'vice-houses') {
+    // Vice round: Hoshino Heights at tod 17.8 — same house row as F4
+    // 'houses' (z=-381.5 fronts facing +z), but the camera now stands
+    // ON the paved z=-330 road instead of the grass verge at z=-366:
+    // the foreground is asphalt + the parked wagon on the carriageway,
+    // no dirt/grass apron under the frame. Heights anchored to
+    // groundH (foothill terrain — the F4 lesson).
+    cam(G, -436, groundH(-436, -336) + 1.7, -336, -429, groundH(-429, -383) + 1.6, -383);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
+    G.timeOfDay = 17.8;
+    if (G.player) {
+      G.player.x = -424; G.player.z = -352; G.player.angle = Math.PI;
+      G.player.fig.position.set(-424, groundH(-424, -352), -352);
+      G.player.fig.rotation.y = Math.PI;
+    }
+    spawnVehicle(G, 'wagon', -404, -342, Math.PI / 2, { driver: 'parked' });
   } else if (name === 'mapzoom') {
     if (G.player) { G.player.x = 300; G.player.z = -300; G.player.fig.position.set(300, groundH(300, -300), -300); }
     G.flags.mapZoom = true;
@@ -514,7 +589,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night', 'vice', 'vice-street', 'vice-markings', 'vice-houses'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
