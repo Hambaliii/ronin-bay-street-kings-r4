@@ -637,6 +637,16 @@ function svjTailTexture() {
 function applySvjTreatment(wrapper, vehicle, glowHost) {
   const out = { tailMat: null, drlMat: null };
   if (!wrapper) return out;
+  // S37: ALL treatment geometry below is authored in GAME units and must
+  // live on the VEHICLE group (glowHost, passed in by populateSvjCar —
+  // the group's only caller), never on the scaled GLB wrapper: the
+  // wrapper's targetSize scale (~4.05 x / 4.15 y / 4.94 z) would inflate
+  // every size and throw every position metres off the car (the S36 glow
+  // sprite disease). The wrapper keeps ONLY the GLB clone itself; the
+  // matte-black paint in (a) still traverses the wrapper because it must
+  // follow the GLB meshes inside it. Fallback to wrapper only if no
+  // vehicle group was passed.
+  const host = glowHost || wrapper;
   // (a) PAINT — matte black: baked texture survives only as subtle detail
   // (30% strength, mixed 78% toward near-black), satin finish on clones.
   wrapper.traverse((o) => {
@@ -673,7 +683,7 @@ function applySvjTreatment(wrapper, vehicle, glowHost) {
   canopyGeo.rotateY(-Math.PI / 2); // shape x -> game +Z, extrusion -> game X
   canopyGeo.translate(0.62, 0, 0); // center the 1.24 extrusion on x
   const canopy = new THREE.Mesh(canopyGeo, new THREE.MeshPhongMaterial({ color: 0x0d1216, specular: 0xbdd3e0, shininess: 90, transparent: true, opacity: 0.97 }));
-  wrapper.add(canopy);
+  host.add(canopy); // S37: vehicle group (game units), not the scaled wrapper
   // (c) TAILLIGHTS — two Y-LED units on the rear face (z = -2.46). The
   // material is registered as the vehicle's tailMat: the brake-boost
   // path writes emissiveIntensity on tailMat, so base is 1.1 (S34:
@@ -685,7 +695,7 @@ function applySvjTreatment(wrapper, vehicle, glowHost) {
     const unit = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.28), tailMat);
     unit.position.set(s * 0.56, 0.80, -2.46);
     unit.rotation.y = Math.PI; // face -Z
-    wrapper.add(unit);
+    host.add(unit); // S37: vehicle group (game units), not the scaled wrapper
     const gl = glowSprite(0xff2a22, 1.1);
     gl.position.set(s * 0.56, 0.80, -2.52);
     // S36: parent to the VEHICLE group (game units), never the scaled
@@ -694,8 +704,9 @@ function applySvjTreatment(wrapper, vehicle, glowHost) {
     // position thrown metres off the rear face, at fixed opacity 0.85
     // in full daylight. On the vehicle group it stays 1.1 m (<= the
     // 1.6 m SVJ cap) on the rear face; the staged brake shot's presence
-    // comes from tailMat, not from an oversized glow.
-    (glowHost || wrapper).add(gl);
+    // comes from tailMat, not from an oversized glow. S37: `host` is
+    // that same vehicle group, now used for every treatment addition.
+    host.add(gl);
   }
   out.tailMat = tailMat;
   // Front DRL — thin emissive-white strips at the nose; the S25 system
@@ -704,7 +715,7 @@ function applySvjTreatment(wrapper, vehicle, glowHost) {
   for (const s of [-1, 1]) {
     const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.07), drlMat);
     strip.position.set(s * 0.55, 0.52, 2.44); // faces +Z by default
-    wrapper.add(strip);
+    host.add(strip); // S37: vehicle group (game units), not the scaled wrapper
   }
   out.drlMat = drlMat;
   // (d) BRAKE DISCS — bright red, one behind each wheel pivot.
@@ -713,7 +724,7 @@ function applySvjTreatment(wrapper, vehicle, glowHost) {
   for (const [sx, sz] of [[-0.86, 1.40], [0.86, 1.40], [-0.86, -1.75], [0.86, -1.75]]) {
     const disc = new THREE.Mesh(discGeo, discMat);
     disc.position.set(sx, 0.36, sz);
-    wrapper.add(disc);
+    host.add(disc); // S37: vehicle group (game units), not the scaled wrapper
   }
   if (vehicle) vehicle.svjTreatment = out;
   return out;
