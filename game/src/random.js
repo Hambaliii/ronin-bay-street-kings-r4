@@ -9,5 +9,8 @@ export function rnd() {
 }
 export function rr(a, b) { return a + rnd() * (b - a); }
 export function ri(a, b) { return a + Math.floor(rnd() * (b - a + 1)); }
-export function pick(arr) { return arr[Math.floor(rnd() * arr.length) % arr.length]; }
+export function pick(arr) {
+  if (!arr || !arr.length) return undefined; // Vice V3 sweep: empty-list guard (unchanged for non-empty lists)
+  return arr[Math.floor(rnd() * arr.length) % arr.length];
+}
 export function chance(p) { return rnd() < p; }

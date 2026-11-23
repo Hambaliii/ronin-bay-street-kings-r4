@@ -18,7 +18,8 @@ import { initWeapons } from './weapons.js';
 import { heroAssetsReady } from './assets.js';
 
 const params = new URLSearchParams(location.search);
-const seed = parseInt(params.get('seed') || '1', 10) || 1;
+const DEFAULT_SEED = 1; // Vice V3 sweep: fallback world seed when ?seed= is absent/invalid
+const seed = parseInt(params.get('seed') || String(DEFAULT_SEED), 10) || DEFAULT_SEED;
 const shot = params.get('shot');
 srand(seed);
 

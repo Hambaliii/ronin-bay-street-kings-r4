@@ -7,6 +7,7 @@
 // Fix round session 2: pause-map + minimap rebuild (district labels, landmark icons, legend, zoom/pan).
 // Vice round session V2: sunset gradient sky + dusk ambient grade (sky.js), vice shot modes forced to sunset (shots.js), shot captures boot at dusk (main.js).
 // Vice round: ground/color pass — paving/grass/sand ground treatments, saturated Coral pastels + neon trim, dusk glow onset from 17.2 (full by 17.8).
+// Vice round session V3: witness sweep + second passes — mirrored billboard sign fixed (world.js), sunset palette + vice tod values extracted to named constants (sky.js / shots.js).
 
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

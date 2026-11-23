@@ -76,6 +76,12 @@ const DOME_BOT = new THREE.Color(0x2b1233); // below-horizon dusk purple
 const DOME_HOR = new THREE.Color(0xff8b3d); // orange horizon
 const DOME_MID = new THREE.Color(0xe0457b); // magenta-pink mid band
 const DOME_TOP = new THREE.Color(0x2a1458); // deep violet zenith
+// Vice V3 second pass: the sunset section's named palette in one place —
+// the three above-horizon gradient stops (horizon -> mid -> zenith) and
+// the dusk fog colour, referenced by sunsetDome() / updateSky() below
+// instead of reaching for the individual constants at each use site.
+const SUNSET_GRADIENT_STOPS = [DOME_HOR, DOME_MID, DOME_TOP];
+const DUSK_FOG_COLOR = DUSK_FOG;
 
 function smoothstep(a, b, x) {
   const f = Math.max(0, Math.min(1, (x - a) / (b - a)));
@@ -96,9 +102,9 @@ function sunsetDome() {
   const cc = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const h = pos.getY(i) / 1420; // -1..1, 0 = horizon
-    cc.lerpColors(DOME_BOT, DOME_HOR, smoothstep(-0.08, 0.015, h));
-    cc.lerp(DOME_MID, smoothstep(0.03, 0.30, h));
-    cc.lerp(DOME_TOP, smoothstep(0.26, 0.62, h));
+    cc.lerpColors(DOME_BOT, SUNSET_GRADIENT_STOPS[0], smoothstep(-0.08, 0.015, h));
+    cc.lerp(SUNSET_GRADIENT_STOPS[1], smoothstep(0.03, 0.30, h));
+    cc.lerp(SUNSET_GRADIENT_STOPS[2], smoothstep(0.26, 0.62, h));
     cols.push(cc.r, cc.g, cc.b);
   }
   geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
@@ -209,7 +215,7 @@ export function updateSky(G, dt) {
     if (sunset > 0) {
       // Fog: pull world.js' brown-grey-bound lerp back to the horizon's
       // pink-orange so distance haze matches the gradient's horizon band.
-      if (G.scene && G.scene.fog) G.scene.fog.color.lerp(DUSK_FOG, sunset * 0.85);
+      if (G.scene && G.scene.fog) G.scene.fog.color.lerp(DUSK_FOG_COLOR, sunset * 0.85);
       // Hemisphere fill: world.js scales hemi by dayAmt (~0.03 at 17.9,
       // intensity ~0.27) — add a warm pink dusk fill and a mauve ground
       // bounce (replacing the brown-grey 0x8a7a66) so ground and pastel

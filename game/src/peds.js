@@ -50,6 +50,7 @@ const TEEN_TINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a, 0x7a9a4f, 0x8a4f7d, 
 // key match, so 'citizenTeen2' is never tinted).
 
 function citizenEntryForIndex(i) {
+  if (!Number.isFinite(i)) return null; // Vice V3 sweep: bad index -> procedural ped, never a GLB entry
   for (const entry of CITIZEN_MODELS) {
     if (entry && entry.every > 0 && i % entry.every === (entry.offset || 0)) return entry;
   }

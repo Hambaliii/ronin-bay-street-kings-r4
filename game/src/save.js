@@ -3,6 +3,7 @@
 // wrapped so a missing/blocked localStorage never breaks the game.
 
 const KEY = 'roninbay-r4-save-v1';
+const DEFAULT_CAR = 'hachi'; // Vice V3 sweep: the fresh-start garage car, named once
 
 export function initSave(G) {
   try {
@@ -24,7 +25,7 @@ export function initSave(G) {
     }
   } catch (e) { /* no save or storage unavailable — fresh start */ }
 
-  if (!Array.isArray(G.garage) || !G.garage.length) G.garage = ['hachi'];
+  if (!Array.isArray(G.garage) || !G.garage.length) G.garage = [DEFAULT_CAR];
   // Keep the two ownership lists identical, as S1 requires.
   G.ownedCars = G.garage.slice();
 

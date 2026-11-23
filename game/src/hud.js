@@ -7,7 +7,8 @@ import { districtAt } from './police.js';
 // pause big map, speedometer, garage panel, briefing / toast / banner.
 
 function el(id) { return document.getElementById(id); }
-function fmtMoney(n) { return '$' + Math.round(n || 0).toLocaleString('en-US'); }
+const MONEY_LOCALE = 'en-US'; // Vice V3 sweep: fmtMoney()'s grouping locale, named once
+function fmtMoney(n) { return '$' + Math.round(n || 0).toLocaleString(MONEY_LOCALE); }
 
 export function initHUD(G) {
   const E = {

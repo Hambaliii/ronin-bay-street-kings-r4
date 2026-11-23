@@ -26,9 +26,10 @@ function angDiff(a, b) {
   while (d < -Math.PI) d += Math.PI * 2;
   return d;
 }
+const SECONDS_PER_MINUTE = 60; // Vice V3 sweep: named for fmtTime() below
 function fmtTime(s) {
   s = Math.max(0, Math.ceil(s));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  return `${Math.floor(s / SECONDS_PER_MINUTE)}:${String(s % SECONDS_PER_MINUTE).padStart(2, '0')}`;
 }
 function playerPos(G) {
   return G.car && G.flags.inCar ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };

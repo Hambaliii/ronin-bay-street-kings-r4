@@ -13,7 +13,7 @@ export const DISTRICTS = [
 export const VICE = {
   ground: {
     base: '#d6ccb4',          // base land: bright warm, never olive/dirt
-    paving: '#ded7c6',        // sidewalk / plaza slabs (light warm grey)
+    paving: '#ded7c6',        // sidewalk / plaza slabs (light warm grey) — V3: zone repeat 66 (~5 m slabs)
     pavingAlt: '#d2cbbb',
     pavingGrout: '#97907c',   // slab grout lines
     grass: '#43a047',         // saturated park / yard green

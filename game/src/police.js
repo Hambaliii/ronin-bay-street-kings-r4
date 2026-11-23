@@ -43,6 +43,7 @@ const COLOR_WORDS = [
   [0xffd23f, 'yellow'], [0x2e9e4f, 'green'], [0x7a4fd0, 'purple'], [0xff4fd8, 'pink'],
 ];
 function colorWord(v) {
+  if (!v || typeof v !== 'object') return 'painted'; // Vice V3 sweep: no vehicle -> generic word, never throw
   const raw = (v && v.spec && (v.spec.color ?? v.spec.paint)) ?? (v && (v.color ?? v.paint));
   if (typeof raw === 'string') return raw.replace(/^#/, '').length === 6 ? 'painted' : raw;
   if (typeof raw === 'number') {

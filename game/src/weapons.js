@@ -88,8 +88,9 @@ function vPos(v) {
   return null;
 }
 
+const STAR_TEX_SIZE = 128; // Vice V3 sweep: muzzle-star canvas size, named for starTexture()
 function starTexture() {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const c = document.createElement('canvas'); c.width = c.height = STAR_TEX_SIZE;
   const g = c.getContext('2d');
   const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
   gr.addColorStop(0, 'rgba(255,240,200,1)');

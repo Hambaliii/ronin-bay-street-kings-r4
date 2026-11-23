@@ -442,11 +442,13 @@ export function buildWorld(G) {
       const p = new THREE.Mesh(new THREE.PlaneGeometry(660, 660), mat);
       p.rotation.x = -Math.PI / 2; p.position.set(cx, 0.018, cz); scene.add(p);
     };
-    const paveA = pavingTexture(); paveA.repeat.set(55, 55);
+    // Vice V3: repeat 55 over a 660 m plane = 12 m tiles / 6 m slabs —
+    // huge at street level. 66 tightens that to 10 m tiles / 5 m slabs.
+    const paveA = pavingTexture(); paveA.repeat.set(66, 66);
     zonePlane(330, 330, new THREE.MeshStandardMaterial({ map: paveA, roughness: 1 }));   // Coral Strip
-    const paveB = pavingTexture(); paveB.repeat.set(55, 55);
+    const paveB = pavingTexture(); paveB.repeat.set(66, 66);
     zonePlane(330, -330, new THREE.MeshStandardMaterial({ map: paveB, roughness: 1 }));  // Neon Mile / downtown
-    const paveC = pavingTexture(); paveC.repeat.set(55, 55);
+    const paveC = pavingTexture(); paveC.repeat.set(66, 66);
     zonePlane(-330, 330, new THREE.MeshStandardMaterial({ map: paveC, roughness: 1 }));  // Portside
     // Hoshino Heights needs no overlay: the hill mesh covers that whole
     // quadrant and now carries the grass texture, as do the house yards.
@@ -754,8 +756,20 @@ export function buildWorld(G) {
       }
       if (rnd() < 0.22) { // billboard
         const pt = signTexture(pick(posters), '#14161c', '#ffb35c');
-        const bb = new THREE.Mesh(new THREE.PlaneGeometry(14, 4), new THREE.MeshBasicMaterial({ map: pt, side: THREE.DoubleSide }));
-        bb.position.set(x, tall + 4, z); bb.rotation.y = rr(0, Math.PI); scene.add(bb);
+        // Vice V3 sign fix: a single DoubleSide plane showed the poster
+        // MIRRORED from behind (the reversed "BAY COLA" in 4-hero.jpg).
+        // Use two FrontSide panels back-to-back instead: the front panel
+        // as before, plus a rear panel turned PI so its own front faces
+        // the opposite way, nudged 0.06 behind along the front normal —
+        // the text now reads correctly from BOTH sides, never reversed.
+        const bbGeo = new THREE.PlaneGeometry(14, 4);
+        const bbMat = new THREE.MeshBasicMaterial({ map: pt, side: THREE.FrontSide });
+        const bbRot = rr(0, Math.PI);
+        const bb = new THREE.Mesh(bbGeo, bbMat);
+        bb.position.set(x, tall + 4, z); bb.rotation.y = bbRot; scene.add(bb);
+        const bbBack = new THREE.Mesh(bbGeo, bbMat);
+        bbBack.position.set(x - Math.sin(bbRot) * 0.06, tall + 4, z - Math.cos(bbRot) * 0.06);
+        bbBack.rotation.y = bbRot + Math.PI; scene.add(bbBack);
       }
       // storefront on neon/coral ground floor (and the beach deco strip)
       if ((district.id === 'neon' || district.id === 'coral' || isBeach) && rnd() < (isBeach ? 0.75 : 0.6)) {

@@ -22,11 +22,12 @@ const COMP = {
   5126: { bytes: 4, get: 'getFloat32', Array: Float32Array },
 };
 const TYPE_COMPS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+const GLB_MAGIC = 0x46546c67; // 'glTF' — Vice V3 sweep: named, not a magic literal
 
 export function parseGLB(arrayBuffer) {
   if (!arrayBuffer || arrayBuffer.byteLength < 20) throw new Error('GLB: too small');
   const dv = new DataView(arrayBuffer);
-  if (dv.getUint32(0, true) !== 0x46546c67) throw new Error('GLB: bad magic'); // 'glTF'
+  if (dv.getUint32(0, true) !== GLB_MAGIC) throw new Error('GLB: bad magic'); // 'glTF'
   if (dv.getUint32(4, true) !== 2) throw new Error('GLB: not version 2');
   const totalLen = dv.getUint32(8, true);
   if (totalLen > arrayBuffer.byteLength) throw new Error('GLB: length exceeds buffer');

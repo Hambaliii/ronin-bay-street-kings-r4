@@ -5,7 +5,8 @@ import { rnd, rr, ri, pick } from './random.js';
 import { groundH, glowSprite } from './world.js';
 import { loadHeroAsset } from './assets.js';
 
-function hexCss(hex) { return '#' + hex.toString(16).padStart(6, '0'); }
+const HEX_COLOR_DIGITS = 6; // Vice V3 sweep: '#rrggbb' width, named for hexCss()
+function hexCss(hex) { return '#' + hex.toString(16).padStart(HEX_COLOR_DIGITS, '0'); }
 // Build side-profile Shape. x: -len/2 (tail) .. +len/2 (nose/front at +x before rotation). y: height.
 function bodyProfile(spec) {
   const L = spec.len, hl = L / 2;

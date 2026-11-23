@@ -12,7 +12,7 @@ import { loadHeroAsset } from './assets.js';
 // The procedural figure is the exact fallback: if the asset fails to load
 // (loadHeroAsset resolves null) nothing is ever swapped. Flip this one
 // constant if a screenshot shows Ren facing away from his heading.
-const MC_ROT_Y = 0;
+const MC_ROT_Y = 0; // Vice round V3 sweep: MC GLB facing offset — 0 = verified correct in shots
 let _mcTemplate = null; // resolved loadHeroAsset('mc') wrapper (template)
 let _mcLoadStarted = false;
 const _mcWaiters = new Set(); // players created procedurally before load

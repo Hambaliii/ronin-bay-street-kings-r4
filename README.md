@@ -20,6 +20,7 @@ A browser open-world JDM street-racing crime game. Take over Ronin Bay with the 
 - Territory control with passive income
 - Touge mountain loop
 - Full day/night cycle
+- Vice round: neon-coastal sunset grade — Coral Strip pastels, paved plazas, and dusk shot staging
 
 ## Tech
 

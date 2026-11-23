@@ -11,11 +11,13 @@ function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
+const MS_PER_SEC = 1000; // Vice V3 sweep: named conversion used by nowSec()
+
 function nowSec() {
   try {
-    if (typeof performance !== 'undefined' && performance.now) return performance.now() / 1000;
+    if (typeof performance !== 'undefined' && performance.now) return performance.now() / MS_PER_SEC;
   } catch (e) { /* fall through */ }
-  return Date.now() / 1000;
+  return Date.now() / MS_PER_SEC;
 }
 
 // Position of a game object, whatever shape S1/S2 gave it.

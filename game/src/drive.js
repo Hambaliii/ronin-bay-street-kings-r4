@@ -14,9 +14,10 @@ import { rnd, rr, pick } from './random.js';
 // applies its own obstacle-braking clamp (max -8*dt toward target speed) to
 // ease the car to a stop 2 m before the intersection edge. On green the
 // original cruise is restored and normal logic resumes.
+const INTERSECTION_HALF = 15; // CFG.roadW / 2 — Vice V3 sweep: named for updateTrafficLights()
 function updateTrafficLights(G) {
   if (!G.traffic || typeof G.lightState !== 'function') return;
-  const half = 15; // CFG.roadW / 2 — intersection box half-extent
+  const half = INTERSECTION_HALF; // intersection box half-extent
   for (const v of G.traffic) {
     if (v.driver !== 'traffic' || v.cruise == null) continue;
     if (v._cruiseOrig == null) v._cruiseOrig = v.cruise;

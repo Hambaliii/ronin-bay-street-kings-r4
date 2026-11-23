@@ -5,6 +5,11 @@ import { groundH } from './world.js';
 import { makeFigure, poseSeated, applyCastFigureOverride } from './player.js';
 import { spawnVehicle, applyNpcPoliceGlb, primeDamageSmoke } from './cars.js';
 
+// Vice V3 second pass: the four vice shot modes' sunset times of day in
+// one named table (same values the modes used inline) — the vice modes
+// below read their tod from here so the dusk staging stays in sync.
+const VICE_TOD = { vice: 17.9, street: 18.1, markings: 17.9, houses: 17.8 };
+
 function placeFig(G, castId, x, z, angle) {
   const fig = makeFigure(CAST[castId]);
   // Thread the cast key explicitly so GLB cast overrides (player.js
@@ -466,7 +471,7 @@ export function setupShot(G, name) {
     cam(G, 205, 4.2, 458, 55, 1.2, 512);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    G.timeOfDay = 17.9;
+    G.timeOfDay = VICE_TOD.vice;
     spawnVehicle(G, 'sedan', 150, 491, Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'roadster', 108, 491, Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'hatch', 62, 499, -Math.PI / 2, { driver: 'parked' });
@@ -488,7 +493,7 @@ export function setupShot(G, name) {
     cam(G, 38, 1.6, 481, 128, 1.1, 497);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    G.timeOfDay = 18.1;
+    G.timeOfDay = VICE_TOD.street;
     spawnVehicle(G, 'taiyo', 66, 492, 1.35, { driver: 'parked' });
     spawnVehicle(G, 'sedan', 102, 499, -Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'hatch', 142, 491, Math.PI / 2, { driver: 'parked' });
@@ -507,7 +512,7 @@ export function setupShot(G, name) {
     // the old mode's flat noon.
     cam(G, 7.5, 1.25, 460, -1.5, 0.3, 497);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
-    G.timeOfDay = 17.9;
+    G.timeOfDay = VICE_TOD.markings;
     if (G.player) {
       G.player.x = 16; G.player.z = 470;
       G.player.fig.position.set(16, groundH(16, 470), 470);
@@ -521,7 +526,7 @@ export function setupShot(G, name) {
     // groundH (foothill terrain — the F4 lesson).
     cam(G, -436, groundH(-436, -336) + 1.7, -336, -429, groundH(-429, -383) + 1.6, -383);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
-    G.timeOfDay = 17.8;
+    G.timeOfDay = VICE_TOD.houses;
     if (G.player) {
       G.player.x = -424; G.player.z = -352; G.player.angle = Math.PI;
       G.player.fig.position.set(-424, groundH(-424, -352), -352);
