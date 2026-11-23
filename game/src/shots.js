@@ -74,7 +74,7 @@ export function setupShot(G, name) {
     ['ren', 'ako', 'mika', 'jun'].forEach((cid, i) => placeFig(G, cid, xs[i] + 1.5, 451, 0));
     // S33: closer camera + late-morning tod so the garage front is lit.
     G.timeOfDay = 11.5;
-    cam(G, -430, 1.8, 460, -414, 1.0, 447);
+    cam(G, -433, 1.7, 458, -415, 1.0, 447);
   } else if (name === 'chase') {
     // S28: dusk restage — heli searchlight (cone + ground pool) hard-tracks
     // the player car at wanted 4; the heliShot override drops the heli to
@@ -130,14 +130,15 @@ export function setupShot(G, name) {
     // altitude 16 — car, cops, cone and pool all share the frame.
     cam(G, 112, 3.2, 478, 99, 1.2, 496);
   } else if (name === 'hero') {
+    // S36: restaged — the touge version failed four captures four ways
+    // (pickup wash, off-road, dark silhouette). Now the 'taiyo' hero car
+    // SOLO on the coast road: front-3/4 beauty shot of the orange hero
+    // GLB against the ocean at golden hour. Camera installed FIRST in
+    // the block (S35 cam-first lesson), then tod, then the spawn.
+    cam(G, 93, 1.4, 480, 100.5, 0.8, 491.5);
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    G.timeOfDay = 17.8; // S35
-    // S34: S33 offset reverted — car back at (-300,-610) with the original
-    // camera; the Touge cash pickup that washed the frame was moved
-    // instead (main.js PICKUP_SPOTS: now at (-322,-590)).
-    // S35: stage the 'taiyo' spec (orange hero car + hero-car GLB), not 'kaze'.
-    const v = spawnVehicle(G, 'taiyo', -300, -610, 2.2, { driver: 'parked' });
-    cam(G, -291, groundH(-291, -600) + 2.0, -600, -300, groundH(-300, -610) + 0.8, -610);
+    G.timeOfDay = 17.8;
+    const v = spawnVehicle(G, 'taiyo', 100, 491, 1.2, { driver: 'parked' });
     void v;
   } else if (name === 'svj') {
     // S31: front 3/4 of the HQ showcase SVJ (spawned in main.js at

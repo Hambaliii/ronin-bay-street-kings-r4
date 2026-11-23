@@ -185,8 +185,8 @@ export function makeCarMesh(spec, colorHex, opts) {
     const base = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.07, 0.3), darkMat); base.position.set(0, 1.32, 0.1); grp.add(base);
     const red = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.12, 0.28), new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xff2222, emissiveIntensity: 1.4 })); red.position.set(-0.28, 1.4, 0.1); grp.add(red);
     const blue = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.12, 0.28), new THREE.MeshStandardMaterial({ color: 0x2255ff, emissive: 0x2255ff, emissiveIntensity: 1.4 })); blue.position.set(0.28, 1.4, 0.1); grp.add(blue);
-    const gr = glowSprite(0xff3344, 3); gr.position.set(-0.28, 1.45, 0.1); grp.add(gr);
-    const gb = glowSprite(0x3366ff, 3); gb.position.set(0.28, 1.45, 0.1); grp.add(gb);
+    const gr = glowSprite(0xff3344, 2.4); gr.position.set(-0.28, 1.45, 0.1); grp.add(gr);
+    const gb = glowSprite(0x3366ff, 2.4); gb.position.set(0.28, 1.45, 0.1); grp.add(gb);
     grp.userData.lightbar = { red, blue, gr, gb };
   }
   if (livery === 'taxi') {
@@ -634,7 +634,7 @@ function svjTailTexture() {
   g.stroke();
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
-function applySvjTreatment(wrapper, vehicle) {
+function applySvjTreatment(wrapper, vehicle, glowHost) {
   const out = { tailMat: null, drlMat: null };
   if (!wrapper) return out;
   // (a) PAINT — matte black: baked texture survives only as subtle detail
@@ -688,7 +688,14 @@ function applySvjTreatment(wrapper, vehicle) {
     wrapper.add(unit);
     const gl = glowSprite(0xff2a22, 1.1);
     gl.position.set(s * 0.56, 0.80, -2.52);
-    wrapper.add(gl);
+    // S36: parent to the VEHICLE group (game units), never the scaled
+    // GLB wrapper — the wrapper's targetSize scale (~4.05 x / 4.15 y /
+    // 4.94 z) multiplied this sprite to a ~4.5-5.4 m red dome with its
+    // position thrown metres off the rear face, at fixed opacity 0.85
+    // in full daylight. On the vehicle group it stays 1.1 m (<= the
+    // 1.6 m SVJ cap) on the rear face; the staged brake shot's presence
+    // comes from tailMat, not from an oversized glow.
+    (glowHost || wrapper).add(gl);
   }
   out.tailMat = tailMat;
   // Front DRL — thin emissive-white strips at the nose; the S25 system
@@ -717,7 +724,7 @@ let svjSettled = false;
 const svjPending = [];
 function populateSvjCar(grp, spec, opts) {
   const clone = svjWrapper.clone(true);
-  const treat = applySvjTreatment(clone, null);
+  const treat = applySvjTreatment(clone, null, grp);
   grp.add(clone);
   addUnderglow(grp, spec, opts);
   addBlobShadow(grp, spec);
