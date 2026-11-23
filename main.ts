@@ -3,6 +3,7 @@
 // fixed traversal, no timestamps), then builds the dossier with the
 // vendored make.fun library and writes its raw bytes to dossier.json.
 // The root is this file's own directory, never process.cwd().
+// Fix round (Bosku's 6-item review): GTA pause map + minimap, full road markings, sun + clouds, livelier NPC activity, houses + district variety, RONIN MART supermarket.
 
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
