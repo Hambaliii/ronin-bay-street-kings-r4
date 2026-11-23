@@ -588,12 +588,14 @@ export function initHUD(G) {
         chip(ctx, mx2, my2, opts.chipSize, '#ff8c1a', 'M', '#ffffff');
         tag(mx2, my2, opts.chipSize, 'RONIN MART');
       } else if (mx2 > -14 && my2 > -14 && mx2 < 234 && my2 < 234) {
-        // Minimap: small orange dot, only while on screen.
-        ctx.beginPath(); ctx.arc(mx2, my2, 5, 0, Math.PI * 2);
+        // Minimap: small orange dot, only while on screen. V5 (B6):
+        // radius / ring / glyph scaled x1.3 with the rest of the
+        // minimap's dynamic blip layer (see drawMinimap).
+        ctx.beginPath(); ctx.arc(mx2, my2, 6.5, 0, Math.PI * 2);
         ctx.fillStyle = '#ff8c1a'; ctx.fill();
-        ctx.lineWidth = 1.5; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 7px Arial, sans-serif';
+        ctx.font = 'bold 9px Arial, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('M', mx2, my2 + 0.5);
       }
@@ -676,7 +678,10 @@ export function initHUD(G) {
     const st = minimapStatic();
     mm.imageSmoothingEnabled = true;
     mm.drawImage(st, p.x - view / 2 + CFG.half, p.z - view / 2 + CFG.half, view, view, 0, 0, W, H);
-    // Dynamic GPS route on top of the roads.
+    // Dynamic GPS route on top of the roads. V5 (B6): line widths x1.3
+    // (5 -> 6.5 halo, 3.2 -> 4.16 core) — at the wrap's new ~148px size
+    // the old widths read too thin; the pre-rendered static base is
+    // untouched, only this dynamic layer scales.
     if (G.objective) {
       try {
         const route = roadRoute(G, p, G.objective) || [];
@@ -684,7 +689,7 @@ export function initHUD(G) {
           mm.lineJoin = 'round'; mm.lineCap = 'round';
           for (const pass of [0, 1]) {
             mm.strokeStyle = pass === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6';
-            mm.lineWidth = pass === 0 ? 5 : 3.2;
+            mm.lineWidth = pass === 0 ? 6.5 : 4.16;
             mm.beginPath();
             route.forEach((pt, i) => {
               const [mx, my] = toMap(pt.x, pt.z);
@@ -695,7 +700,11 @@ export function initHUD(G) {
         }
       } catch (e) { /* route optional */ }
     }
-    drawBlips(mm, toMap, t, { chipSize: 13, arrowSize: 8 });
+    // V5 (B6): blip layer x1.3 at the smaller wrap — player arrow
+    // (8 -> 10.4) and the letter chips for HQ / garage / objective
+    // (13 -> 16.9; the objective chip adds its own +2 on top). The
+    // pause map passes its own larger opts and is unaffected.
+    drawBlips(mm, toMap, t, { chipSize: 13 * 1.3, arrowSize: 8 * 1.3 });
     mm.restore();
     // Frame + north label (outside clip so the corner stays crisp).
     mm.beginPath();

@@ -43,9 +43,16 @@
      GTA framing). It sits BELOW #objective (top 14, ~74px tall) and
      #missionCard (top 108, ~80px tall) so nothing overlaps: top 198px
      clears both, and hud.js' dispatch line (top 172px) ends just above
-     it. Outer diameter 148px = 136px canvas CSS + 2x6px padding; the
-     canvas bitmap stays 220x220 and CSS-scales down. */
-  #mapWrap { left: 14px; top: 198px; padding: 6px; border-radius: 50%; overflow: hidden; }
+     it. Outer diameter ~148px = 136px canvas CSS + padding + border;
+     the canvas bitmap stays 220x220 and CSS-scales down.
+     V5 B6 frame polish: GTA-style dark rim — 3px solid near-black
+     border + a tighter drop shadow, overriding the .glass defaults by
+     ID specificity. Padding drops 6px -> 4px so the thicker border
+     keeps the outer diameter at exactly 150px (136 + 2x4 + 2x3), and
+     position/size are otherwise B4's. Stacking: .hud z-index 10 sits
+     above the 3D canvas (no z-index) and below #pauseMenu (40) —
+     already correct, left as is. */
+  #mapWrap { left: 14px; top: 198px; padding: 4px; border: 3px solid rgba(15,15,20,.9); box-shadow: 0 2px 10px rgba(0,0,0,.45); border-radius: 50%; overflow: hidden; }
   #minimap { display: block; border-radius: 50%; width: 136px; height: 136px; }
   #speedo { right: 14px; bottom: 16px; padding: 4px; }
   #speedoCanvas { display: block; }

@@ -24,6 +24,9 @@ const shot = params.get('shot');
 srand(seed);
 
 const canvas = document.getElementById('gameCanvas');
+// V5 (B6): the sun's shadow-boot numbers, named once — the boot block
+// below reads every value from here so retuning is a one-line change.
+const SHADOW_CFG = { mapSize: 2048, box: 110, near: 10, far: 600, bias: -0.0005, normalBias: 0.5 };
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.shadowMap.enabled = true; // V5 (B3): real sun shadows on
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -36,21 +39,23 @@ const camera = new THREE.PerspectiveCamera(66, innerWidth / innerHeight, 0.1, 30
 camera.position.set(-412, 4, 486);
 const hemi = new THREE.HemisphereLight(0xcfe8ff, 0x8a7f6a, 0.9); scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff2d8, 1.3); sun.position.set(200, 260, 120); scene.add(sun);
-// V5 (B3) shadow boot: the sun is the one shadow caster. Ortho box
-// ±110 m around the light axis, 2048px map; bias/normalBias tuned
-// conservatively so the low-poly facades don't acne. world.js'
-// updateWorld repositions this light from the tod every frame (and
-// never touches its target), so gameplay recentring works by moving
-// sun.target + position together in the loop (G.shadowFollow, below),
-// and shot modes tighten the box to ±85 around their look-at point
-// (shots.js pinShadow).
+// V5 shadow boot + follow contract. The sun is the one shadow caster;
+// its ortho box / map size / bias all come from SHADOW_CFG above (bias
+// and normalBias tuned conservatively so the low-poly facades don't
+// acne). After boot, three owners move the light and none of them
+// retunes these values: world.js' updateWorld repositions the sun from
+// the time-of-day every frame (and never touches its target); the main
+// loop re-anchors position+target on the player/car each frame
+// (G.shadowFollow, below) so the box stays centred on the action; shot
+// modes pin it on their staged look-at point instead (shots.js
+// pinShadow, which tightens the box to ±85 itself).
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -110; sun.shadow.camera.right = 110;
-sun.shadow.camera.top = 110; sun.shadow.camera.bottom = -110;
-sun.shadow.camera.near = 10; sun.shadow.camera.far = 600;
-sun.shadow.bias = -0.0005;
-sun.shadow.normalBias = 0.5;
+sun.shadow.mapSize.set(SHADOW_CFG.mapSize, SHADOW_CFG.mapSize);
+sun.shadow.camera.left = -SHADOW_CFG.box; sun.shadow.camera.right = SHADOW_CFG.box;
+sun.shadow.camera.top = SHADOW_CFG.box; sun.shadow.camera.bottom = -SHADOW_CFG.box;
+sun.shadow.camera.near = SHADOW_CFG.near; sun.shadow.camera.far = SHADOW_CFG.far;
+sun.shadow.bias = SHADOW_CFG.bias;
+sun.shadow.normalBias = SHADOW_CFG.normalBias;
 sun.shadow.camera.updateProjectionMatrix();
 
 const G = {
