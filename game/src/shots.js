@@ -460,15 +460,24 @@ export function setupShot(G, name) {
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
   } else if (name === 'vice') {
     // Vice round: CORAL STRIP WIDE — the dossier's Vice-City proof.
-    // Camera high at the boulevard's east end looking WSW ALONG the
-    // z=495 beach boulevard: pastel deco facades (cz=577.5 row) and
+    // Camera at the boulevard's east end looking WSW ALONG the z=495
+    // beach boulevard: pastel deco facades (cz=577.5 row) and
     // boardwalk palms fill the south side of the frame, the boulevard
     // with staged pastel traffic runs diagonally through it, and the
     // beach + ocean (z +610) close the background under the sunset
     // gradient (sky.js dome, tod forced 17.9). Player stands on the
-    // boardwalk as a dusk pedestrian. Camera FIRST (S35 lesson), then
-    // tod, then the spawns.
-    cam(G, 205, 4.2, 458, 55, 1.2, 512);
+    // boulevard's south lane as a dusk pedestrian. Camera FIRST (S35
+    // lesson), then tod, then the spawns.
+    // V4 fix: the first staging put the camera at (205, 4.2, 458) —
+    // z=458 is NOT over the boulevard, it is inside the cz=412.5 city
+    // block, whose seeded buildings (centres z 364.5-460.5, heights
+    // 10-28 m) walled the camera in at ground-floor height, so the
+    // capture came out as facade walls + sky wedges, no boulevard.
+    // The camera now sits ON the carriageway (z=493; block footprints
+    // reach only z<=482.5 from the north block and z>=507.5 from the
+    // beach row, so the road corridor is guaranteed clear), with
+    // heights groundH-anchored like F4 'houses'.
+    cam(G, 208, groundH(208, 493) + 3.8, 493, 40, groundH(40, 503) + 1.0, 503);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     G.timeOfDay = VICE_TOD.vice;
@@ -477,8 +486,11 @@ export function setupShot(G, name) {
     spawnVehicle(G, 'hatch', 62, 499, -Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'wagon', -18, 499, -Math.PI / 2, { driver: 'parked' });
     if (G.player) {
-      G.player.x = 122; G.player.z = 528; G.player.angle = Math.PI;
-      G.player.fig.position.set(122, groundH(122, 528), 528);
+      // V4: was z=528, inside the cz=577.5 beach row's footprint band
+      // (z>=507.5) where a seeded facade can swallow the figure; the
+      // boulevard's south lane (z=505) is guaranteed clear and in frame.
+      G.player.x = 122; G.player.z = 505; G.player.angle = Math.PI;
+      G.player.fig.position.set(122, groundH(122, 505), 505);
       G.player.fig.rotation.y = Math.PI;
     }
   } else if (name === 'vice-street') {
@@ -487,10 +499,13 @@ export function setupShot(G, name) {
     // heads + ground pools) and the facades' neon trim are fully on
     // (updateWorld's night factor is 1.0 by 18.1), while the sky.js
     // sunset dome still holds the pink-orange gradient overhead.
-    // Low camera on the north sidewalk looking east along the
-    // carriageway: staged pastel traffic in both lanes, lamps
-    // repeating into the distance, deco facades behind the cars.
-    cam(G, 38, 1.6, 481, 128, 1.1, 497);
+    // Low camera on the carriageway's north lane looking east:
+    // staged pastel traffic in both lanes, lamps repeating into the
+    // distance, deco facades behind the cars. (V4: the camera was at
+    // z=481, inside the cz=412.5 block's footprint reach of z<=482.5
+    // — the same inside-geometry trap as 'vice'; z=488 sits on the
+    // road corridor, guaranteed clear of every seeded footprint.)
+    cam(G, 38, 1.6, 488, 128, 1.1, 497);
     G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4 camera pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     G.timeOfDay = VICE_TOD.street;
