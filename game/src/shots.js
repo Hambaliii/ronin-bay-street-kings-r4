@@ -25,7 +25,7 @@ function cam(G, x, y, z, lx, ly, lz) {
 export function setupShot(G, name) {
   G.shot = name;
   G.shotMode = name; // S35: hud.js' staged-radio path reads G.shotMode (never set before)
-  if (name === 'city') {
+  if (name === 'city' || name === 'cover') {
     const v = spawnVehicle(G, 'hero-supra', 150, -148, 0.85, { driver: 'parked' });
     if (G.player) {
       G.player.x = 153.2; G.player.z = -144.6; G.player.angle = 0.8;
@@ -135,9 +135,16 @@ export function setupShot(G, name) {
     // SOLO on the coast road: front-3/4 beauty shot of the orange hero
     // GLB against the ocean at golden hour. Camera installed FIRST in
     // the block (S35 cam-first lesson), then tod, then the spawn.
-    cam(G, 93, 1.4, 480, 100.5, 0.8, 491.5);
+    // F4: the hero shot is now the VICE-COAST proof — beach boulevard
+    // (z=495 main) at SUNSET. At tod 18.0 the sky.js sun sits low over
+    // the ocean toward (-x,+z), so the camera moves to the car's NE and
+    // looks SW across it: boulevard, boardwalk palms, pastel deco
+    // facades (cz=577.5 row) and the low sun over the water all share
+    // the frame behind the hero car.
+    cam(G, 114, 1.5, 479, 97, 0.9, 493);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
-    G.timeOfDay = 17.8;
+    G.timeOfDay = 18.0;
     const v = spawnVehicle(G, 'taiyo', 100, 491, 1.2, { driver: 'parked' });
     void v;
   } else if (name === 'svj') {
@@ -316,11 +323,136 @@ export function setupShot(G, name) {
   } else if (name === 'night') {
     // S25 verify: taiyo staged in-car on the avenue at night (tod 21.5,
     // D = 1) so headlight cones + glow rake across the asphalt.
+    // F4: restaged onto the x=0 MAIN — F1's ~420 street lamps only line
+    // the mains (x=0, x=330, z=0, z=495), so the old x=165 avenue frame
+    // had no lamp rhythm to prove. Car on the x=0 carriageway, camera
+    // behind it looking north down the main: lamp glow heads + ground
+    // pools repeat ~45 m on both sides into the distance, downtown
+    // facades (lit windows / neon) flanking. Player staged on the east
+    // sidewalk as a night pedestrian (also keeps ambient traffic near).
     G.timeOfDay = 21.5;
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip (in-car)
-    const v = spawnVehicle(G, 'taiyo', 165, -120, 0, { driver: 'parked' });
+    const v = spawnVehicle(G, 'taiyo', 5, -40, 0, { driver: 'parked' });
     const drv = makeFigure(CAST.ren); poseSeated(drv); drv.position.set(-0.4, 0.42, 0.15); v.mesh.add(drv);
-    cam(G, 172, 2.0, -104, 164, 0.8, -122);
+    if (G.player) {
+      G.player.x = 14; G.player.z = -26; G.player.angle = Math.PI;
+      G.player.fig.position.set(14, groundH(14, -26), -26);
+      G.player.fig.rotation.y = Math.PI;
+    }
+    cam(G, 13, 2.0, -18, 2, 0.7, -58);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'markings') {
+    // F4 proof (F1 road markings): low over the x=0 arterial looking
+    // north to the (0,-165) intersection — yellow centre dashes, white
+    // lane dividers at ±7.5 m and edge lines run through the foreground,
+    // stop line + zebra crossing close the frame at the intersection.
+    G.timeOfDay = 10.5;
+    if (G.player) {
+      G.player.x = 14; G.player.z = -92;
+      G.player.fig.position.set(14, groundH(14, -92), -92);
+    }
+    cam(G, 5.5, 1.3, -126, -1, 0.3, -160);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'sky') {
+    // F4 proof (F2 sun + clouds): morning, tod 8.8 puts the sky.js sun
+    // at ~39° elevation toward azimuth ~63° (sun dir cos/sin of
+    // ((8.8-6)/12)*PI, z bias 0.38; lower + warmer than the 9.5 staging,
+    // whose disc washed out against the noon-blue). Camera in the open
+    // (0,0) intersection, tilted up ~36° along that azimuth: rooftops
+    // sit low in frame, sun disc + cloud clusters (y 150-265,
+    // camera-anchored) fill the blue above.
+    G.timeOfDay = 8.8;
+    if (G.player) {
+      G.player.x = -34; G.player.z = -18;
+      G.player.fig.position.set(-34, groundH(-34, -18), -18);
+    }
+    cam(G, -30, 1.8, -14, 17, 30, 10);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'busy') {
+    // F4 proof (F2 NPC life): downtown chat-group corner (182.2,147.8)
+    // on the (165,165) intersection's NW sidewalk. The 3 chat peds face
+    // each other there permanently (peds.js idx 6-8); staging adds the
+    // player as a bystander, 3 relocated sidewalk walkers (two along
+    // the z=147.8 sidewalk line, one up the x=182.2 line — same
+    // line/off mirror as the 'city' cover staging) and a taxi held at
+    // the corner on the x=165 carriageway for traffic. Ambient traffic
+    // also routes through this intersection (player is local, so the
+    // >500 m traffic respawn keeps vehicles near).
+    G.timeOfDay = 11;
+    if (G.player) {
+      G.player.x = 176.5; G.player.z = 153.5; G.player.angle = Math.atan2(182.2 - 176.5, 147.8 - 153.5);
+      G.player.fig.position.set(176.5, groundH(176.5, 153.5), 153.5);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+    try {
+      const spots = [
+        { x: 166, z: 147.8, vertical: false, dir: 1 },
+        { x: 198, z: 147.8, vertical: false, dir: -1 },
+        { x: 182.2, z: 158, vertical: true, dir: 1 },
+      ];
+      const pool = Array.isArray(G.peds) ? G.peds.filter((p) => p && p.fig && !p.downed && !p.chat && p.mode !== 'cross' && !p.follow) : [];
+      const stagedPeds = [
+        ...pool.filter((p) => p.figIsGlb),
+        ...pool.filter((p) => !p.figIsGlb),
+      ].slice(0, spots.length);
+      stagedPeds.forEach((ped, i) => {
+        const s = spots[i];
+        ped.x = s.x; ped.z = s.z;
+        ped.idle = false;
+        ped.fleeT = 0; ped.fleeDir = null;
+        ped.vertical = s.vertical;
+        ped.off = (typeof ped.off === 'number' && ped.off !== 0) ? ped.off : 17.2;
+        ped.line = (s.vertical ? s.x : s.z) - ped.off;
+        ped.dir = s.dir;
+        ped.angle = s.vertical ? (s.dir > 0 ? 0 : Math.PI) : (s.dir > 0 ? Math.PI / 2 : -Math.PI / 2);
+        try {
+          ped.fig.position.set(s.x, groundH(s.x, s.z), s.z);
+          ped.fig.rotation.y = ped.angle;
+        } catch (e) { /* updater repositions it next frame anyway */ }
+      });
+    } catch (e) { /* busy staging is dressing only — never break the shot */ }
+    spawnVehicle(G, 'taxi', 205, 171, -Math.PI / 2, { driver: 'parked' });
+    cam(G, 177.5, 1.6, 142.5, 183, 1.1, 149);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'houses') {
+    // F4 proof (F1 Hoshino Heights houses): the residential block at
+    // (-412.5,-412.5) has a house row at z=-381.5 facing +z (fronts,
+    // yards and driveways toward the z=-330 road). Camera stands on
+    // that road looking south so the pitched-roof row fills the frame;
+    // a wagon parked on the road anchors the foreground.
+    G.timeOfDay = 10.5;
+    if (G.player) {
+      G.player.x = -424; G.player.z = -370; G.player.angle = Math.PI;
+      G.player.fig.position.set(-424, groundH(-424, -370), -370);
+      G.player.fig.rotation.y = Math.PI;
+    }
+    // Parked on the driveway of the neighbouring x=-393 house
+    // (driveway aprons sit ~13 m in front of the front walls, +z side).
+    spawnVehicle(G, 'wagon', -396, -367, 0, { driver: 'parked' });
+    // Terrain here is NOT flat (heights/touge foothills): an absolute
+    // y=1.8 camera sank under the ground plane on the first captures.
+    // Anchor both camera and target heights to groundH. The row is
+    // sparse (38 m spacing across open grass), so the camera stands
+    // 15 m in front of the two-storey house at x=-431: its pitched
+    // roof / yard / driveway fill the centre, neighbours at x=-469
+    // and x=-393 (with the wagon) hold the frame edges.
+    cam(G, -433, groundH(-433, -366) + 1.7, -366, -430, groundH(-430, -383) + 1.6, -383);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
+  } else if (name === 'market') {
+    // F4 proof (F1 RONIN MART): the store at (-82.5,-255) fronts +z
+    // (sign band + glass at local z +11, parking pad in front, market
+    // chat group gathered at (-69.5,-246)). Camera SE of the lot at
+    // pad height for a front 3/4: sign, glass, canopy, parked cars on
+    // the pad, cart corrals and the gathering group in one frame.
+    // Player staged at the pad edge as a shopper.
+    G.timeOfDay = 11;
+    if (G.player) {
+      G.player.x = -52; G.player.z = -232; G.player.angle = Math.atan2(-82.5 + 52, -255 + 232);
+      G.player.fig.position.set(-52, groundH(-52, -232), -232);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+    cam(G, -42, 3.4, -212, -80, 3.2, -250);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); }); // F4: pin shot camera against follow-cam pullback on slow captures
   } else if (name === 'mapzoom') {
     if (G.player) { G.player.x = 300; G.player.z = -300; G.player.fig.position.set(300, groundH(300, -300), -300); }
     G.flags.mapZoom = true;
@@ -382,7 +514,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }
