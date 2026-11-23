@@ -25,8 +25,8 @@ export function initHUD(G) {
   };
   // --- S24 radio chip -------------------------------------------------------
   // Created here (no static element in the page): a small pill top-center,
-  // below the banner zone and clear of the bottom-right minimap / speedo /
-  // weapon cluster. Shown only while in a car (or staged in one for a shot)
+  // below the banner zone and clear of the top-left minimap / bottom-right
+  // speedo / weapon cluster. Shown only while in a car (or staged in one for a shot)
   // with the radio on; text is set through the setText cache in the updater.
   let radioChip = el('radioChip');
   if (!radioChip && typeof document !== 'undefined' && document.body) {
@@ -165,7 +165,9 @@ export function initHUD(G) {
 
   if (G.flags.mapZoom && E.mapWrap) {
     E.mapWrap.style.transform = 'scale(1.9)';
-    E.mapWrap.style.transformOrigin = 'bottom right';
+    // V5 B4: the wrap now anchors top-left (see index.html #mapWrap), so
+    // the zoom grows from that corner instead of the old bottom-right.
+    E.mapWrap.style.transformOrigin = 'top left';
   }
 
   // F3: fit the pause map inside the viewport — at its intrinsic 1024x720

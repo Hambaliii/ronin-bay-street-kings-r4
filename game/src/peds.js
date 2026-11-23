@@ -465,6 +465,34 @@ export function initPeds(G) {
     }
   }
 
+  // 1b) STALL QUEUES (V5 B4 second pass): 2 more procedural peds per stall
+  // spot, queued in line BEHIND B2's counter customers. B2's customers
+  // stand at spot + fwd*1.9 facing the stall (ry + PI); the queue extends
+  // that same line away from the counter in ~0.9 m steps (fwd*2.8 and
+  // fwd*3.7), with a small sideways jitter so the line reads human, not
+  // ruler-straight. Same facing as the customers, pinned via placeStand
+  // (chat=true, so the far-respawn shuffle never dissolves the queue).
+  // Uses the exact same defensive clusterSpots read as section 1, so a
+  // missing/malformed G.gatherSpots just falls back the same way.
+  for (const rawSpot of clusterSpots) {
+    if (!rawSpot || !rawSpot.stall) continue;
+    if (!Number.isFinite(rawSpot.x) || !Number.isFinite(rawSpot.z)) continue;
+    const ry = Number.isFinite(rawSpot.ry) ? rawSpot.ry : 0;
+    const fwdX = Math.sin(ry), fwdZ = Math.cos(ry);   // spot facing
+    const perpX = Math.cos(ry), perpZ = -Math.sin(ry); // spot sideways
+    for (let q = 0; q < 2; q++) {
+      const ped = spawnExtraPed();
+      if (ped) {
+        const back = 1.9 + 0.9 * (q + 1); // 2.8 m, then 3.7 m from the spot
+        const jit = (q === 0 ? -0.18 : 0.22); // slight line wobble
+        placeStand(ped,
+          rawSpot.x + fwdX * back + perpX * jit,
+          rawSpot.z + fwdZ * back + perpZ * jit, ry + Math.PI);
+        finishExtraPed(ped);
+      }
+    }
+  }
+
   // 2) WALKERS: +20 concentrated on the Coral boulevard sidewalks and the
   // boardwalk — 8 on the z=486 lane, 7 on z=505 (both x -420..560), 5 on
   // the z=552 boardwalk (x -380..600), directions alternating.
@@ -491,6 +519,16 @@ export function initPeds(G) {
   }
 
   // 4) Downtown: +4 plain sidewalk walkers around the (0,0) crossing.
+  for (let s = 0; s < 4; s++) {
+    const ped = spawnExtraPed();
+    if (ped) { placePed(ped, sidewalkPoint(G, 0, 0, 0, 70)); finishExtraPed(ped); }
+  }
+
+  // 4b) Downtown second pass (V5 B4): +4 more sidewalk walkers around
+  // (0,0), same helper and radius as section 4 — the central crossing is
+  // the one downtown spot every staged drive passes, so it earns the
+  // extra foot traffic. Total crowd this round: 92 + 4 stall-queue +
+  // 4 downtown = 100 procedural-inclusive peds.
   for (let s = 0; s < 4; s++) {
     const ped = spawnExtraPed();
     if (ped) { placePed(ped, sidewalkPoint(G, 0, 0, 0, 70)); finishExtraPed(ped); }

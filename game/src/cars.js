@@ -788,8 +788,27 @@ try {
   }).catch(() => { svjSettled = true; svjPending.length = 0; });
 } catch (e) { svjSettled = true; }
 
+// V5 B4 second pass: pastel-heavy palette for STAGED / PARKED vehicles.
+// The neon-coastal brief wants the parked rows along the boulevard to
+// read pastel against the bright airy day — traffic already picks from
+// TRAFFIC_COLORS' widened pastel block, but parked spawns used to fall
+// back to each spec's single baked colour, so whole staged rows repeated
+// the same few tones. spawnVehicle (below) rolls this palette ~70% of
+// the time for driver:'parked' spawns that carry no explicit colour and
+// no livery; the other ~30% keep the spec colour for variety. The last
+// three entries are new this pass (powder lilac, pale lemon, soft coral).
+const PARKED_PASTELS = [0xffb7d5, 0xb8e6c9, 0xfff3d6, 0xaed6f7, 0xffcf9f, 0xd5f5e3, 0xfdebd0, 0xd6eaf8, 0xd9c7ec, 0xfdf6b2, 0xf5a58d];
+
 export function spawnVehicle(G, specId, x, z, angle, opts) {
   opts = opts || {};
+  // Parked pastel bias (V5 B4): only for parked spawns with no caller
+  // colour and no livery — police liveries, hero stagings that pass an
+  // explicit colour, traffic and mission drivers are all untouched.
+  // Setting opts.color here (before mesh build + the v record below)
+  // keeps the mesh tint and v.color in agreement.
+  if (opts.driver === 'parked' && opts.color == null && !opts.livery && rnd() < 0.7) {
+    opts.color = pick(PARKED_PASTELS);
+  }
   const spec = { ...CARS[specId], id: specId };
   const isHeroCar = HERO_CAR_SPECS.has(specId);
   const isGtrCar = GTR_SPECS.has(specId);

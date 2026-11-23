@@ -39,8 +39,14 @@
   .barOuter { height: 10px; background: rgba(255,255,255,.12); border-radius: 5px; overflow: hidden; margin: 4px 0 8px; }
   #healthBar { height: 100%; width: 100%; background: linear-gradient(90deg, #3ddc74, #7dffb0); transition: width .25s; }
   #carBar { height: 100%; width: 100%; background: linear-gradient(90deg, #ff7a1a, #ffb35c); transition: width .25s; }
-  #mapWrap { right: 14px; bottom: 150px; padding: 6px; border-radius: 50%; overflow: hidden; }
-  #minimap { display: block; border-radius: 50%; }
+  /* V5 B4: minimap moved bottom-right -> top-left, smaller (Bosku: classic
+     GTA framing). It sits BELOW #objective (top 14, ~74px tall) and
+     #missionCard (top 108, ~80px tall) so nothing overlaps: top 198px
+     clears both, and hud.js' dispatch line (top 172px) ends just above
+     it. Outer diameter 148px = 136px canvas CSS + 2x6px padding; the
+     canvas bitmap stays 220x220 and CSS-scales down. */
+  #mapWrap { left: 14px; top: 198px; padding: 6px; border-radius: 50%; overflow: hidden; }
+  #minimap { display: block; border-radius: 50%; width: 136px; height: 136px; }
   #speedo { right: 14px; bottom: 16px; padding: 4px; }
   #speedoCanvas { display: block; }
   #briefing { left: 50%; bottom: 120px; transform: translateX(-50%); width: min(560px, 90vw); padding: 12px 16px; display: none; }

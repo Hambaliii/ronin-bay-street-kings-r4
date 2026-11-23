@@ -123,7 +123,42 @@ function sunsetDome() {
   return mesh;
 }
 
-let sky = null; // { group, sunGlow, sunCore, clouds: [{spr, speed}], mats, dome }
+// V5 B4 second pass: DAY-AIR gradient stops — near-white pale blue at
+// the zenith melting into a warm cream horizon. This is the approved
+// concept's bright, airy noon air (soft daylight, not the saturated
+// dusk bands above).
+const DAY_DOME_TOP = new THREE.Color(0xcfe8f7);
+const DAY_DOME_HOR = new THREE.Color(0xfdf3e0);
+const DAY_DOME_OPACITY = 0.16; // peak, scaled by dayFactor per-frame
+
+function dayAirDome() {
+  // Second gradient dome in the same overlay system as sunsetDome():
+  // BackSide sphere with per-vertex colours, horizon cream -> pale-blue
+  // zenith (below the horizon it just holds the horizon tone, since the
+  // ground hides it anyway). Radius 1440 sits INSIDE world.js' 1500
+  // world dome and OUTSIDE the sunset dome's 1420, and renderOrder -2
+  // draws it before the sunset dome (-1): layered just above the world
+  // dome, just below the sunset grade — so at dusk the sunset dome
+  // paints over it, and this dome's own opacity is 0 there anyway
+  // (dayFactor and the sunset window never overlap).
+  const geo = new THREE.SphereGeometry(1440, 32, 24);
+  const pos = geo.attributes.position;
+  const cols = [];
+  const cc = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const h = pos.getY(i) / 1440; // -1..1, 0 = horizon
+    cc.lerpColors(DAY_DOME_HOR, DAY_DOME_TOP, smoothstep(0.0, 0.55, h));
+    cols.push(cc.r, cc.g, cc.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = -2;
+  mesh.visible = false;
+  return mesh;
+}
+
+let sky = null; // { group, sunGlow, sunCore, clouds: [{spr, speed}], mats, dome, dayDome }
 
 export function initSky(G) {
   try {
@@ -133,6 +168,10 @@ export function initSky(G) {
     // --- sunset gradient dome (Vice round) -------------------------------
     const dome = sunsetDome();
     group.add(dome);
+
+    // --- day-air gradient dome (V5 B4) ------------------------------------
+    const dayDome = dayAirDome();
+    group.add(dayDome);
 
     // --- sun: one glow sprite + one smaller hot core sprite -------------
     const sunTex = sunTexture();
@@ -160,7 +199,7 @@ export function initSky(G) {
     }
 
     G.scene.add(group);
-    sky = { group, sunGlow, sunCore, glowMat, coreMat, clouds, variants, dome };
+    sky = { group, sunGlow, sunCore, glowMat, coreMat, clouds, variants, dome, dayDome };
     G.sky = sky;
   } catch (e) { /* sky dressing is best-effort — the dome still renders */ }
 }
@@ -273,6 +312,16 @@ export function updateSky(G, dt) {
       G.scene.fog.far = FOG_FAR_BASE;
     }
 
+    // --- day-air overlay (V5 B4) -------------------------------------------
+    // Opacity tracks B2's dayFactor exactly: 0.16 at full day, and at
+    // dayFactor 0 the dome is fully invisible (visible=false), so night
+    // and the sunset path are byte-for-byte untouched.
+    if (sky.dayDome) {
+      const dayOp = DAY_DOME_OPACITY * dayFactor;
+      sky.dayDome.material.opacity = dayOp;
+      sky.dayDome.visible = dayOp > 0.01;
+    }
+
     // --- clouds ------------------------------------------------------------
     // Tint: white by day -> pink/orange at sunset -> dim blue-grey at night.
     _c.copy(NIGHT_CLOUD).lerp(DAY_CLOUD, dayAmt);
@@ -284,9 +333,14 @@ export function updateSky(G, dt) {
         // pink-orange — together they read as a neon-coastal sunset.
         m.color.lerp(vi === 1 ? SUNSET_CLOUD_PURPLE : SUNSET_CLOUD, sunset * 0.9 * Math.max(dayAmt, 0.45));
       }
+      // V5 B4: at full day, pull the tint the rest of the way to pure
+      // white and lift opacity a touch, so the cloud sprites read
+      // bright white against the pale day-air dome instead of the
+      // slightly grey dayAmt-only mix.
+      if (dayFactor > 0) m.color.lerp(DAY_CLOUD, dayFactor * 0.5);
       // Faint at night, full by day, with a sunset lift so the pink
       // clouds stay readable against the warm grade.
-      m.opacity = 0.28 + dayAmt * 0.54 + sunset * 0.18;
+      m.opacity = Math.min(1, 0.28 + dayAmt * 0.54 + sunset * 0.18 + dayFactor * 0.10);
     }
     // Slow wind drift (+x), wrapping around the camera-anchored bounds.
     const step = (dt || 0) * 1.4;
