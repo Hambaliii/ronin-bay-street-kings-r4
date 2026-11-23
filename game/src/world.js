@@ -111,6 +111,10 @@ function grassMat(repX, repY) {
   const t = grassTexture(); t.repeat.set(repX, repY);
   return new THREE.MeshStandardMaterial({ map: t, roughness: 1 });
 }
+function pavingMat(repX, repY, tint) {
+  const t = pavingTexture(); t.repeat.set(repX, repY);
+  return new THREE.MeshStandardMaterial({ map: t, color: tint || 0xffffff, roughness: 1 });
+}
 const LIT_TONES = ['#ffd9a0', '#ffc98a', '#fff3d0', '#ffe9b8', '#bfe0ff', '#9fd4ff']; // warm-heavy, some cool
 function buildingTexture(base, litRatio) {
   return canvasTex(128, 256, (g, w, h) => {
@@ -207,7 +211,10 @@ function buildHouse(G, scene, x, z, face) {
   const two = rnd() < 0.45;
   const w = rr(9, 12), d = rr(8, 10), wallH = two ? rr(5.2, 6) : rr(2.9, 3.4);
   const roofH = rr(1.8, 2.6);
-  const yard = new THREE.Mesh(new THREE.PlaneGeometry(30, 25), grassMat(4, 3)); // Vice: textured saturated grass, not a flat green slab
+  // V5 B5 (Bosku: "jangan banyak rumput gajelas"): the yard slab is
+  // PAVING now, not grass — houses sit on a paved lot with a paved
+  // driveway; green survives only in the hedges + the showcase park.
+  const yard = new THREE.Mesh(new THREE.PlaneGeometry(30, 25), pavingMat(6, 5));
   void HOUSE_YARDS;
   yard.rotation.x = -Math.PI / 2; yard.position.y = 0.03; grp.add(yard);
   const drive = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 8.5), stdMat(0x9a9a96, 1));
@@ -623,6 +630,119 @@ function buildHoshinoRows(G, scene) {
   }
   G.hoshinoHousesAdded = added;
   return added;
+}
+// 5. THE PARK (V5 B5, Bosku: "adain taman kek"): ONE deliberate showcase
+// park — the only new grass in the city. Candidate centres are scanned
+// IN ORDER against the collider list only (no rnd() in the scan, so the
+// seeded RNG order of every other builder is untouched); the first
+// centre whose 76x76 m footprint is collider-clear (pad 2) wins.
+const PARK_CANDIDATES = [[82, 415], [-82, 415], [82, 82], [-82, 82], [247, 82]];
+function roundTree(hgt, color) {
+  const grp = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, hgt * 0.45, 7), stdMat(0x6b4a2f, 1));
+  trunk.position.y = hgt * 0.225; grp.add(trunk);
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: true });
+  const blobs = [[0, 1, 0, 1.6], [0.95, 1.22, 0.3, 1.2], [-0.9, 1.18, -0.4, 1.05]];
+  for (const [bx, by, bz, br] of blobs) {
+    const blob = new THREE.Mesh(new THREE.SphereGeometry(br, 10, 8), mat);
+    blob.scale.y = 0.75;
+    blob.position.set(bx, hgt * 0.45 + by * (hgt * 0.28), bz); grp.add(blob);
+  }
+  return v5Cast(grp);
+}
+function buildPark(G, scene) {
+  let px = PARK_CANDIDATES[0][0], pz = PARK_CANDIDATES[0][1], found = false;
+  const skipped = [];
+  for (const [cx, cz] of PARK_CANDIDATES) {
+    if (!v5HitsFootprint(G, cx, cz, 38, 38, 2)) { px = cx; pz = cz; found = true; break; }
+    skipped.push([cx, cz]);
+  }
+  G.parkScanSkipped = skipped;
+  G.parkFallbackUsed = !found; // no clear candidate: first candidate stands
+  const gy = groundH(px, pz);
+  const grp = new THREE.Group(); grp.position.set(px, gy, pz); scene.add(grp);
+  // (a) plaza base: 76x76 paving
+  const plaza = new THREE.Mesh(new THREE.PlaneGeometry(76, 76), pavingMat(19, 19, 0xd8d2c2));
+  plaza.rotation.x = -Math.PI / 2; plaza.position.y = 0.04; plaza.receiveShadow = true; grp.add(plaza);
+  // (b) cross paths: two 6 m lighter-paving strips through the centre
+  const pathNS = new THREE.Mesh(new THREE.PlaneGeometry(6, 76), pavingMat(2, 19, 0xffffff));
+  pathNS.rotation.x = -Math.PI / 2; pathNS.position.y = 0.07; pathNS.receiveShadow = true; grp.add(pathNS);
+  const pathEW = new THREE.Mesh(new THREE.PlaneGeometry(76, 6), pavingMat(19, 2, 0xffffff));
+  pathEW.rotation.x = -Math.PI / 2; pathEW.position.y = 0.07; pathEW.receiveShadow = true; grp.add(pathEW);
+  // (c) LAWN panels: the four quadrant insets between the paths — the
+  // ONLY new grass added this round (saturated park green).
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const lawn = new THREE.Mesh(new THREE.PlaneGeometry(31, 31), grassMat(8, 8));
+    lawn.rotation.x = -Math.PI / 2; lawn.position.set(sx * 19.5, 0.055, sz * 19.5);
+    lawn.receiveShadow = true; grp.add(lawn);
+  }
+  // (d) FOUNTAIN at the centre
+  const fount = new THREE.Group(); grp.add(fount);
+  const concrete = stdMat(0xe6e0d0, 0.9);
+  const basin = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.4, 0.8, 24), concrete);
+  basin.position.y = 0.4; fount.add(basin);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.18, 8, 24), concrete);
+  rim.rotation.x = Math.PI / 2; rim.position.y = 0.82; fount.add(rim);
+  const waterMat = new THREE.MeshStandardMaterial({ color: 0x3fa7d6, transparent: true, opacity: 0.9, roughness: 0.15 });
+  const water = new THREE.Mesh(new THREE.CircleGeometry(3.7, 24), waterMat);
+  water.rotation.x = -Math.PI / 2; water.position.y = 0.72; fount.add(water);
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.65, 1.5, 12), concrete);
+  pillar.position.y = 1.4; fount.add(pillar);
+  const bowl = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 0.9, 0.35, 16), concrete);
+  bowl.position.y = 2.25; fount.add(bowl);
+  const bowlWater = new THREE.Mesh(new THREE.CircleGeometry(1.1, 16), waterMat);
+  bowlWater.rotation.x = -Math.PI / 2; bowlWater.position.y = 2.44; fount.add(bowlWater);
+  v5Cast(fount);
+  G.addCollider(px, pz, 4.4, 4.4, 2.4);
+  // (e) TREES: 14 — palms + round trees on the lawn quadrants, palms on
+  // two plaza corners. Deterministic spots (no rnd() in this builder).
+  const treeSpots = [];
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    treeSpots.push([sx * 12, sz * 12], [sx * 27, sz * 10], [sx * 10, sz * 27]);
+  }
+  treeSpots.push([-34, -34], [34, 34]);
+  const roundCols = [0x3f9e4d, 0x359146, 0x4caf50];
+  treeSpots.forEach(([tx, tz], i) => {
+    const tree = i % 3 === 2 ? makePalm(5 + (i % 2)) : roundTree(4.6 + (i % 3) * 0.5, roundCols[i % 3]);
+    tree.position.set(tx, 0, tz); tree.rotation.y = (i * 1.7) % 6.28; grp.add(tree);
+  });
+  // (f) BENCHES: 6 along the paths, each turned to face the fountain
+  // (same bench construction as the gather spots — v5Bench above).
+  for (const [bx, bz] of [[10, 5.5], [-10, 5.5], [10, -5.5], [-10, -5.5], [5.5, 10], [-5.5, -10]]) {
+    const bench = v5Bench();
+    bench.position.set(bx, 0, bz);
+    bench.rotation.y = Math.atan2(-bx, -bz);
+    grp.add(bench);
+  }
+  // (g) ONE vendor stall at the east plaza edge (gather-spot pattern)
+  const stallX = px + 32, stallZ = pz + 8;
+  const stall = v5VendorStall();
+  stall.position.set(32, 0, 8); stall.rotation.y = Math.PI / 2; grp.add(stall);
+  G.addCollider(stallX, stallZ, 1.8, 1.8, 2.6);
+  // (h) 4 lamp posts at the plaza corners (visual only, streetlamp style)
+  for (const [lx, lz] of [[-35, -35], [35, -35], [-35, 35], [35, 35]]) {
+    const lamp = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5, 6), stdMat(0x3a3f45, 0.8, 0.5));
+    pole.position.y = 2.5; lamp.add(pole);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc98a, emissiveIntensity: 0.4, roughness: 0.5 }));
+    head.position.y = 5.05; lamp.add(head);
+    lamp.position.set(lx, 0, lz); v5Cast(lamp); grp.add(lamp);
+  }
+  // (i) flower beds: 4 low boxes in bright colours along the paths
+  const flowerCols = [0xff5da2, 0xffb35c, 0xffe14d, 0xff5da2];
+  [[20, 4.4, 0], [-20, 4.4, 0], [20, -4.4, 0], [-4.4, -20, Math.PI / 2]].forEach(([fx, fz, fry], i) => {
+    const bed = new THREE.Group();
+    const box = new THREE.Mesh(new THREE.BoxGeometry(4, 0.35, 1.2), stdMat(0x9a8a72, 1));
+    box.position.y = 0.18; bed.add(box);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.14, 1.0),
+      new THREE.MeshStandardMaterial({ color: flowerCols[i], roughness: 0.9, flatShading: true }));
+    top.position.y = 0.42; bed.add(top);
+    bed.position.set(fx, 0, fz); bed.rotation.y = fry; v5Cast(bed); grp.add(bed);
+  });
+  G.parkSpot = { x: px, z: pz, stallX, stallZ };
+  G.parkCounts = { trees: treeSpots.length, benches: 6, lamps: 4, flowerBeds: 4, stalls: 1, fountains: 1 };
+  return G.parkSpot;
 }
 let streetlights = [];
 export function buildWorld(G) {
@@ -1162,9 +1282,12 @@ export function buildWorld(G) {
   buildGatherSpots(G, scene);
   buildHoshinoRows(G, scene);
   buildBoulevardPlanters(G, scene); // B3 second pass: planter-boxed palms, last so every collider above gates its placement
-  // parks
+  // V5 B5 grass conversion: the two standalone "park" lots are NO
+  // longer grass slabs — each is now a PAVED plaza (paving texture)
+  // dressed with benches + a planter so it reads as built surface.
+  // (Neither lot sits inside the showcase park's footprint.)
   for (const [px, pz] of [[412, 412], [-412, -80]]) {
-    const park = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), new THREE.MeshStandardMaterial({ color: 0x4d8a4a, roughness: 1 }));
+    const park = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), pavingMat(15, 15));
     park.rotation.x = -Math.PI / 2; park.position.set(px, 0.04, pz); park.receiveShadow = true; scene.add(park);
     for (let i = 0; i < 4; i++) { const bench = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.6), new THREE.MeshStandardMaterial({ color: 0x7a5a38 })); bench.position.set(px + rr(-35, 35), 0.3, pz + rr(-35, 35)); scene.add(bench); }
     for (let i = 0; i < 4; i++) {
@@ -1173,7 +1296,14 @@ export function buildWorld(G) {
       const bush = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), new THREE.MeshStandardMaterial({ color: 0x3d8b4f, roughness: 1, flatShading: true }));
       bush.position.set(planter.position.x, 0.95, planter.position.z); scene.add(bush);
     }
+    // plaza dressing: 2 proper benches + 1 planter box (v5 helpers)
+    const pb1 = v5Bench(); pb1.position.set(px - 12, groundH(px - 12, pz + 10), pz + 10); pb1.rotation.y = 0.4; scene.add(pb1);
+    const pb2 = v5Bench(); pb2.position.set(px + 14, groundH(px + 14, pz - 8), pz - 8); pb2.rotation.y = -0.7; scene.add(pb2);
+    const pp = v5Planter(); pp.position.set(px + 4, groundH(px + 4, pz + 16), pz + 16); scene.add(pp);
   }
+  // V5 B5: THE showcase park — built LAST of all so its collider scan
+  // sees the complete city and no upstream RNG order shifts.
+  buildPark(G, scene);
 }
 // Tripo garage GLB: its detailed facade (doors) is the model's -Z face and
 // its other detailed side is +X. Rotating PI turns -Z to face south (+z,

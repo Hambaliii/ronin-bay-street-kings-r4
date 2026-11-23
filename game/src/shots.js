@@ -13,7 +13,7 @@ const VICE_TOD = { vice: 17.9, street: 18.1, markings: 17.9, houses: 17.8 };
 // V5 density round (B3): bright-day tod table for the four close-angle
 // v5 modes — every value inside Bosku's bright airy window (11.5–13.5),
 // the window sky.js' V5 day grade keys off (dayFactor full 11.0–14.5).
-const V5_TOD = { strip: 12.4, boulevard: 12.0, houses: 12.8, markings: 11.6 };
+const V5_TOD = { strip: 12.4, boulevard: 12.0, houses: 12.8, markings: 11.6, park: 12.2 };
 
 // V5 shadow tightening for shot modes: main.js boots the sun's shadow
 // camera at ±110 for gameplay; a staged shot only needs the frame
@@ -624,11 +624,14 @@ export function setupShot(G, name) {
     // house fronts fill the frame, parked cars sit on the carriageway
     // between camera and houses, and the road itself (not grass) is the
     // foreground. Heights groundH-anchored (foothill terrain, F4 lesson).
-    cam(G, -452, groundH(-452, -334) + 1.7, -334, -436, groundH(-436, -376) + 1.5, -376);
-    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -436, -376); }); // camera + shadow pin
+    // B5 tightening: camera closer + lower than B3's framing, so the
+    // house fronts + road fill the frame and the grass hill behind
+    // shrinks to a backdrop strip.
+    cam(G, -448, groundH(-448, -336) + 1.6, -336, -434, groundH(-434, -375) + 1.4, -375);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, -434, -375); }); // camera + shadow pin
     G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
     G.timeOfDay = V5_TOD.houses;
-    pinShadow(G, -436, -376);
+    pinShadow(G, -434, -375);
     spawnVehicle(G, 'wagon', -420, -341, Math.PI / 2, { driver: 'parked' });
     spawnVehicle(G, 'sedan', -398, -352, -Math.PI / 2, { driver: 'parked' });
     if (G.player) {
@@ -652,6 +655,28 @@ export function setupShot(G, name) {
     if (G.player) {
       G.player.x = 17; G.player.z = 479; G.player.angle = Math.atan2(10.5 - 17, 472 - 479);
       G.player.fig.position.set(17, groundH(17, 479), 479);
+      G.player.fig.rotation.y = G.player.angle;
+    }
+  } else if (name === 'v5-park') {
+    // V5 (B5): THE PARK proof frame, tod 12.2 — CLOSE camera inside the
+    // showcase park (world.js buildPark), SW of the fountain looking NE
+    // at it: fountain centre-frame, lawn quadrants + trees + benches +
+    // park crowd around it, Ren standing by the fountain facing back
+    // toward the camera. G.parkSpot is read defensively (fallback on
+    // the park scan's first candidate) like peds.js reads it.
+    let ps = { x: 82, z: 415 };
+    try {
+      if (G.parkSpot && Number.isFinite(G.parkSpot.x) && Number.isFinite(G.parkSpot.z)) ps = G.parkSpot;
+    } catch (e) { /* parkSpot not landed — fallback stands */ }
+    const px = ps.x, pz = ps.z, gy = groundH(px, pz);
+    cam(G, px - 17, gy + 2.1, pz - 14, px + 2, gy + 1.0, pz + 2);
+    G.updaters.push(() => { if (G.shotCam) G.shotCam(); pinShadow(G, px, pz); }); // camera + shadow pin
+    G.radioName = 'WAVEFORM FM'; G._radioIdx = 0; // S26 amendment A: radio chip
+    G.timeOfDay = V5_TOD.park;
+    pinShadow(G, px, pz);
+    if (G.player) {
+      G.player.x = px + 6; G.player.z = pz + 5; G.player.angle = Math.atan2(-17 - 6, -14 - 5);
+      G.player.fig.position.set(px + 6, groundH(px + 6, pz + 5), pz + 5);
       G.player.fig.rotation.y = G.player.angle;
     }
   } else if (name === 'mapzoom') {
@@ -715,7 +740,7 @@ export function setupShot(G, name) {
     cam(G, 176, 2.2, -128, 164, 1.0, -141);
   }
   // hide player figure overlap in staged car shots except meet/chars/mc/mapzoom/city
-  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night', 'vice', 'vice-street', 'vice-markings', 'vice-houses', 'v5-strip', 'v5-boulevard', 'v5-houses', 'v5-markings'].includes(name)) {
+  if (G.player && !['meet', 'chars', 'mc', 'mapzoom', 'city', 'cover', 'shootout', 'smg', 'bat', 'wasted', 'busted', 'versus', 'chase', 'markings', 'sky', 'busy', 'houses', 'market', 'night', 'vice', 'vice-street', 'vice-markings', 'vice-houses', 'v5-strip', 'v5-boulevard', 'v5-houses', 'v5-markings', 'v5-park'].includes(name)) {
     G.player.x = -412.5; G.player.z = 470;
   }
 }

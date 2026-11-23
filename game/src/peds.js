@@ -534,6 +534,72 @@ export function initPeds(G) {
     if (ped) { placePed(ped, sidewalkPoint(G, 0, 0, 0, 70)); finishExtraPed(ped); }
   }
 
+  // 5) PARK CROWD (V5 B5): +15 procedural peds at the showcase park
+  // built by world.js (buildPark). G.parkSpot is read defensively —
+  // peds may init before/without it — with the fallback on the park
+  // scan's first candidate (82,415) and its stall offset (+32,+8),
+  // matching world.js. spawnExtraPed figures already cast shadows
+  // (fig.traverse in the helper) and never take a GLB citizenKey.
+  {
+    let parkSpot = { x: 82, z: 415, stallX: 82 + 32, stallZ: 415 + 8 };
+    try {
+      const ps = G.parkSpot;
+      if (ps && Number.isFinite(ps.x) && Number.isFinite(ps.z)) {
+        parkSpot = {
+          x: ps.x, z: ps.z,
+          stallX: Number.isFinite(ps.stallX) ? ps.stallX : ps.x + 32,
+          stallZ: Number.isFinite(ps.stallZ) ? ps.stallZ : ps.z + 8,
+        };
+      }
+    } catch (e) { /* parkSpot not landed — fallback above stands */ }
+    const px = parkSpot.x, pz = parkSpot.z;
+    // 2 bench chat groups of 3, on the lawn-side benches at fountain-
+    // relative offsets (+10,+6) and (-10,-6), ringed facing inward.
+    for (let s = 0; s < 3; s++) {
+      const ped = spawnExtraPed();
+      if (ped) { placeChat(ped, px + 10, pz + 6, s, 3); finishExtraPed(ped); }
+    }
+    for (let s = 0; s < 3; s++) {
+      const ped = spawnExtraPed();
+      if (ped) { placeChat(ped, px - 10, pz - 6, s, 3); finishExtraPed(ped); }
+    }
+    // Stall cluster at the plaza edge: vendor behind the counter
+    // facing out (-x), 2 customers in front facing the stall (+x).
+    const vendor = spawnExtraPed();
+    if (vendor) { placeStand(vendor, parkSpot.stallX + 0.9, parkSpot.stallZ, -Math.PI / 2); finishExtraPed(vendor); }
+    for (const sgn of [-1, 1]) {
+      const ped = spawnExtraPed();
+      if (ped) { placeStand(ped, parkSpot.stallX - 2.6, parkSpot.stallZ + sgn * 0.95, Math.PI / 2); finishExtraPed(ped); }
+    }
+    // 2 standing pairs on the cross paths, facing each other.
+    for (const [ox, oz, face] of [[16, 0, Math.PI / 2], [0, 16, 0]]) {
+      for (const sgn of [-1, 1]) {
+        const ped = spawnExtraPed();
+        if (ped) {
+          const along = sgn * 0.85;
+          // separate the pair ALONG its facing axis so they face
+          // each other: the (16,0) pair splits in x, the (0,16) in z
+          placeStand(ped,
+            px + ox + (face !== 0 ? along : 0),
+            pz + oz + (face === 0 ? along : 0),
+            face + (sgn > 0 ? Math.PI : 0));
+          finishExtraPed(ped);
+        }
+      }
+    }
+    // 2 solo strollers walking the N-S path in opposite directions.
+    for (const [off, dz, dir] of [[-1.5, -20, 1], [1.5, 18, -1]]) {
+      const ped = spawnExtraPed();
+      if (ped) {
+        ped.vertical = true; ped.line = px; ped.off = off;
+        ped.x = px + off; ped.z = pz + dz; ped.dir = dir;
+        ped.angle = dir > 0 ? 0 : Math.PI;
+        ped.mode = 'walk'; ped.idle = false;
+        finishExtraPed(ped);
+      }
+    }
+  }
+
   // ---- S23 horn reaction -------------------------------------------------
   // Called by drive.js once per honk start with the car position. Every
   // non-downed ped within r: (a) startles — startleT pauses walking for
