@@ -167,6 +167,17 @@ export function initHUD(G) {
     E.mapWrap.style.transformOrigin = 'bottom right';
   }
 
+  // F3: fit the pause map inside the viewport — at its intrinsic 1024x720
+  // the pause column (header + canvas + legend + hint) overflowed a 720p
+  // frame and the map's south shore + legend fell below the fold. CSS
+  // scaling only; the canvas bitmap and the wheel/pan maths (which work in
+  // bitmap pixels via getBoundingClientRect) are unaffected.
+  if (E.bigmap) {
+    E.bigmap.style.height = 'min(578px, calc(100vh - 150px))';
+    E.bigmap.style.width = 'auto';
+    E.bigmap.style.maxWidth = '94vw';
+  }
+
   // --- crew panel (fill once) ------------------------------------------------
   const CREW = {
     driver: { initials: 'RT', name: 'Ren Takagi', role: 'DRIVER', color: '#ff7a1a' },
@@ -219,9 +230,14 @@ export function initHUD(G) {
   };
 
   // --- pause / big map ----------------------------------------------------------
+  // F3: pause-map view state — zoom (wheel, centred on the cursor) + pan
+  // (drag). Reset to the full-city view every time the map is (re)opened.
+  const mapView = { zoom: 1, cx: 0, cz: 0 }; // cx/cz = world point at canvas centre
+  function resetMapView() { mapView.zoom = 1; mapView.cx = 0; mapView.cz = 0; }
   G.togglePause = () => {
     if (!E.pauseMenu) return;
     if (G.paused) {
+      resetMapView();
       E.pauseMenu.style.display = 'block';
       drawBigMap();
       fillLegend();
@@ -236,21 +252,89 @@ export function initHUD(G) {
       '<span class="lgChip"><b style="color:#fff">➤</b> You</span>',
       '<span class="lgChip"><b style="color:#ffd23f">■</b> Objective</span>',
       '<span class="lgChip"><b>G</b> Garage</span>',
-      '<span class="lgChip"><b>⌂</b> HQ</span>',
+      '<span class="lgChip"><b style="color:#ff8c1a">M</b> RONIN MART</span>',
+      '<span class="lgChip"><b>⌂</b> HQ / Safehouse</span>',
       '<span class="lgChip"><b style="color:#57b7ff">●</b> RBPD</span>',
       '<span class="lgChip"><b style="color:#ff4fd8">━</b> Route</span>',
+      '<span class="lgChip">Scroll zoom · drag pan</span>',
     ].join(' ');
   }
+  // F3: wheel-zoom + drag-pan on the pause map canvas. Attached once; the
+  // handlers only act while the pause menu is open, so menus/HUD elsewhere
+  // never see these events (wheel is swallowed only over the map itself).
+  if (E.bigmap && !E.bigmap.dataset.panzoom) {
+    E.bigmap.dataset.panzoom = '1';
+    const cv = E.bigmap;
+    cv.style.cursor = 'grab';
+    cv.style.touchAction = 'none';
+    const clampView = () => {
+      const halfView = CFG.world / (2 * mapView.zoom);
+      const lim = Math.max(0, CFG.half - halfView);
+      mapView.cx = Math.max(-lim, Math.min(lim, mapView.cx));
+      mapView.cz = Math.max(-lim, Math.min(lim, mapView.cz));
+    };
+    cv.addEventListener('wheel', (ev) => {
+      if (!G.paused) return;
+      ev.preventDefault();
+      const rect = cv.getBoundingClientRect();
+      const px = (ev.clientX - rect.left) * (cv.width / rect.width);
+      const py = (ev.clientY - rect.top) * (cv.height / rect.height);
+      const margin = 46;
+      const s0 = Math.min((cv.width - margin * 2) / CFG.world, (cv.height - margin * 2) / CFG.world) * mapView.zoom;
+      // World point under the cursor stays under the cursor after zooming.
+      const wx = mapView.cx + (px - cv.width / 2) / s0;
+      const wz = mapView.cz + (py - cv.height / 2) / s0;
+      mapView.zoom = Math.max(1, Math.min(5, mapView.zoom * (ev.deltaY < 0 ? 1.18 : 1 / 1.18)));
+      const s1 = Math.min((cv.width - margin * 2) / CFG.world, (cv.height - margin * 2) / CFG.world) * mapView.zoom;
+      mapView.cx = wx - (px - cv.width / 2) / s1;
+      mapView.cz = wz - (py - cv.height / 2) / s1;
+      clampView();
+      drawBigMap();
+    }, { passive: false });
+    let drag = null;
+    cv.addEventListener('pointerdown', (ev) => {
+      if (!G.paused) return;
+      drag = { x: ev.clientX, y: ev.clientY };
+      cv.style.cursor = 'grabbing';
+      try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+    });
+    cv.addEventListener('pointermove', (ev) => {
+      if (!drag || !G.paused) return;
+      const rect = cv.getBoundingClientRect();
+      const margin = 46;
+      const s = Math.min((cv.width - margin * 2) / CFG.world, (cv.height - margin * 2) / CFG.world) * mapView.zoom;
+      mapView.cx -= (ev.clientX - drag.x) * (cv.width / rect.width) / s;
+      mapView.cz -= (ev.clientY - drag.y) * (cv.height / rect.height) / s;
+      drag = { x: ev.clientX, y: ev.clientY };
+      clampView();
+      drawBigMap();
+    });
+    const endDrag = () => { drag = null; cv.style.cursor = 'grab'; };
+    cv.addEventListener('pointerup', endDrag);
+    cv.addEventListener('pointercancel', endDrag);
+  }
   if (G.flags.openPauseMap && E.pauseMenu) {
+    resetMapView();
     E.pauseMenu.style.display = 'block';
     drawBigMap();
     fillLegend();
   }
 
   // --- shared map drawing ---------------------------------------------------------
+  // F3 rebuild: GTA-standard layered map shared by the pause map and the
+  // minimap. Layer order matters — district labels are drawn LAST (over
+  // blocks and roads) so they can never be buried, and the GPS route sits
+  // above the road surface but below the blips.
+  const MAIN_ROAD_X = new Set([0, 330]);
+  const MAIN_ROAD_Z = new Set([0, 495]);
+  function isMainX(x) { return MAIN_ROAD_X.has(x); }
+  function isMainZ(z) { return MAIN_ROAD_Z.has(z); }
+
   function drawMapBase(ctx, W, H, toMap, view, opts) {
-    // (1) water
-    ctx.fillStyle = '#2f6fb4';
+    const scale = Math.abs(toMap(1, 0)[0] - toMap(0, 0)[0]);
+    const big = !!opts.labels; // pause map gets the full treatment
+    // (1) water — GTA blue everywhere, land is drawn over it.
+    ctx.fillStyle = '#3a7bd5';
     ctx.fillRect(0, 0, W, H);
     if (opts.waves) {
       ctx.strokeStyle = 'rgba(255,255,255,0.10)';
@@ -262,17 +346,21 @@ export function initHUD(G) {
         ctx.stroke();
       }
     }
-    // (2) land island
+    // (2) sand shore strip on the ocean (+Z) side: boardwalk z=556, beach
+    // props ~598, waterline ~640 (mirrors world.js ground: sand z>505,
+    // wet sand >600, water >640).
+    {
+      const [sx0, sy0] = toMap(-CFG.half - 60, 600);
+      const [sx1, sy1] = toMap(CFG.half + 60, 668);
+      ctx.fillStyle = '#eed9a4';
+      ctx.fillRect(Math.min(sx0, sx1), Math.min(sy0, sy1), Math.abs(sx1 - sx0), Math.abs(sy1 - sy0));
+    }
+    // (3) land island — pale GTA land.
     const [lx0, ly0] = toMap(-CFG.half, -CFG.half);
-    const [lx1, ly1] = toMap(CFG.half, CFG.half);
-    ctx.fillStyle = '#d9c9a3';
+    const [lx1, ly1] = toMap(CFG.half, 612);
+    ctx.fillStyle = '#ddd3ae';
     ctx.fillRect(Math.min(lx0, lx1), Math.min(ly0, ly1), Math.abs(lx1 - lx0), Math.abs(ly1 - ly0));
-    // (3) beach band at the island south edge (z 560..660)
-    const [bx0, by0] = toMap(-CFG.half, 560);
-    const [bx1, by1] = toMap(CFG.half, 660);
-    ctx.fillStyle = '#e8d9ab';
-    ctx.fillRect(Math.min(bx0, bx1), Math.min(by0, by1), Math.abs(bx1 - bx0), Math.abs(by1 - by0));
-    // (4) district washes
+    // (4) district washes (subtle, under blocks/roads) + boardwalk strip.
     for (const d of DISTRICTS) {
       const [dx0, dy0] = toMap(d.cx - 330, d.cz - 330);
       const [dx1, dy1] = toMap(d.cx + 330, d.cz + 330);
@@ -280,16 +368,12 @@ export function initHUD(G) {
       ctx.globalAlpha = opts.washAlpha;
       ctx.fillRect(Math.min(dx0, dx1), Math.min(dy0, dy1), Math.abs(dx1 - dx0), Math.abs(dy1 - dy0));
       ctx.globalAlpha = 1;
-      if (opts.labels) {
-        const [cx, cy] = toMap(d.cx, d.cz);
-        ctx.font = 'bold 28px Arial, sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        const label = d.name.toUpperCase();
-        ctx.strokeText(label, cx, cy);
-        ctx.fillStyle = '#4a3b28';
-        ctx.fillText(label, cx, cy);
-      }
+    }
+    {
+      const [bw0, bwY0] = toMap(-CFG.half, 505);
+      const [bw1, bwY1] = toMap(CFG.half, 600);
+      ctx.fillStyle = 'rgba(233,201,133,0.55)';
+      ctx.fillRect(Math.min(bw0, bw1), Math.min(bwY0, bwY1), Math.abs(bw1 - bw0), Math.abs(bwY1 - bwY0));
     }
     // (5) parks
     ctx.fillStyle = '#a9bd7a';
@@ -298,8 +382,8 @@ export function initHUD(G) {
       const [px1, py1] = toMap(pr[2], pr[3]);
       ctx.fillRect(Math.min(px0, px1), Math.min(py0, py1), Math.abs(px1 - px0), Math.abs(py1 - py0));
     }
-    // (6) blocks between adjacent road lines
-    ctx.fillStyle = '#cdbb92';
+    // (6) blocks between adjacent road lines. Hoshino Heights (residential
+    // NW) blocks get a green yard tint; the rest stay pale block beige.
     const xs = G.roadX, zs = G.roadZ, hw = CFG.roadW / 2;
     for (let i = 0; i < xs.length - 1; i++) {
       for (let j = 0; j < zs.length - 1; j++) {
@@ -308,63 +392,152 @@ export function initHUD(G) {
         const x0 = Math.min(ax, bx2), y0 = Math.min(ay, by2);
         const w = Math.abs(bx2 - ax), h = Math.abs(by2 - ay);
         if (x0 + w < 0 || y0 + h < 0 || x0 > W || y0 > H) continue;
+        const bcx = (xs[i] + xs[i + 1]) / 2, bcz = (zs[j] + zs[j + 1]) / 2;
+        ctx.fillStyle = (bcx < -165 && bcz < -165) ? '#b3c184' : '#cfc096';
         ctx.fillRect(x0, y0, w, h);
       }
     }
-    // (7) roads: casing then surface
-    const scale = Math.abs(toMap(1, 0)[0] - toMap(0, 0)[0]);
+    // (7) roads with hierarchy: side streets first (thinner, dimmer),
+    // mains on top (full road width, brighter, dark casing edge).
     const roadPx = CFG.roadW * scale;
     ctx.lineCap = 'butt';
-    for (const pass of [0, 1]) {
-      ctx.strokeStyle = pass === 0 ? '#8f8a7c' : '#e9e4d8';
-      ctx.lineWidth = pass === 0 ? roadPx + 2 : roadPx;
+    const strokeRoads = (mains, color, width) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
       ctx.beginPath();
       for (const x of xs) {
+        if (isMainX(x) !== mains) continue;
         const [mx] = toMap(x, 0);
-        if (mx < -roadPx || mx > W + roadPx) continue;
+        if (mx < -width || mx > W + width) continue;
         const [, ty] = toMap(x, -CFG.half);
         const [, by] = toMap(x, CFG.half);
         ctx.moveTo(mx, ty); ctx.lineTo(mx, by);
       }
       for (const z of zs) {
+        if (isMainZ(z) !== mains) continue;
         const [, my] = toMap(0, z);
-        if (my < -roadPx || my > H + roadPx) continue;
+        if (my < -width || my > H + width) continue;
         const [tx2] = toMap(-CFG.half, z);
         const [bx3] = toMap(CFG.half, z);
         ctx.moveTo(tx2, my); ctx.lineTo(bx3, my);
       }
       ctx.stroke();
+    };
+    // Beach boulevard: the z=495 main already runs the shore; add the
+    // boardwalk promenade line along z=556 on the pause map.
+    strokeRoads(false, '#b9b2a0', Math.max(1.5, roadPx * 0.62));
+    strokeRoads(false, '#e3ddcb', Math.max(1.2, roadPx * 0.5));
+    strokeRoads(true, '#8f8a7c', roadPx + 2);
+    strokeRoads(true, '#f4efe0', roadPx);
+    if (big) {
+      const [, bwy] = toMap(0, 556);
+      if (bwy > -6 && bwy < H + 6) {
+        ctx.strokeStyle = '#d9b878';
+        ctx.lineWidth = Math.max(2, 8 * scale);
+        ctx.beginPath();
+        const [bx0] = toMap(-CFG.half, 556);
+        const [bx1] = toMap(CFG.half, 556);
+        ctx.moveTo(bx0, bwy); ctx.lineTo(bx1, bwy);
+        ctx.stroke();
+      }
     }
-    // (8) touge polyline
+    // (8) touge polyline (cased so it reads over the hill blocks)
     if (G.touge && G.touge.length > 1) {
-      ctx.strokeStyle = '#e9e4d8';
-      ctx.lineWidth = 3;
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      G.touge.forEach((pt, i) => {
-        const [mx, my] = toMap(pt.x, pt.z);
-        if (i === 0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
-      });
-      ctx.closePath();
-      ctx.stroke();
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      for (const pass of [0, 1]) {
+        ctx.strokeStyle = pass === 0 ? '#8f8a7c' : '#f4efe0';
+        ctx.lineWidth = pass === 0 ? 5 : 3.5;
+        ctx.beginPath();
+        G.touge.forEach((pt, i) => {
+          const [mx, my] = toMap(pt.x, pt.z);
+          if (i === 0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
+        });
+        ctx.closePath();
+        ctx.stroke();
+      }
     }
-    // (9) GPS route to objective
+    // (9) GPS route to objective — magenta with a white halo so it pops
+    // over any surface, on both maps.
     if (G.objective && opts.routeFrom) {
       try {
         const route = roadRoute(G, opts.routeFrom, G.objective) || [];
         if (route.length > 1) {
-          ctx.strokeStyle = '#ff4fd8';
-          ctx.lineWidth = 3;
           ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-          ctx.beginPath();
-          route.forEach((pt, i) => {
-            const [mx, my] = toMap(pt.x, pt.z);
-            if (i === 0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
-          });
-          ctx.stroke();
+          for (const pass of [0, 1]) {
+            ctx.strokeStyle = pass === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6';
+            ctx.lineWidth = pass === 0 ? (big ? 7 : 5) : (big ? 4.5 : 3.2);
+            ctx.beginPath();
+            route.forEach((pt, i) => {
+              const [mx, my] = toMap(pt.x, pt.z);
+              if (i === 0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
+            });
+            ctx.stroke();
+          }
         }
       } catch (e) { /* route optional */ }
     }
+    // (10) district labels — LAST, over everything, from G.landmarks.
+    if (opts.labels) {
+      const list = (G.landmarks && G.landmarks.districts) || DISTRICTS.map((d) => ({ name: d.name, x: d.cx, z: d.cz }));
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const d of list) {
+        const [cx, cy] = toMap(d.x, d.z);
+        if (cx < -90 || cy < -20 || cx > W + 90 || cy > H + 20) continue;
+        const label = d.name.toUpperCase();
+        ctx.font = '600 21px Arial, sans-serif';
+        try { ctx.letterSpacing = '3px'; } catch (e) {}
+        ctx.shadowColor = 'rgba(255,255,255,0.9)';
+        ctx.shadowBlur = 5;
+        ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(250,246,230,0.85)';
+        ctx.strokeText(label, cx, cy);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#54452c';
+        ctx.fillText(label, cx, cy);
+        try { ctx.letterSpacing = '0px'; } catch (e) {}
+      }
+      drawMapLegend(ctx, W, H);
+      // Zoom hint, bottom-right.
+      ctx.font = '11px Arial, sans-serif';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+      ctx.fillStyle = 'rgba(20,16,10,0.55)';
+      ctx.fillText(`${mapView.zoom.toFixed(1)}x — scroll to zoom · drag to pan`, W - 12, H - 10);
+    }
+  }
+
+  // F3: in-canvas legend panel (bottom-left of the pause map) so it is
+  // always visible with the map itself, mirroring the DOM legend chips.
+  function drawMapLegend(ctx, W, H) {
+    const rows = [
+      ['#ffffff', '➤', 'You'],
+      ['#ffd23f', '■', 'Objective / mission'],
+      ['#2b2f36', 'G', 'Garage — RONIN KAI HQ'],
+      ['#ff8c1a', 'M', 'RONIN MART supermarket'],
+      ['#ffffff', '⌂', 'Safehouse (HQ)'],
+      ['#2e6fb7', '●', 'RBPD police'],
+      ['#ff2fd6', '━', 'GPS route'],
+    ];
+    const pw = 218, ph = 16 + rows.length * 19 + 8, px = 12, py = H - ph - 12;
+    ctx.save();
+    ctx.fillStyle = 'rgba(8,10,16,0.72)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(px, py, pw, ph, 8); else ctx.rect(px, py, pw, ph);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 11px Arial, sans-serif';
+    ctx.fillStyle = '#ffd9ae';
+    ctx.fillText('LEGEND', px + 12, py + 13);
+    ctx.font = '12px Arial, sans-serif';
+    rows.forEach((r, i) => {
+      const y = py + 16 + 10 + i * 19;
+      ctx.fillStyle = r[0];
+      ctx.font = 'bold 12px Arial, sans-serif';
+      ctx.fillText(r[1], px + 12, y);
+      ctx.font = '12px Arial, sans-serif';
+      ctx.fillStyle = '#e8eef4';
+      ctx.fillText(r[2], px + 34, y);
+    });
+    ctx.restore();
   }
 
   function chip(ctx, x, y, size, bg, letter, fg) {
@@ -381,15 +554,46 @@ export function initHUD(G) {
 
   function drawBlips(ctx, toMap, t, opts) {
     const p = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    // HQ
+    // Name tag under a landmark chip (pause map only). dx separates the
+    // near-coincident HQ / garage tags so both stay readable.
+    const tag = (x, y, size, text, dx) => {
+      if (!opts.tags) return;
+      ctx.font = 'bold 10px Arial, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(250,246,230,0.9)';
+      ctx.strokeText(text, x + (dx || 0), y + size / 2 + 2);
+      ctx.fillStyle = '#3a2f1c';
+      ctx.fillText(text, x + (dx || 0), y + size / 2 + 2);
+    };
+    // HQ / safehouse
     {
       const [hx, hy] = toMap(G.hq.x, G.hq.z);
       chip(ctx, hx, hy, opts.chipSize, '#ffffff', '⌂');
+      tag(hx, hy, opts.chipSize, 'SAFEHOUSE', -16);
     }
     // Garage
     {
       const [gx, gy] = toMap(G.hq.garage.x, G.hq.garage.z);
       chip(ctx, gx, gy, opts.chipSize, '#2b2f36', 'G', '#ffffff');
+      tag(gx, gy, opts.chipSize, 'RONIN KAI HQ', 18);
+    }
+    // RONIN MART supermarket (F1 landmark)
+    if (G.landmarks && G.landmarks.market) {
+      const mk = G.landmarks.market;
+      const [mx2, my2] = toMap(mk.x, mk.z);
+      if (opts.tags) {
+        chip(ctx, mx2, my2, opts.chipSize, '#ff8c1a', 'M', '#ffffff');
+        tag(mx2, my2, opts.chipSize, 'RONIN MART');
+      } else if (mx2 > -14 && my2 > -14 && mx2 < 234 && my2 < 234) {
+        // Minimap: small orange dot, only while on screen.
+        ctx.beginPath(); ctx.arc(mx2, my2, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff8c1a'; ctx.fill();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 7px Arial, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('M', mx2, my2 + 0.5);
+      }
     }
     // Cops
     if (G.cops) {
@@ -436,6 +640,22 @@ export function initHUD(G) {
     ctx.restore();
   }
 
+  // F3: minimap static layer (land/water/roads/blocks at world scale) is
+  // rendered ONCE to an offscreen canvas; each frame just blits the window
+  // around the player and redraws the cheap dynamic parts (route + blips).
+  let mmStatic = null;
+  function minimapStatic() {
+    if (mmStatic) return mmStatic;
+    const S = 1320; // 1 px per metre over the 1320 m world
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const cx2 = c.getContext('2d');
+    const toMap = (x, z) => [x + CFG.half, z + CFG.half];
+    drawMapBase(cx2, S, S, toMap, CFG.world, { washAlpha: 0.07, labels: false, waves: false, routeFrom: null });
+    mmStatic = c;
+    return c;
+  }
+
   function drawMinimap(t) {
     if (!mm || !E.minimap) return;
     const W = E.minimap.width, H = E.minimap.height;
@@ -447,7 +667,31 @@ export function initHUD(G) {
     mm.beginPath();
     if (mm.roundRect) mm.roundRect(0, 0, W, H, 18); else mm.rect(0, 0, W, H);
     mm.clip();
-    drawMapBase(mm, W, H, toMap, view, { washAlpha: 0.07, labels: false, waves: false, routeFrom: p });
+    // Static base blit (covers the whole view; water fills any overflow).
+    mm.fillStyle = '#3a7bd5';
+    mm.fillRect(0, 0, W, H);
+    const st = minimapStatic();
+    mm.imageSmoothingEnabled = true;
+    mm.drawImage(st, p.x - view / 2 + CFG.half, p.z - view / 2 + CFG.half, view, view, 0, 0, W, H);
+    // Dynamic GPS route on top of the roads.
+    if (G.objective) {
+      try {
+        const route = roadRoute(G, p, G.objective) || [];
+        if (route.length > 1) {
+          mm.lineJoin = 'round'; mm.lineCap = 'round';
+          for (const pass of [0, 1]) {
+            mm.strokeStyle = pass === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6';
+            mm.lineWidth = pass === 0 ? 5 : 3.2;
+            mm.beginPath();
+            route.forEach((pt, i) => {
+              const [mx, my] = toMap(pt.x, pt.z);
+              if (i === 0) mm.moveTo(mx, my); else mm.lineTo(mx, my);
+            });
+            mm.stroke();
+          }
+        }
+      } catch (e) { /* route optional */ }
+    }
     drawBlips(mm, toMap, t, { chipSize: 13, arrowSize: 8 });
     mm.restore();
     // Frame + north label (outside clip so the corner stays crisp).
@@ -464,14 +708,16 @@ export function initHUD(G) {
     if (!bm || !E.bigmap) return;
     const W = E.bigmap.width, H = E.bigmap.height;
     const margin = 46;
-    const s = Math.min((W - margin * 2) / CFG.world, (H - margin * 2) / CFG.world);
+    const s = Math.min((W - margin * 2) / CFG.world, (H - margin * 2) / CFG.world) * mapView.zoom;
     const ox = W / 2, oy = H / 2;
-    const toMap = (x, z) => [ox + x * s, oy + z * s];
+    const toMap = (x, z) => [ox + (x - mapView.cx) * s, oy + (z - mapView.cz) * s];
     const p = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    drawMapBase(bm, W, H, toMap, CFG.world, { washAlpha: 0.12, labels: true, waves: true, routeFrom: p });
+    bm.save();
+    bm.beginPath(); bm.rect(0, 0, W, H); bm.clip();
+    drawMapBase(bm, W, H, toMap, CFG.world / mapView.zoom, { washAlpha: 0.12, labels: true, waves: true, routeFrom: p });
     const t = performance.now() / 1000;
-    drawBlips(bm, toMap, t, { chipSize: 20, arrowSize: 13 });
-    // Next-mission giver letter (in addition to the objective chip).
+    drawBlips(bm, toMap, t, { chipSize: 20, arrowSize: 13, tags: true });
+    bm.restore();
     // Title.
     bm.fillStyle = '#2c2114';
     bm.font = 'bold 34px Arial, sans-serif';
