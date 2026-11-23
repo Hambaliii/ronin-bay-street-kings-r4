@@ -50,6 +50,8 @@ function placeFig(G, castId, x, z, angle) {
 }
 function cam(G, x, y, z, lx, ly, lz) {
   G.shotCam = () => {
+    // Guard against the boot-race runaway fov: pre-shot easing frames can corrupt camera.fov before shotCam installs, so re-pin it every frame.
+    G.camera.fov = 60; G.camera.updateProjectionMatrix();
     G.camera.position.set(x, y, z);
     G.camera.lookAt(lx, ly, lz);
   };

@@ -242,7 +242,7 @@ if (menuEl) menuEl.addEventListener('click', () => { G.mode = 'play'; menuEl.sty
 let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
-  let dt = Math.min(0.05, (now - last) / 1000); last = now;
+  let dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
   if (G.paused) { renderer.render(scene, camera); return; }
   G.elapsed += dt;
   if (!shot) G.timeOfDay = (G.timeOfDay + (dt / CFG.dayLength) * 24) % 24;
@@ -290,7 +290,7 @@ function loop(now) {
       G.camYaw = v.angle + Math.PI;
       const targetFov = 62 + 10 * Math.min(1, Math.abs(v.speed) / (v.spec.topSpeed * 0.8)) + (G.flags.nosActive ? 4 : 0);
       const fovDelta = targetFov - camera.fov;
-      if (Math.abs(fovDelta) > 0.05) { camera.fov += fovDelta * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
+      if (Math.abs(fovDelta) > 0.05) { camera.fov += fovDelta * Math.min(1, dt * 3); camera.fov = Math.max(45, Math.min(85, camera.fov)); camera.updateProjectionMatrix(); }
     } else if (G.player) {
       const p = G.player;
       // mouse-free orbit: camYaw follows movement slowly; A/D handled in player relative to camYaw
@@ -300,7 +300,7 @@ function loop(now) {
       camera.position.y += ((groundH(p.x, p.z) + 3) - camera.position.y) * Math.min(1, dt * 6);
       camera.lookAt(p.x, groundH(p.x, p.z) + 1.4, p.z);
       const footFovDelta = 60 - camera.fov;
-      if (Math.abs(footFovDelta) > 0.05) { camera.fov += footFovDelta * Math.min(1, dt * 3); camera.updateProjectionMatrix(); }
+      if (Math.abs(footFovDelta) > 0.05) { camera.fov += footFovDelta * Math.min(1, dt * 3); camera.fov = Math.max(45, Math.min(85, camera.fov)); camera.updateProjectionMatrix(); }
       if (p.speed > 0) { const targetYaw = p.angle + Math.PI; let d = targetYaw - G.camYaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; G.camYaw += d * Math.min(1, dt * 1.6); }
     }
   } else {
