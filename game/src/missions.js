@@ -1,4 +1,4 @@
-// Story jobs for the bay: beacon givers, every job shape,
+// Story jobs around the bay: beacon givers, every job shape,
 // timed rush runs, turf income and the HQ garage roster.
 import * as THREE from 'three';
 import { CFG, DISTRICTS, CARS, CAST, MISSIONS } from './config.js';
@@ -6,406 +6,396 @@ import { rr, ri, pick, chance } from './random.js';
 import { groundH, glowSprite, roadRoute } from './world.js';
 import { spawnVehicle } from './cars.js';
 import { makeFigure } from './player.js';
-const SPOT_TABLE_W = {};
-SPOT_TABLE_W.port = { x: -412.5, z: 470 }; SPOT_TABLE_W.coral = { x: 495, z: 495 };
-SPOT_TABLE_W.neon = { x: 330, z: -330 }; SPOT_TABLE_W.hoshino = { x: -90, z: -380 };
-function spotForW(keyW) { const hitW = SPOT_TABLE_W[keyW]; return hitW || SPOT_TABLE_W.port; }
-const LADDER_W = []; LADDER_W.push(0, 40, 110, 220); LADDER_W.push(380, 600, 900);
-const HOME_GARAGE_W = { x: -412.5, z: 455 };
-function wrapGapW(wantW, haveW) {
-  let remW = wantW + (-haveW);
-  while (remW > Math.PI) remW = remW + (-(Math.PI * 2));
-  while (-Math.PI > remW) remW = remW + (Math.PI * 2);
-  return remW; }
-function spanW(axW, azW, bxW, bzW) { return Math.hypot(axW + (-bxW), azW + (-bzW)); }
-const MIN_LEN_W = 60;
-function clockLabelW(rawW) {
-  const ceilW = Math.max(0, Math.ceil(rawW));
-  const minsW = Math.floor(ceilW / MIN_LEN_W); const secsW = String(ceilW % MIN_LEN_W).padStart(2, '0');
-  return `${minsW}:${secsW}`; }
-function actorPtW(G) {
-  const seatedW = G.car && G.flags.inCar;
-  const entW = seatedW ? G.car : G.player;
-  const outW = {}; outW.x = entW.x; outW.z = entW.z; return outW; }
-function badgeSpriteW(glyphW, fillW) {
-  const cvW = document.createElement('canvas');
-  cvW.width = 128; cvW.height = 128;
-  const cxW = cvW.getContext('2d');
-  cxW.fillStyle = fillW || '#ffd23f';
-  cxW.beginPath(); cxW.arc(64, 64, 52, 0, Math.PI * 2); cxW.fill();
-  cxW.lineWidth = 7; cxW.strokeStyle = '#14100a'; cxW.stroke();
-  cxW.fillStyle = '#14100a'; cxW.font = 'bold 64px Arial, sans-serif';
-  cxW.textAlign = 'center'; cxW.textBaseline = 'middle';
-  cxW.fillText(glyphW || '!', 64, 68);
-  const txW = new THREE.CanvasTexture(cvW);
-  const sprW = new THREE.Sprite(new THREE.SpriteMaterial({ map: txW, transparent: true, depthTest: false }));
-  sprW.scale.set(3.2, 3.2, 1);
-  return sprW; }
-function arcLensW(pathW) {
-  const accW = [0];
-  let walkW = accW.length;
-  while (walkW < pathW.length) {
-    const hereW = pathW[walkW]; const prevW = pathW[walkW - 1];
-    accW.push(accW[walkW - 1] + spanW(hereW.x, hereW.z, prevW.x, prevW.z));
-    walkW++; }
-  return accW; }
-function pointAtArcW(pathW, accW, wantW) {
-  let segW = 1;
-  while (segW < accW.length - 1 && accW[segW] < wantW) segW++;
-  const spanSegW = (accW[segW] + (-accW[segW - 1])) || 1;
-  const fracW = (wantW + (-accW[segW - 1])) / spanSegW;
-  const fromW = pathW[segW - 1]; const toW = pathW[segW];
-  const outW = {}; outW.x = fromW.x + ((toW.x + (-fromW.x)) * fracW); outW.z = fromW.z + ((toW.z + (-fromW.z)) * fracW);
-  return outW; }
-function buildCpsW(G, fromW, toW, wantCountW) {
-  const rawRouteW = roadRoute(G, fromW, toW) || [fromW, toW];
-  const cleanW = [];
-  for (const rawW of rawRouteW) cleanW.push({ x: rawW.x, z: rawW.z });
-  if (!(cleanW.length > 0)) return [{ x: toW.x, z: toW.z }];
-  const lensW = arcLensW(cleanW);
-  const totalW = lensW[lensW.length - 1] || 1;
-  const autoW = Math.max(2, Math.round(totalW / 120));
-  const finalW = Math.max(1, wantCountW || autoW);
-  const pickedW = [];
-  let stepW = 1;
-  while (stepW <= finalW) { pickedW.push(pointAtArcW(cleanW, lensW, (totalW * stepW) / finalW)); stepW++; }
-  pickedW[pickedW.length - 1] = { x: toW.x, z: toW.z };
-  return pickedW; }
+const SPOT_TABLE_M = {};
+SPOT_TABLE_M.port = { x: -412.5, z: 470 }; SPOT_TABLE_M.coral = { x: 495, z: 495 };
+SPOT_TABLE_M.neon = { x: 330, z: -330 }; SPOT_TABLE_M.hoshino = { x: -90, z: -380 };
+function spotForM(keyM) { const hitM = SPOT_TABLE_M[keyM]; return hitM ? hitM : SPOT_TABLE_M.port; }
+const LADDER_M = []; LADDER_M.push(0, 40, 110, 220); LADDER_M.push(380, 600, 900);
+const HOME_GARAGE_M = { x: -412.5, z: 455 };
+function wrapGapM(wantM, haveM) {
+  let remM = wantM + (-haveM);
+  while (remM > Math.PI) remM = remM + (-(Math.PI * 2));
+  while (-Math.PI > remM) remM = remM + (Math.PI * 2);
+  return remM; }
+function spanM(axM, azM, bxM, bzM) { return Math.hypot(axM + (-bxM), azM + (-bzM)); }
+const MIN_LEN_M = 60;
+function clockLabelM(rawM) {
+  const ceilM = Math.max(0, Math.ceil(rawM));
+  const minsM = Math.floor(ceilM / MIN_LEN_M); const secsM = String(ceilM % MIN_LEN_M).padStart(2, '0');
+  return `${minsM}:${secsM}`; }
+function actorPtM(G) {
+  const seatedM = G.car && G.flags.inCar; const entM = seatedM ? G.car : G.player;
+  const ptM = {}; ptM.x = entM.x; ptM.z = entM.z; return ptM; }
+function badgeSpriteM(glyphM, fillM) {
+  const cvM = document.createElement('canvas'); cvM.width = 128; cvM.height = 128;
+  const cxM = cvM.getContext('2d');
+  cxM.fillStyle = fillM || '#ffd23f';
+  cxM.beginPath(); cxM.arc(64, 64, 52, 0, Math.PI * 2); cxM.fill();
+  cxM.lineWidth = 7; cxM.strokeStyle = '#14100a'; cxM.stroke();
+  cxM.fillStyle = '#14100a'; cxM.font = 'bold 64px Arial, sans-serif';
+  cxM.textAlign = 'center'; cxM.textBaseline = 'middle';
+  cxM.fillText(glyphM || '!', 64, 68);
+  const txM = new THREE.CanvasTexture(cvM);
+  const sprM = new THREE.Sprite(new THREE.SpriteMaterial({ map: txM, transparent: true, depthTest: false }));
+  sprM.scale.set(3.2, 3.2, 1);
+  return sprM; }
+function arcLensM(pathM) {
+  const accM = [0];
+  for (let walkM = accM.length; walkM < pathM.length; walkM++) {
+    const hereM = pathM[walkM]; const prevM = pathM[walkM - 1];
+    accM.push(accM[walkM - 1] + spanM(hereM.x, hereM.z, prevM.x, prevM.z)); }
+  return accM; }
+function pointAtArcM(pathM, accM, wantM) {
+  let segM = 1;
+  while (segM < accM.length - 1 && accM[segM] < wantM) segM++;
+  const spanSegM = (accM[segM] + (-accM[segM - 1])) || 1;
+  const fracM = (wantM + (-accM[segM - 1])) / spanSegM;
+  const fromM = pathM[segM - 1]; const toM = pathM[segM];
+  const ptM = {}; ptM.x = fromM.x + ((toM.x + (-fromM.x)) * fracM); ptM.z = fromM.z + ((toM.z + (-fromM.z)) * fracM);
+  return ptM; }
+function buildCpsM(G, fromM, toM, wantCountM) {
+  const rawRouteM = roadRoute(G, fromM, toM) || [fromM, toM];
+  const cleanM = [];
+  for (const rawM of rawRouteM) cleanM.push({ x: rawM.x, z: rawM.z });
+  if (!(cleanM.length > 0)) return [{ x: toM.x, z: toM.z }];
+  const lensM = arcLensM(cleanM);
+  const totalM = lensM[lensM.length - 1] || 1;
+  const autoM = Math.max(2, Math.round(totalM / 120));
+  const finalM = Math.max(1, wantCountM || autoM);
+  const pickedM = [];
+  for (let stepM = 1; stepM <= finalM; stepM++) pickedM.push(pointAtArcM(cleanM, lensM, (totalM * stepM) / finalM));
+  pickedM[pickedM.length - 1] = { x: toM.x, z: toM.z };
+  return pickedM; }
 export function initMissions(G) {
   G.objective = null; G.missionIndex = G.missionIndex || 0;
   G.missionProg = ''; G.driftScore = 0; G.garageList = [];
   G.flags.garageOpen = !!G.flags.garageOpen;
   const S = { phase: 'giver', giverFig: null, giverMission: null, beacon: null, beaconLetter: null, chain: null, rush: null, rushTimer: 55, incomeT: 60, ePrev: false, numPrev: {}, prevPX: 0, prevPZ: 0, currentCarId: (G.garage && G.garage[0]) || 'hachi', zoneRing: null };
-  function beaconMatW() {
-    const matW = new THREE.MeshBasicMaterial();
-    matW.color = new THREE.Color(0xffd23f); matW.transparent = true; matW.opacity = 0.35;
-    matW.blending = THREE.AdditiveBlending; matW.depthWrite = false; matW.side = THREE.DoubleSide;
-    return matW; }
-  function buildBeaconW() {
-    const rootW = new THREE.Group();
-    const pillarW = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 14, 20, 1, true), beaconMatW());
-    pillarW.position.y = 7; rootW.add(pillarW);
-    try { const haloW = glowSprite(0xffd23f, 5.4); haloW.position.y = 1.2; rootW.add(haloW); } catch (errW) { /* decoration only */ }
-    const letterW = badgeSpriteW('!', '#ffd23f');
-    letterW.position.y = 6.5; rootW.add(letterW);
-    rootW.visible = false; G.scene.add(rootW);
-    S.beacon = rootW; S.beaconLetter = letterW; }
-  buildBeaconW();
-  function showBeaconW(wxW, wzW, glyphW, colW) {
+  function beaconMaterialM() {
+    const matM = new THREE.MeshBasicMaterial();
+    matM.color = new THREE.Color(0xffd23f); matM.transparent = true; matM.opacity = 0.35;
+    matM.blending = THREE.AdditiveBlending; matM.depthWrite = false; matM.side = THREE.DoubleSide;
+    return matM; }
+  function buildBeaconM() {
+    const rootM = new THREE.Group();
+    const pillarM = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 14, 20, 1, true), beaconMaterialM());
+    pillarM.position.y = 7; rootM.add(pillarM);
+    try { const haloM = glowSprite(0xffd23f, 5.4); haloM.position.y = 1.2; rootM.add(haloM); } catch (ignoredM) { /* decoration only */ }
+    const letterM = badgeSpriteM('!', '#ffd23f');
+    letterM.position.y = 6.5; rootM.add(letterM);
+    rootM.visible = false; G.scene.add(rootM);
+    S.beacon = rootM; S.beaconLetter = letterM; }
+  buildBeaconM();
+  function showBeaconM(wxM, wzM, glyphM, colM) {
     if (!S.beacon) return;
-    S.beacon.position.set(wxW, groundH(wxW, wzW), wzW); S.beacon.visible = true;
-    if (glyphW && S.beaconLetter) {
-      const parentW = S.beaconLetter.parent; const keepYW = S.beaconLetter.position.y;
-      parentW.remove(S.beaconLetter);
-      S.beaconLetter = badgeSpriteW(glyphW, colW); S.beaconLetter.position.y = keepYW;
-      parentW.add(S.beaconLetter); } }
-  function hideBeaconW() { if (S.beacon) S.beacon.visible = false; }
-  function dropRingW() { if (S.zoneRing) { G.scene.remove(S.zoneRing); S.zoneRing = null; } }
-  function buildRingW(radiusW, colW) {
-    dropRingW();
-    const matW = new THREE.MeshBasicMaterial({ color: colW, transparent: true, opacity: 0.75 });
-    const torusW = new THREE.Mesh(new THREE.TorusGeometry(radiusW, 0.35, 8, 48), matW);
-    torusW.rotation.x = Math.PI / 2; G.scene.add(torusW); S.zoneRing = torusW;
-    return torusW; }
-  function currentDefW() { return MISSIONS.length > G.missionIndex ? MISSIONS[G.missionIndex] : null; }
-  function clearGiverW() { if (S.giverFig) { G.scene.remove(S.giverFig); S.giverFig = null; } }
-  function giverFigureW(defW, anchorW) {
-    const personW = CAST[defW.giver];
-    if (!personW) return personW;
+    S.beacon.position.set(wxM, groundH(wxM, wzM), wzM); S.beacon.visible = true;
+    if (glyphM && S.beaconLetter) {
+      const parentM = S.beaconLetter.parent; const keepYM = S.beaconLetter.position.y;
+      parentM.remove(S.beaconLetter);
+      S.beaconLetter = badgeSpriteM(glyphM, colM); S.beaconLetter.position.y = keepYM;
+      parentM.add(S.beaconLetter); } }
+  function hideBeaconM() { if (S.beacon) S.beacon.visible = false; }
+  function dropRingM() { if (S.zoneRing) { G.scene.remove(S.zoneRing); S.zoneRing = null; } }
+  function buildRingM(radiusM, colM) {
+    dropRingM();
+    const matM = new THREE.MeshBasicMaterial({ color: colM, transparent: true, opacity: 0.75 });
+    const torusM = new THREE.Mesh(new THREE.TorusGeometry(radiusM, 0.35, 8, 48), matM);
+    torusM.rotation.x = Math.PI / 2; G.scene.add(torusM); S.zoneRing = torusM;
+    return torusM; }
+  function currentDefM() { return MISSIONS.length > G.missionIndex ? MISSIONS[G.missionIndex] : null; }
+  function clearGiverM() { if (S.giverFig) { G.scene.remove(S.giverFig); S.giverFig = null; } }
+  function giverFigureM(defM, anchorM) {
+    const personM = CAST[defM.giver];
+    if (!personM) return personM;
     try {
-      S.giverFig = makeFigure(personW);
-      S.giverFig.position.set(anchorW.x, groundH(anchorW.x, anchorW.z), anchorW.z);
+      S.giverFig = makeFigure(personM);
+      S.giverFig.position.set(anchorM.x, groundH(anchorM.x, anchorM.z), anchorM.z);
       S.giverFig.rotation.y = rr(0, Math.PI * 2); G.scene.add(S.giverFig);
-    } catch (errW) { S.giverFig = null; }
-    return personW; }
-  function stageGiverW() {
-    clearGiverW();
-    const defW = currentDefW();
-    if (!defW) { G.objective = null; G.missionProg = ''; hideBeaconW(); return; }
-    const anchorW = spotForW(defW.district);
-    S.giverMission = defW;
-    const personW = giverFigureW(defW, anchorW);
-    const trimmedW = (personW?.name || defW.giver || '?').trim();
-    const glyphW = trimmedW.charAt(0).toUpperCase();
-    G.objective = { x: anchorW.x, z: anchorW.z, label: `${defW.title} — talk to ${personW?.name || defW.giver}`, letter: glyphW, giverId: defW.giver };
+    } catch (ignoredM) { S.giverFig = null; }
+    return personM; }
+  function stageGiverM() {
+    clearGiverM();
+    const defM = currentDefM();
+    if (!defM) { G.objective = null; G.missionProg = ''; hideBeaconM(); return; }
+    const anchorM = spotForM(defM.district);
+    S.giverMission = defM;
+    const personM = giverFigureM(defM, anchorM);
+    const trimmedM = (personM?.name || defM.giver || '?').trim();
+    const glyphM = trimmedM.charAt(0).toUpperCase();
+    G.objective = { x: anchorM.x, z: anchorM.z, label: `${defM.title} — talk to ${personM?.name || defM.giver}`, letter: glyphM, giverId: defM.giver };
     G.missionProg = 'Go to the blip';
-    showBeaconW(anchorW.x, anchorW.z, glyphW, '#ffd23f'); S.phase = 'giver'; }
-  function routeSecsW(fromW, ptsW) {
-    let sumW = 0; let cursorW = fromW;
-    for (const cpW of ptsW) { sumW = sumW + spanW(cursorW.x, cursorW.z, cpW.x, cpW.z); cursorW = cpW; }
-    return sumW / 17; }
-  function rivalSetupW(runW, defW, startW) {
-    runW.checkpoints = buildCpsW(G, startW, runW._dest, 4);
-    runW.timer = routeSecsW(startW, runW.checkpoints) + 60;
-    let specW = 'taiyo'; let driverW = 'dante'; let paintW = 0x7a1010;
-    if (defW.id === 'm12') specW = 'svj'; else if (defW.id === 'm11') specW = 'gtr35';
-    if (defW.id === 'm12') driverW = 'ryo'; else if (defW.id === 'm11') driverW = 'shun';
-    if (defW.id === 'm12') paintW = 0x30343c; else if (defW.id === 'm11') paintW = 0x9aa0a6;
-    runW.rubberF = rr(0.92, 1.08);
-    runW.rival = spawnVehicle(G, specW, startW.x + 6, startW.z + 4, G.car ? G.car.angle : 0, { driver: driverW, color: paintW });
-    runW.rivalSpeed = 0; }
-  function setupTimetrialW(runW, defW, startW, destW) {
-    if (G.touge && G.touge.length > 2 && defW.id === 'm6') {
-      runW.checkpoints = G.touge.map((tpW) => ({ x: tpW.x, z: tpW.z }));
-      let lenW = 0;
-      let ciW = 1;
-      while (ciW < runW.checkpoints.length) { lenW = lenW + spanW(runW.checkpoints[ciW].x, runW.checkpoints[ciW].z, runW.checkpoints[ciW - 1].x, runW.checkpoints[ciW - 1].z); ciW++; }
-      runW.par = lenW / 21;
-    } else { runW.checkpoints = buildCpsW(G, startW, destW, 5); runW.par = routeSecsW(startW, runW.checkpoints) + 25; }
-    runW.timer = 0; }
-  function setupDisableW(runW, startW) {
+    showBeaconM(anchorM.x, anchorM.z, glyphM, '#ffd23f'); S.phase = 'giver'; }
+  function routeSecsM(fromM, ptsM) {
+    let sumM = 0; let cursorM = fromM;
+    for (const cpM of ptsM) { sumM = sumM + spanM(cursorM.x, cursorM.z, cpM.x, cpM.z); cursorM = cpM; }
+    return sumM / 17; }
+  function rivalSetupM(runM, defM, startM) {
+    runM.checkpoints = buildCpsM(G, startM, runM._dest, 4);
+    runM.timer = routeSecsM(startM, runM.checkpoints) + 60;
+    let specM = 'taiyo'; let driverM = 'dante'; let paintM = 0x7a1010;
+    if (defM.id === 'm12') specM = 'svj'; else if (defM.id === 'm11') specM = 'gtr35';
+    if (defM.id === 'm12') driverM = 'ryo'; else if (defM.id === 'm11') driverM = 'shun';
+    if (defM.id === 'm12') paintM = 0x30343c; else if (defM.id === 'm11') paintM = 0x9aa0a6;
+    runM.rubberF = rr(0.92, 1.08);
+    runM.rival = spawnVehicle(G, specM, startM.x + 6, startM.z + 4, G.car ? G.car.angle : 0, { driver: driverM, color: paintM });
+    runM.rivalSpeed = 0; }
+  function tougeParM(runM) {
+    let lenM = 0;
+    for (let ciM = 1; ciM < runM.checkpoints.length; ciM++) lenM = lenM + spanM(runM.checkpoints[ciM].x, runM.checkpoints[ciM].z, runM.checkpoints[ciM - 1].x, runM.checkpoints[ciM - 1].z);
+    return lenM / 21; }
+  function setupTimetrialM(runM, defM, startM, destM) {
+    if (G.touge && G.touge.length > 2 && defM.id === 'm6') {
+      runM.checkpoints = G.touge.map((tpM) => ({ x: tpM.x, z: tpM.z }));
+      runM.par = tougeParM(runM);
+    } else { runM.checkpoints = buildCpsM(G, startM, destM, 5); runM.par = routeSecsM(startM, runM.checkpoints) + 25; }
+    runM.timer = 0; }
+  function setupDisableM(runM, startM) {
     G.flags.noDecay = true;
     G.wanted = Math.max(3, G.wanted);
-    const angW = rr(0, Math.PI * 2);
-    const txW = startW.x + (Math.sin(angW) * 55); const tzW = startW.z + (Math.cos(angW) * 55);
-    runW.target = spawnVehicle(G, 'police', txW, tzW, rr(0, 6), { driver: 'cop', livery: 'police', lights: true });
-    if (runW.target) { runW.target.health = 90; G.cops?.push(runW.target); }
-    runW.checkpoints = []; }
-  function setupJackW(runW, defW, anchorW) {
-    const specW = typeof defW.need === 'string' && CARS[defW.need] ? defW.need : 'sora15';
-    const angW = rr(0, Math.PI * 2);
-    const jxW = anchorW.x + (Math.sin(angW) * 70); const jzW = anchorW.z + (Math.cos(angW) * 70);
-    runW.target = spawnVehicle(G, specW, jxW, jzW, rr(0, 6), { driver: 'parked', glow: true });
-    runW.stage = 'steal'; runW.checkpoints = [{ x: jxW, z: jzW }]; }
-  function setupHoldW(runW, destW) {
-    runW.checkpoints = [destW]; runW.holdT = 0;
+    const angM = rr(0, Math.PI * 2);
+    const txM = startM.x + (Math.sin(angM) * 55); const tzM = startM.z + (Math.cos(angM) * 55);
+    runM.target = spawnVehicle(G, 'police', txM, tzM, rr(0, 6), { driver: 'cop', livery: 'police', lights: true });
+    if (runM.target) { runM.target.health = 90; G.cops?.push(runM.target); }
+    runM.checkpoints = []; }
+  function setupJackM(runM, defM, anchorM) {
+    const specM = typeof defM.need === 'string' && CARS[defM.need] ? defM.need : 'sora15';
+    const angM = rr(0, Math.PI * 2);
+    const jxM = anchorM.x + (Math.sin(angM) * 70); const jzM = anchorM.z + (Math.cos(angM) * 70);
+    runM.target = spawnVehicle(G, specM, jxM, jzM, rr(0, 6), { driver: 'parked', glow: true });
+    runM.stage = 'steal'; runM.checkpoints = [{ x: jxM, z: jzM }]; }
+  function setupHoldM(runM, destM) {
+    runM.checkpoints = [destM]; runM.holdT = 0;
     G.wanted = Math.max(2, G.wanted);
-    runW.rivals = [];
-    let hW = 0;
-    while (hW < 2) {
-      const angW = rr(0, Math.PI * 2);
-      const vehW = spawnVehicle(G, pick(['hatch', 'sedan', 'kei']), destW.x + (Math.sin(angW) * 45), destW.z + (Math.cos(angW) * 45), rr(0, 6), { driver: 'dante' });
-      if (vehW) runW.rivals.push(vehW);
-      hW++; } }
-  function launchChainW(defW) {
-    const anchorW = spotForW(defW.district);
-    const startW = actorPtW(G);
-    const destW = { x: anchorW.x + rr(-60, 60), z: anchorW.z + rr(-60, 60) };
-    const runW = { m: defW, type: defW.type, idx: 0, checkpoints: [], timer: 0, par: 0, rival: null, rivalIdx: 0, target: null, done: false, startHealth: G.car ? (G.car.health ?? 100) : 100, driftTarget: 2000, holdT: 0, _dest: destW };
-    const kindW = defW.type;
-    const dispatchW = {
-      'meet': () => { runW.checkpoints = [destW]; },
-      'sprint': () => { runW.checkpoints = buildCpsW(G, startW, destW, 4); runW.timer = routeSecsW(startW, runW.checkpoints) + 35; },
-      'delivery': () => { runW.checkpoints = [destW]; runW.timer = Math.max(35, spanW(startW.x, startW.z, destW.x, destW.z) / 16 + 18); },
-      'drift': () => { runW.checkpoints = [destW]; runW.driftTarget = typeof defW.need === 'number' && defW.need > 100 ? defW.need : 2000; G.driftScore = 0; },
-      'race': () => rivalSetupW(runW, defW, startW),
-      'pinkslip': () => rivalSetupW(runW, defW, startW),
-      'timetrial': () => setupTimetrialW(runW, defW, startW, destW),
-      'disable': () => setupDisableW(runW, startW),
-      'jack': () => setupJackW(runW, defW, anchorW),
-      'hold': () => setupHoldW(runW, destW),
+    runM.rivals = [];
+    for (let hM = 0; hM < 2; hM++) {
+      const angM = rr(0, Math.PI * 2);
+      const vehM = spawnVehicle(G, pick(['hatch', 'sedan', 'kei']), destM.x + (Math.sin(angM) * 45), destM.z + (Math.cos(angM) * 45), rr(0, 6), { driver: 'dante' });
+      if (vehM) runM.rivals.push(vehM); } }
+  function launchChainM(defM) {
+    const anchorM = spotForM(defM.district);
+    const startM = actorPtM(G);
+    const destM = { x: anchorM.x + rr(-60, 60), z: anchorM.z + rr(-60, 60) };
+    const runM = { m: defM, type: defM.type, idx: 0, checkpoints: [], timer: 0, par: 0, rival: null, rivalIdx: 0, target: null, done: false, startHealth: G.car ? (G.car.health ?? 100) : 100, driftTarget: 2000, holdT: 0, _dest: destM };
+    const kindM = defM.type;
+    const dispatchM = {
+      'meet': () => { runM.checkpoints = [destM]; },
+      'sprint': () => { runM.checkpoints = buildCpsM(G, startM, destM, 4); runM.timer = routeSecsM(startM, runM.checkpoints) + 35; },
+      'delivery': () => { runM.checkpoints = [destM]; runM.timer = Math.max(35, spanM(startM.x, startM.z, destM.x, destM.z) / 16 + 18); },
+      'drift': () => { runM.checkpoints = [destM]; runM.driftTarget = typeof defM.need === 'number' && defM.need > 100 ? defM.need : 2000; G.driftScore = 0; },
+      'race': () => rivalSetupM(runM, defM, startM),
+      'pinkslip': () => rivalSetupM(runM, defM, startM),
+      'timetrial': () => setupTimetrialM(runM, defM, startM, destM),
+      'disable': () => setupDisableM(runM, startM),
+      'jack': () => setupJackM(runM, defM, anchorM),
+      'hold': () => setupHoldM(runM, destM),
     };
-    const handlerW = dispatchW[kindW];
-    if (handlerW) handlerW(); else runW.checkpoints = [destW];
-    S.chain = runW; S.phase = 'active'; aimObjectiveW(); }
-  function aimObjectiveW() {
-    const runW = S.chain; if (!runW) return;
-    const defW = runW.m;
-    if (runW.type === 'disable' && runW.target) {
-      G.objective = { x: runW.target.x, z: runW.target.z, label: `${defW.title} — disable the interceptor`, letter: '!' };
-      showBeaconW(runW.target.x, runW.target.z, '!', '#ff5c39'); return; }
-    if (runW.type === 'jack' && runW.stage === 'deliver') {
-      G.objective = { x: HOME_GARAGE_W.x, z: HOME_GARAGE_W.z, label: `${defW.title} — deliver to HQ garage`, letter: 'G' };
-      showBeaconW(HOME_GARAGE_W.x, HOME_GARAGE_W.z, 'G', '#7dffb0'); return; }
-    const cpW = runW.checkpoints[Math.min(runW.idx, runW.checkpoints.length - 1)];
-    if (cpW) { G.objective = { x: cpW.x, z: cpW.z, label: defW.title, letter: '!' }; showBeaconW(cpW.x, cpW.z, '!', '#ffd23f'); } }
-  function dismantleW() {
-    const dyingW = S.chain; if (!dyingW) return;
-    if (dyingW.type === 'disable') {
+    const handlerM = dispatchM[kindM];
+    if (handlerM) handlerM(); else runM.checkpoints = [destM];
+    S.chain = runM; S.phase = 'active'; aimObjectiveM(); }
+  function aimObjectiveM() {
+    const runM = S.chain; if (!runM) return;
+    const defM = runM.m;
+    if (runM.type === 'disable' && runM.target) {
+      G.objective = { x: runM.target.x, z: runM.target.z, label: `${defM.title} — disable the interceptor`, letter: '!' };
+      showBeaconM(runM.target.x, runM.target.z, '!', '#ff5c39'); return; }
+    if (runM.type === 'jack' && runM.stage === 'deliver') {
+      G.objective = { x: HOME_GARAGE_M.x, z: HOME_GARAGE_M.z, label: `${defM.title} — deliver to HQ garage`, letter: 'G' };
+      showBeaconM(HOME_GARAGE_M.x, HOME_GARAGE_M.z, 'G', '#7dffb0'); return; }
+    const cpM = runM.checkpoints[Math.min(runM.idx, runM.checkpoints.length - 1)];
+    if (cpM) { G.objective = { x: cpM.x, z: cpM.z, label: defM.title, letter: '!' }; showBeaconM(cpM.x, cpM.z, '!', '#ffd23f'); } }
+  function dismantleM() {
+    const dyingM = S.chain; if (!dyingM) return;
+    if (dyingM.type === 'disable') {
       G.flags.noDecay = false;
-      if (dyingW.target && G.cops) { const idxW = G.cops.indexOf(dyingW.target); if (!(idxW < 0)) G.cops.splice(idxW, 1); } }
-    dropRingW(); S.chain = null; }
-  function failChainW(reasonW) {
-    const defW = S.chain?.m;
-    dismantleW();
-    G.toast?.(reasonW || 'Mission failed — talk to the giver again'); G.audio?.play?.('fail'); stageGiverW();
-    if (defW) G.missionProg = 'Failed — go back to the blip'; }
-  function rewardCashW(runW, defW) {
-    let cashW = defW.reward?.money || 0;
-    if (runW.type === 'delivery') { const healthW = G.car ? (G.car.health ?? 100) : 100; cashW = cashW + Math.round(50 * (Math.max(0, healthW) / 100)); }
-    return cashW; }
-  function rankCheckW() {
-    const titlesW = ['Rookie', 'Runner', 'Drifter', 'Street Ace', 'Night Captain', 'Bay Legend', 'Street King'];
-    let rankW = 0;
-    LADDER_W.forEach((stepW, idxW) => { if (G.rep >= stepW) rankW = idxW; });
-    if (rankW > (G.rankIdx || 0)) { G.rankIdx = rankW; G.banner?.(`Rank up — ${titlesW[rankW]}`); } }
-  function turfGainW(defW) {
-    const zoneW = G.districtState?.[defW.district];
-    if (zoneW) { zoneW.control = Math.min(100, (zoneW.control || 0) + 15); if (!(zoneW.control < 60)) zoneW.owner = 'ronin'; } }
-  function pinkslipGainW() {
+      if (dyingM.target && G.cops) { const idxM = G.cops.indexOf(dyingM.target); if (!(idxM < 0)) G.cops.splice(idxM, 1); } }
+    dropRingM(); S.chain = null; }
+  function failChainM(reasonM) {
+    const defM = S.chain?.m;
+    dismantleM();
+    G.toast?.(reasonM || 'Mission failed — talk to the giver again'); G.audio?.play?.('fail'); stageGiverM();
+    if (defM) G.missionProg = 'Failed — go back to the blip'; }
+  function rewardCashM(runM, defM) {
+    let cashM = defM.reward?.money || 0;
+    if (runM.type === 'delivery') { const healthM = G.car ? (G.car.health ?? 100) : 100; cashM = cashM + Math.round(50 * (Math.max(0, healthM) / 100)); }
+    return cashM; }
+  function rankCheckM() {
+    const titlesM = ['Rookie', 'Runner', 'Drifter', 'Street Ace', 'Night Captain', 'Bay Legend', 'Street King'];
+    let rankM = 0;
+    LADDER_M.forEach((stepM, idxM) => { if (G.rep >= stepM) rankM = idxM; });
+    if (rankM > (G.rankIdx || 0)) { G.rankIdx = rankM; G.banner?.(`Rank up — ${titlesM[rankM]}`); } }
+  function turfGainM(defM) {
+    const zoneM = G.districtState?.[defM.district];
+    if (zoneM) { zoneM.control = Math.min(100, (zoneM.control || 0) + 15); if (!(zoneM.control < 60)) zoneM.owner = 'ronin'; } }
+  function pinkslipGainM() {
     if (!G.garage.includes('hero-gtr')) G.garage.push('hero-gtr');
     if (!G.ownedCars.includes('hero-gtr')) G.ownedCars.push('hero-gtr');
     G.flags.gotGhost = true; G.banner?.('Pink slip won — GHOST GT-R is yours'); }
-  function completeW() {
-    const runW = S.chain; const defW = runW.m;
-    const cashW = rewardCashW(runW, defW); const repW = defW.reward?.rep || 0;
-    G.money = (G.money || 0) + cashW; G.rep = (G.rep || 0) + repW;
-    rankCheckW();
-    turfGainW(defW);
-    if (defW.type === 'pinkslip') pinkslipGainW();
-    dismantleW(); G.missionIndex = G.missionIndex + 1;
+  function completeM() {
+    const runM = S.chain; const defM = runM.m;
+    const cashM = rewardCashM(runM, defM); const repM = defM.reward?.rep || 0;
+    G.money = (G.money || 0) + cashM; G.rep = (G.rep || 0) + repM;
+    rankCheckM(); turfGainM(defM);
+    if (defM.type === 'pinkslip') pinkslipGainM();
+    dismantleM(); G.missionIndex = G.missionIndex + 1;
     if (G.missionIndex >= MISSIONS.length) {
       G.flags.campaignDone = true; G.banner?.('CAMPAIGN COMPLETE — Street King of Ronin Bay');
-      G.objective = null; G.missionProg = ''; hideBeaconW();
-    } else { G.banner?.(`${defW.title} complete — +$${cashW.toLocaleString('en-US')}`); stageGiverW(); }
-    G.toast?.(`+$${cashW.toLocaleString('en-US')} · +${repW} REP`); G.audio?.play?.('complete'); G.saveGame?.(); }
-  function driveVehW(GG, vehW, ptsW, cellW, dtW, paceW) {
-    if (!vehW || cellW.i >= ptsW.length) return;
-    const goalW = ptsW[cellW.i];
-    const bearW = Math.atan2(goalW.x + (-vehW.x), goalW.z + (-vehW.z));
-    const deltaW = wrapGapW(bearW, vehW.angle);
-    vehW.angle = vehW.angle + THREE.MathUtils.clamp(deltaW, -1.9 * dtW, 1.9 * dtW);
-    let goalPaceW = paceW;
-    if (Math.abs(deltaW) > 0.7) goalPaceW = goalPaceW * 0.55;
-    const paceNowW = vehW.speed || 0;
-    vehW.speed = THREE.MathUtils.clamp(paceNowW + (Math.sign(goalPaceW + (-paceNowW)) * 10 * dtW), 0, goalPaceW + 6);
-    vehW.x = vehW.x + (Math.sin(vehW.angle) * vehW.speed * dtW);
-    vehW.z = vehW.z + (Math.cos(vehW.angle) * vehW.speed * dtW);
-    vehW.mesh.position.set(vehW.x, groundH(vehW.x, vehW.z), vehW.z);
-    vehW.mesh.rotation.y = vehW.angle;
-    const udW = vehW.mesh.userData;
-    if (udW?.wheels) { const wDeltaW = (vehW.speed * dtW) / (udW.wheelR || 0.34); Object.values(udW.wheels).forEach((wheelW) => { if (wheelW) wheelW.rotation.x = wheelW.rotation.x + wDeltaW; }); }
-    if (11 > spanW(vehW.x, vehW.z, goalW.x, goalW.z)) cellW.i += 1; }
-  function refreshGarageW() {
-    const rowsW = [];
-    for (const keyW of Object.keys(CARS)) { const specW = CARS[keyW]; rowsW.push({ id: keyW, name: specW.name || keyW, price: specW.price || 0, owned: G.garage.includes(keyW), current: keyW === S.currentCarId }); }
-    G.garageList = rowsW; }
-  refreshGarageW();
-  function rollOutW(carIdW) {
+      G.objective = null; G.missionProg = ''; hideBeaconM();
+    } else { G.banner?.(`${defM.title} complete — +$${cashM.toLocaleString('en-US')}`); stageGiverM(); }
+    G.toast?.(`+$${cashM.toLocaleString('en-US')} · +${repM} REP`); G.audio?.play?.('complete'); G.saveGame?.(); }
+  function driveVehM(GG, vehM, ptsM, cellM, dtM, paceM) {
+    if (!vehM || cellM.i >= ptsM.length) return;
+    const goalM = ptsM[cellM.i];
+    const bearM = Math.atan2(goalM.x + (-vehM.x), goalM.z + (-vehM.z));
+    const deltaM = wrapGapM(bearM, vehM.angle);
+    vehM.angle = vehM.angle + THREE.MathUtils.clamp(deltaM, -1.9 * dtM, 1.9 * dtM);
+    let goalPaceM = paceM;
+    if (Math.abs(deltaM) > 0.7) goalPaceM = goalPaceM * 0.55;
+    const paceNowM = vehM.speed || 0;
+    vehM.speed = THREE.MathUtils.clamp(paceNowM + (Math.sign(goalPaceM + (-paceNowM)) * 10 * dtM), 0, goalPaceM + 6);
+    vehM.x = vehM.x + (Math.sin(vehM.angle) * vehM.speed * dtM);
+    vehM.z = vehM.z + (Math.cos(vehM.angle) * vehM.speed * dtM);
+    vehM.mesh.position.set(vehM.x, groundH(vehM.x, vehM.z), vehM.z);
+    vehM.mesh.rotation.y = vehM.angle;
+    const udM = vehM.mesh.userData;
+    if (udM?.wheels) { const wDeltaM = (vehM.speed * dtM) / (udM.wheelR || 0.34); const wheelsM = Object.values(udM.wheels); for (const wheelM of wheelsM) { if (wheelM) wheelM.rotation.x = wheelM.rotation.x + wDeltaM; } }
+    if (11 > spanM(vehM.x, vehM.z, goalM.x, goalM.z)) cellM.i += 1; }
+  function refreshGarageM() {
+    const rowsM = [];
+    for (const keyM of Object.keys(CARS)) { const specM = CARS[keyM]; rowsM.push({ id: keyM, name: specM.name || keyM, price: specM.price || 0, owned: G.garage.includes(keyM), current: keyM === S.currentCarId }); }
+    G.garageList = rowsM; }
+  refreshGarageM();
+  function rollOutM(carIdM) {
     if (G.starterCar && G.starterCar !== G.car) {
-      const oldW = G.starterCar;
-      if (oldW.mesh) G.scene.remove(oldW.mesh);
-      if (G.vehicles) { const idxW = G.vehicles.indexOf(oldW); if (!(idxW < 0)) G.vehicles.splice(idxW, 1); } }
-    if (G.flags.inCar) { try { G.exitCar?.(); } catch (errW) {} }
-    const freshW = spawnVehicle(G, carIdW, HOME_GARAGE_W.x + 6, HOME_GARAGE_W.z + 8, Math.PI, { driver: 'parked' });
-    if (freshW) { G.starterCar = freshW; S.currentCarId = carIdW; }
-    refreshGarageW(); G.saveGame?.(); }
-  function buySlotW(entryW) {
-    G.money = G.money + (-entryW.price); G.garage.push(entryW.id);
-    if (!G.ownedCars.includes(entryW.id)) G.ownedCars.push(entryW.id);
-    rollOutW(entryW.id); G.banner?.(`${entryW.name} — yours`); G.audio?.play?.('buy'); }
-  function chooseSlotW(slotW) {
-    const entryW = G.garageList[slotW - 1]; if (!entryW) return;
-    if (entryW.owned) { rollOutW(entryW.id); G.toast?.(`${entryW.name} rolled out`); }
-    else if ((G.money || 0) >= entryW.price) buySlotW(entryW);
-    else G.toast?.(`Need $${entryW.price.toLocaleString('en-US')} for the ${entryW.name}`);
-    refreshGarageW(); }
-  function keyHeldW(keyW) {
-    const keysW = G.keys || {};
-    const variantsW = [keyW, keyW.toLowerCase(), keyW.toUpperCase()];
-    return variantsW.some((varW) => !!keysW[varW]); }
-  function interactHeldW() { return ['KeyE', 'e'].some((codeW) => keyHeldW(codeW)); }
-  stageGiverW();
-  function incomeTickW(dt) {
+      const oldM = G.starterCar;
+      if (oldM.mesh) G.scene.remove(oldM.mesh);
+      if (G.vehicles) { const idxM = G.vehicles.indexOf(oldM); if (!(idxM < 0)) G.vehicles.splice(idxM, 1); } }
+    if (G.flags.inCar) { try { G.exitCar?.(); } catch (ignoredM) {} }
+    const freshM = spawnVehicle(G, carIdM, HOME_GARAGE_M.x + 6, HOME_GARAGE_M.z + 8, Math.PI, { driver: 'parked' });
+    if (freshM) { G.starterCar = freshM; S.currentCarId = carIdM; }
+    refreshGarageM(); G.saveGame?.(); }
+  function buySlotM(entryM) {
+    G.money = G.money + (-entryM.price); G.garage.push(entryM.id);
+    if (!G.ownedCars.includes(entryM.id)) G.ownedCars.push(entryM.id);
+    rollOutM(entryM.id); G.banner?.(`${entryM.name} — yours`); G.audio?.play?.('buy'); }
+  function chooseSlotM(slotM) {
+    const entryM = G.garageList[slotM - 1]; if (!entryM) return;
+    if (entryM.owned) { rollOutM(entryM.id); G.toast?.(`${entryM.name} rolled out`); }
+    else if ((G.money || 0) >= entryM.price) buySlotM(entryM);
+    else G.toast?.(`Need $${entryM.price.toLocaleString('en-US')} for the ${entryM.name}`);
+    refreshGarageM(); }
+  function keyHeldM(keyM) {
+    const keysM = G.keys || {};
+    const variantsM = [keyM, keyM.toLowerCase(), keyM.toUpperCase()];
+    return variantsM.some((varM) => !!keysM[varM]); }
+  function interactHeldM() { return ['KeyE', 'e'].some((codeM) => keyHeldM(codeM)); }
+  stageGiverM();
+  function incomeTickM(dt) {
     S.incomeT -= dt;
     if (S.incomeT > 0) return;
-    S.incomeT = 60; let incomeW = 0;
-    if (G.districtState) DISTRICTS.forEach((dW) => { const stW = G.districtState[dW.id]; if (stW && stW.owner === 'ronin') incomeW = incomeW + Math.round((stW.control || 0) / 10); });
-    if (incomeW > 0) { G.money = (G.money || 0) + incomeW; G.toast?.(`District income +$${incomeW}`); } }
-  function rushSpawnTickW(dt) {
+    S.incomeT = 60; let incomeM = 0;
+    if (G.districtState) { for (const dM of DISTRICTS) { const stM = G.districtState[dM.id]; if (stM && stM.owner === 'ronin') incomeM = incomeM + Math.round((stM.control || 0) / 10); } }
+    if (incomeM > 0) { G.money = (G.money || 0) + incomeM; G.toast?.(`District income +$${incomeM}`); } }
+  function rushSpawnTickM(dt) {
     if (S.chain || S.rush) return;
     S.rushTimer -= dt;
     if (S.rushTimer > 0) return;
     S.rushTimer = 90;
     if (chance(0.5)) {
-      const rushXW = pick(G.roadX) + rr(-8, 8); const rushZW = pick(G.roadZ) + rr(-8, 8);
-      S.rush = { x: THREE.MathUtils.clamp(rushXW, -620, 620), z: THREE.MathUtils.clamp(rushZW, -620, 620), t: 40 };
+      const rushXM = pick(G.roadX) + rr(-8, 8); const rushZM = pick(G.roadZ) + rr(-8, 8);
+      S.rush = { x: THREE.MathUtils.clamp(rushXM, -620, 620), z: THREE.MathUtils.clamp(rushZM, -620, 620), t: 40 };
       G.toast?.('Rush delivery — reach the pink blip in 40s for $150'); G.audio?.play?.('event'); } }
-  function rushTickW(dt, posW) {
+  function rushTickM(dt, posM) {
     if (!S.rush) return;
     S.rush.t -= dt;
-    if (!S.chain) { G.objective = { x: S.rush.x, z: S.rush.z, label: `Rush delivery — ${clockLabelW(S.rush.t)}`, letter: '$' }; showBeaconW(S.rush.x, S.rush.z, '$', '#ff4fd8'); }
-    if (7 > spanW(posW.x, posW.z, S.rush.x, S.rush.z)) {
+    if (!S.chain) { G.objective = { x: S.rush.x, z: S.rush.z, label: `Rush delivery — ${clockLabelM(S.rush.t)}`, letter: '$' }; showBeaconM(S.rush.x, S.rush.z, '$', '#ff4fd8'); }
+    if (7 > spanM(posM.x, posM.z, S.rush.x, S.rush.z)) {
       G.money = (G.money || 0) + 150; G.toast?.('Rush delivered — +$150'); G.audio?.play?.('complete');
-      S.rush = null; if (!S.chain) stageGiverW();
-    } else if (!(S.rush.t > 0)) { S.rush = null; if (!S.chain) stageGiverW(); } }
-  function giverTickW(ePressedW, posW) {
+      S.rush = null; if (!S.chain) stageGiverM();
+    } else if (!(S.rush.t > 0)) { S.rush = null; if (!S.chain) stageGiverM(); } }
+  function giverTickM(ePressedM, posM) {
     if (S.phase !== 'giver' || S.rush) return;
-    const defW = currentDefW();
-    if (!defW) return;
-    const anchorW = spotForW(defW.district);
-    const gapW = spanW(posW.x, posW.z, anchorW.x, anchorW.z);
-    if ((ePressedW && 5 > gapW) || (6 > gapW && G.flags.inCar)) {
-      if (6 > gapW) { clearGiverW(); G.showBriefing?.(defW.giver, defW.blurb); G.audio?.play?.('brief'); launchChainW(defW); } } }
-  G.updaters.push((frameW, dt) => {
-    function ringForW() {
-      const runW = S.chain;
-      if (!S.zoneRing) buildRingW(runW.type === 'drift' ? 40 : 26, runW.type === 'drift' ? 0xe879ff : 0xff5c39);
+    const defM = currentDefM();
+    if (!defM) return;
+    const anchorM = spotForM(defM.district);
+    const gapM = spanM(posM.x, posM.z, anchorM.x, anchorM.z);
+    if ((ePressedM && 5 > gapM) || (6 > gapM && G.flags.inCar)) {
+      if (6 > gapM) { clearGiverM(); G.showBriefing?.(defM.giver, defM.blurb); G.audio?.play?.('brief'); launchChainM(defM); } } }
+  G.updaters.push((frameM, dt) => {
+    function ringForM() {
+      const runM = S.chain;
+      if (!S.zoneRing) buildRingM(runM.type === 'drift' ? 40 : 26, runM.type === 'drift' ? 0xe879ff : 0xff5c39);
       return S.zoneRing; }
-    const posW = actorPtW(G);
-    const velXW = dt > 0 ? (posW.x + (-S.prevPX)) / dt : 0; const velZW = dt > 0 ? (posW.z + (-S.prevPZ)) / dt : 0;
-    S.prevPX = posW.x; S.prevPZ = posW.z;
-    const eDownW = interactHeldW(); const ePressedW = eDownW && !S.ePrev; S.ePrev = eDownW;
+    const posM = actorPtM(G);
+    const velXM = dt > 0 ? (posM.x + (-S.prevPX)) / dt : 0; const velZM = dt > 0 ? (posM.z + (-S.prevPZ)) / dt : 0;
+    S.prevPX = posM.x; S.prevPZ = posM.z;
+    const eDownM = interactHeldM(); const ePressedM = eDownM && !S.ePrev; S.ePrev = eDownM;
     if (S.beacon?.visible) { S.beacon.rotation.y = S.beacon.rotation.y + (dt * 0.8); if (S.beaconLetter) S.beaconLetter.position.y = 6.5 + (Math.sin(performance.now() * 0.003) * 0.5); }
     if (S.giverFig) S.giverFig.rotation.y = S.giverFig.rotation.y + (Math.sin(performance.now() * 0.001) * 0.0006);
-    const nearGarageW = 7 > spanW(posW.x, posW.z, HOME_GARAGE_W.x, HOME_GARAGE_W.z);
-    if (ePressedW && nearGarageW && S.phase !== 'active') { G.flags.garageOpen = !G.flags.garageOpen; if (G.flags.garageOpen) refreshGarageW(); }
-    else if (ePressedW && G.flags.garageOpen) G.flags.garageOpen = false;
+    const nearGarageM = 7 > spanM(posM.x, posM.z, HOME_GARAGE_M.x, HOME_GARAGE_M.z);
+    if (ePressedM && nearGarageM && S.phase !== 'active') { G.flags.garageOpen = !G.flags.garageOpen; if (G.flags.garageOpen) refreshGarageM(); }
+    else if (ePressedM && G.flags.garageOpen) G.flags.garageOpen = false;
     if (G.flags.garageOpen) {
-      let slotW = 1;
-      while (slotW <= 9) { const downW = keyHeldW('Digit' + slotW) || keyHeldW(String(slotW)); if (downW && !S.numPrev[slotW]) chooseSlotW(slotW); S.numPrev[slotW] = downW; slotW++; } }
-    incomeTickW(dt);
-    rushSpawnTickW(dt);
-    rushTickW(dt, posW);
-    giverTickW(ePressedW, posW);
-    const runW = S.chain;
-    if (runW) {
-      const defW = runW.m;
-      const cpW = runW.checkpoints[Math.min(runW.idx, runW.checkpoints.length - 1)];
-      const handlersW = {
+      for (let slotM = 1; slotM <= 9; slotM++) { const downM = keyHeldM('Digit' + slotM) || keyHeldM(String(slotM)); if (downM && !S.numPrev[slotM]) chooseSlotM(slotM); S.numPrev[slotM] = downM; } }
+    incomeTickM(dt); rushSpawnTickM(dt); rushTickM(dt, posM); giverTickM(ePressedM, posM);
+    const runM = S.chain;
+    if (runM) {
+      const defM = runM.m;
+      const cpM = runM.checkpoints[Math.min(runM.idx, runM.checkpoints.length - 1)];
+      const handlersM = {
         'disable': () => {
-          if (runW.target) {
-            aimObjectiveW();
-            if (G.car && 5 > spanW(G.car.x, G.car.z, runW.target.x, runW.target.z) && (G.speedKmh || 0) > 25) runW.target.health = runW.target.health + (-(22 * dt * 3));
-            G.missionProg = `Interceptor health ${Math.max(0, Math.ceil(runW.target.health))}%`; G.wanted = Math.max(3, G.wanted);
-            if (25 > runW.target.health) completeW(); } },
+          if (runM.target) {
+            aimObjectiveM();
+            if (G.car && 5 > spanM(G.car.x, G.car.z, runM.target.x, runM.target.z) && (G.speedKmh || 0) > 25) runM.target.health = runM.target.health + (-(22 * dt * 3));
+            G.missionProg = `Interceptor health ${Math.max(0, Math.ceil(runM.target.health))}%`; G.wanted = Math.max(3, G.wanted);
+            if (25 > runM.target.health) completeM(); } },
         'drift': () => {
-          const zoneW = runW.checkpoints[0]; const ringW = ringForW();
-          if (ringW) ringW.position.set(zoneW.x, groundH(zoneW.x, zoneW.z) + 0.4, zoneW.z);
-          const insideW = 40 > spanW(posW.x, posW.z, zoneW.x, zoneW.z);
-          if (insideW && G.car && G.flags.inCar && G.flags.drifting) {
-            const headVelW = Math.atan2(velXW, velZW); const slipW = Math.abs(wrapGapW(headVelW, G.car.angle)); const speedW = Math.hypot(velXW, velZW);
-            if (speedW > 4) G.driftScore = G.driftScore + (slipW * speedW * dt * 9); }
-          G.missionProg = `Drift ${Math.floor(G.driftScore).toLocaleString('en-US')} / ${runW.driftTarget.toLocaleString('en-US')}${insideW ? '' : ' — get to the zone'}`;
-          if (G.driftScore >= runW.driftTarget) completeW(); },
+          const zoneM = runM.checkpoints[0]; const ringM = ringForM();
+          if (ringM) ringM.position.set(zoneM.x, groundH(zoneM.x, zoneM.z) + 0.4, zoneM.z);
+          const insideM = 40 > spanM(posM.x, posM.z, zoneM.x, zoneM.z);
+          if (insideM && G.car && G.flags.inCar && G.flags.drifting) {
+            const headVelM = Math.atan2(velXM, velZM); const slipM = Math.abs(wrapGapM(headVelM, G.car.angle)); const speedM = Math.hypot(velXM, velZM);
+            if (speedM > 4) G.driftScore = G.driftScore + (slipM * speedM * dt * 9); }
+          G.missionProg = `Drift ${Math.floor(G.driftScore).toLocaleString('en-US')} / ${runM.driftTarget.toLocaleString('en-US')}${insideM ? '' : ' — get to the zone'}`;
+          if (G.driftScore >= runM.driftTarget) completeM(); },
         'jack': () => {
-          if (runW.stage === 'steal') {
-            aimObjectiveW(); G.missionProg = 'Steal the marked car';
-            if (runW.target && G.car === runW.target) { runW.stage = 'deliver'; aimObjectiveW(); }
+          if (runM.stage === 'steal') {
+            aimObjectiveM(); G.missionProg = 'Steal the marked car';
+            if (runM.target && G.car === runM.target) { runM.stage = 'deliver'; aimObjectiveM(); }
           } else {
             G.missionProg = 'Deliver it to the HQ garage';
-            if (8 > spanW(posW.x, posW.z, HOME_GARAGE_W.x, HOME_GARAGE_W.z) && G.car === runW.target) completeW(); } },
+            if (8 > spanM(posM.x, posM.z, HOME_GARAGE_M.x, HOME_GARAGE_M.z) && G.car === runM.target) completeM(); } },
         'hold': () => {
-          const zoneW = runW.checkpoints[0]; const ringW = ringForW();
-          if (ringW) ringW.position.set(zoneW.x, groundH(zoneW.x, zoneW.z) + 0.4, zoneW.z);
-          const insideW = 26 > spanW(posW.x, posW.z, zoneW.x, zoneW.z);
-          if (insideW) runW.holdT = runW.holdT + dt;
+          const zoneM = runM.checkpoints[0]; const ringM = ringForM();
+          if (ringM) ringM.position.set(zoneM.x, groundH(zoneM.x, zoneM.z) + 0.4, zoneM.z);
+          const insideM = 26 > spanM(posM.x, posM.z, zoneM.x, zoneM.z);
+          if (insideM) runM.holdT = runM.holdT + dt;
           G.wanted = Math.max(2, G.wanted);
-          (runW.rivals || []).forEach((hvW) => { const cellW = { i: 0 }; driveVehW(G, hvW, [{ x: posW.x, z: posW.z }], cellW, dt, 7); });
-          G.missionProg = `Hold the zone ${clockLabelW(45 + (-runW.holdT))}`;
-          if (runW.holdT >= 45) completeW(); },
+          const rivalsM = runM.rivals || [];
+          for (const hvM of rivalsM) { const cellM = { i: 0 }; driveVehM(G, hvM, [{ x: posM.x, z: posM.z }], cellM, dt, 7); }
+          G.missionProg = `Hold the zone ${clockLabelM(45 + (-runM.holdT))}`;
+          if (runM.holdT >= 45) completeM(); },
       };
-      const chosenW = handlersW[runW.type];
-      if (chosenW) chosenW();
+      const chosenM = handlersM[runM.type];
+      if (chosenM) chosenM();
       else {
-        if (runW.timer > 0 && runW.type !== 'timetrial') { runW.timer -= dt; if (!(runW.timer > 0)) { failChainW('Out of time — talk to the giver again'); return; } }
-        if (runW.type === 'timetrial') runW.timer = runW.timer + dt;
-        if (runW.rival) {
-          const capW = (G.car?.spec?.topSpeed || 160) / 3.6 * 0.62;
-          const myPaceW = Math.max(6, Math.hypot(velXW, velZW)); const rubberW = THREE.MathUtils.clamp(myPaceW * (runW.rubberF || 1), 6, capW * 1.5);
-          const cellW = { i: runW.rivalIdx }; driveVehW(G, runW.rival, runW.checkpoints, cellW, dt, rubberW); runW.rivalIdx = cellW.i;
-          if (runW.rivalIdx >= runW.checkpoints.length) { failChainW('You lost the race — run it back'); return; } }
-        if (cpW && 9 > spanW(posW.x, posW.z, cpW.x, cpW.z)) {
-          runW.idx += 1; G.audio?.play?.('checkpoint');
-          if (runW.idx >= runW.checkpoints.length) {
-            if (runW.type === 'timetrial' && runW.timer > runW.par) { failChainW(`Too slow — par ${clockLabelW(runW.par)}`); return; }
-            completeW(); return; }
-          aimObjectiveW(); }
-        const totalW = runW.checkpoints.length;
-        if (runW.type === 'sprint' || runW.type === 'race' || runW.type === 'pinkslip') G.missionProg = `Checkpoint ${Math.min(runW.idx + 1, totalW)}/${totalW} · ${clockLabelW(runW.timer)}`;
-        else if (runW.type === 'timetrial') G.missionProg = `Checkpoint ${Math.min(runW.idx + 1, totalW)}/${totalW} · ${clockLabelW(runW.timer)} / par ${clockLabelW(runW.par)}`;
-        else if (runW.type === 'delivery') G.missionProg = `Deliver in ${clockLabelW(runW.timer)} — keep it clean`;
+        if (runM.timer > 0 && runM.type !== 'timetrial') { runM.timer -= dt; if (!(runM.timer > 0)) { failChainM('Out of time — talk to the giver again'); return; } }
+        if (runM.type === 'timetrial') runM.timer = runM.timer + dt;
+        if (runM.rival) {
+          const capM = (G.car?.spec?.topSpeed || 160) / 3.6 * 0.62;
+          const myPaceM = Math.max(6, Math.hypot(velXM, velZM)); const rubberM = THREE.MathUtils.clamp(myPaceM * (runM.rubberF || 1), 6, capM * 1.5);
+          const cellM = { i: runM.rivalIdx }; driveVehM(G, runM.rival, runM.checkpoints, cellM, dt, rubberM); runM.rivalIdx = cellM.i;
+          if (runM.rivalIdx >= runM.checkpoints.length) { failChainM('You lost the race — run it back'); return; } }
+        if (cpM && 9 > spanM(posM.x, posM.z, cpM.x, cpM.z)) {
+          runM.idx += 1; G.audio?.play?.('checkpoint');
+          if (runM.idx >= runM.checkpoints.length) {
+            if (runM.type === 'timetrial' && runM.timer > runM.par) { failChainM(`Too slow — par ${clockLabelM(runM.par)}`); return; }
+            completeM(); return; }
+          aimObjectiveM(); }
+        const totalM = runM.checkpoints.length;
+        if (runM.type === 'sprint' || runM.type === 'race' || runM.type === 'pinkslip') G.missionProg = `Checkpoint ${Math.min(runM.idx + 1, totalM)}/${totalM} · ${clockLabelM(runM.timer)}`;
+        else if (runM.type === 'timetrial') G.missionProg = `Checkpoint ${Math.min(runM.idx + 1, totalM)}/${totalM} · ${clockLabelM(runM.timer)} / par ${clockLabelM(runM.par)}`;
+        else if (runM.type === 'delivery') G.missionProg = `Deliver in ${clockLabelM(runM.timer)} — keep it clean`;
         else G.missionProg = 'Reach the beacon'; }
-      if (S.chain !== runW) return; }
+      if (S.chain !== runM) return; }
   });
 }

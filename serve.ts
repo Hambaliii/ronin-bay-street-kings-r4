@@ -1,55 +1,74 @@
-// Local playtest server, deliberately small
-// Requests stay confined to the game folder and anything that
-// tries to climb above that folder gets turned away
-// Run it under a recent Node with no build step, then open the
-// printed address; it is meant for a dev machine, not the open
-// internet
-import { createServer } from 'node:http'; import { statSync, createReadStream } from 'node:fs';
-import { fileURLToPath } from 'node:url'; import { extname, join, normalize, resolve, sep } from 'node:path';
-const rootForGame = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-function pickPort() {
-  const tailArgs = process.argv.slice(2);
-  const flagPos = tailArgs.indexOf('--port');
-  const rawGiven = (flagPos === -1) ? undefined : tailArgs[(flagPos + 1)];
-  const numericGiven = (rawGiven === undefined) ? 8080 : Number(rawGiven);
-  const usableGiven = Number.isInteger(numericGiven) && (numericGiven > 0) && (65536 > numericGiven);
-  const portOut = usableGiven ? numericGiven : 8080;
-  return portOut; }
-const serverPort = pickPort();
-const MIME_TABLE: Record<string, string> = {};
-MIME_TABLE['.html'] = 'text/html; charset=utf-8';
-MIME_TABLE['.js'] = 'text/javascript; charset=utf-8'; MIME_TABLE['.mjs'] = 'text/javascript; charset=utf-8';
-MIME_TABLE['.css'] = 'text/css; charset=utf-8'; MIME_TABLE['.json'] = 'application/json; charset=utf-8';
-MIME_TABLE['.png'] = 'image/png'; MIME_TABLE['.jpg'] = 'image/jpeg'; MIME_TABLE['.jpeg'] = 'image/jpeg';
-MIME_TABLE['.gif'] = 'image/gif'; MIME_TABLE['.webp'] = 'image/webp'; MIME_TABLE['.svg'] = 'image/svg+xml';
-MIME_TABLE['.ico'] = 'image/x-icon'; MIME_TABLE['.woff2'] = 'font/woff2';
-MIME_TABLE['.glb'] = 'model/gltf-binary'; MIME_TABLE['.gltf'] = 'model/gltf+json';
-MIME_TABLE['.bin'] = 'application/octet-stream'; MIME_TABLE['.wasm'] = 'application/wasm';
-MIME_TABLE['.wav'] = 'audio/wav'; MIME_TABLE['.mp3'] = 'audio/mpeg'; MIME_TABLE['.ogg'] = 'audio/ogg';
-MIME_TABLE['.txt'] = 'text/plain; charset=utf-8';
-function mimeFor(pathGiven: string): string {
-  const extGiven = extname(pathGiven).toLowerCase();
-  const mimeOut = MIME_TABLE[extGiven] ?? 'application/octet-stream';
-  return mimeOut; }
-function refuseWith(responseGiven: any, codeGiven: number, bodyGiven: string): void {
-  responseGiven.writeHead(codeGiven).end(bodyGiven); }
-function handleRequest(requestGiven: any, responseGiven: any): void {
-  const urlParsed = new URL(requestGiven.url ?? '/', 'http://localhost');
-  let routeDecoded: string;
-  try { routeDecoded = decodeURIComponent(urlParsed.pathname); } catch { refuseWith(responseGiven, 400, 'bad request'); return; }
-  const routeFile = routeDecoded.endsWith('/') ? (routeDecoded + 'index.html') : routeDecoded;
-  const targetAbs = resolve(join(rootForGame, normalize(routeFile)));
-  const rootItself = (targetAbs === rootForGame);
-  const insideRoot = targetAbs.startsWith(rootForGame + sep);
-  if (!rootItself && !insideRoot) { refuseWith(responseGiven, 403, 'forbidden'); return; }
-  let sizeFound: number;
+// Tiny local server for playtesting
+// Every request is confined to the game folder, and a path
+// that tries to escape above that folder is refused
+// Run it on a recent Node with no build step and open the
+// address it prints; it targets a dev machine and is not
+// meant to face the open internet
+import { createServer } from 'node:http';
+import { statSync, createReadStream } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { extname, join, normalize, resolve, sep } from 'node:path';
+const gameRoot = resolve(fileURLToPath(new URL('./game', import.meta.url)));
+function choosePort(): number {
+  const argvTail = process.argv.slice(2);
+  const flagPos = argvTail.indexOf('--port');
+  const rawHeld = (flagPos === -1) ? undefined : argvTail[flagPos + 1];
+  const numericHeld = (rawHeld === undefined) ? 8080 : Number(rawHeld);
+  const usableHeld = Number.isInteger(numericHeld) && (numericHeld > 0) && (65536 > numericHeld);
+  return usableHeld ? numericHeld : 8080; }
+const serverPort = choosePort();
+const MIME_BY_EXT: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+  '.bin': 'application/octet-stream',
+  '.wasm': 'application/wasm',
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.txt': 'text/plain; charset=utf-8',
+};
+function mimeFor(pathArg: string): string {
+  const extHeld = extname(pathArg).toLowerCase();
+  return MIME_BY_EXT[extHeld] ?? 'application/octet-stream'; }
+function sendPlain(responseArg: any, codeHeld: number, bodyHeld: string): void {
+  responseArg.writeHead(codeHeld).end(bodyHeld); }
+function routeFromRequest(requestArg: any): string | null {
+  const urlHeld = new URL(requestArg.url ?? '/', 'http://localhost');
+  let decodedHeld: string;
+  try { decodedHeld = decodeURIComponent(urlHeld.pathname); } catch { return null; }
+  return decodedHeld.endsWith('/') ? (decodedHeld + 'index.html') : decodedHeld; }
+function sizeIfFile(targetAbs: string): number | null {
   try {
-    const statNow = statSync(targetAbs);
-    if (!statNow.isFile()) throw new Error('not a file');
-    sizeFound = statNow.size;
-  } catch { refuseWith(responseGiven, 404, 'not found'); return; }
-  const headersNow = { 'content-type': mimeFor(targetAbs), 'content-length': sizeFound, 'cache-control': 'no-store' };
-  responseGiven.writeHead(200, headersNow);
-  createReadStream(targetAbs).pipe(responseGiven); }
-const serverBuilt = createServer(handleRequest);
-serverBuilt.listen(serverPort, '127.0.0.1', () => { console.log(`game/ is on http://localhost:${serverPort}`); });
+    const statHeld = statSync(targetAbs);
+    if (statHeld.isFile()) return statHeld.size;
+    throw new Error('not a file');
+  } catch { return null; } }
+function serveRequest(requestArg: any, responseArg: any): void {
+  const routeHeld = routeFromRequest(requestArg);
+  if (routeHeld === null) { sendPlain(responseArg, 400, 'bad request'); return; }
+  const targetAbs = resolve(join(gameRoot, normalize(routeHeld)));
+  const confinedHere = (targetAbs === gameRoot) || targetAbs.startsWith(gameRoot + sep);
+  if (!confinedHere) { sendPlain(responseArg, 403, 'forbidden'); return; }
+  const sizeHeld = sizeIfFile(targetAbs);
+  if (sizeHeld === null) { sendPlain(responseArg, 404, 'not found'); return; }
+  const headersHeld: Record<string, unknown> = {};
+  headersHeld['content-type'] = mimeFor(targetAbs);
+  headersHeld['content-length'] = sizeHeld;
+  headersHeld['cache-control'] = 'no-store';
+  responseArg.writeHead(200, headersHeld);
+  createReadStream(targetAbs).pipe(responseArg); }
+const serverHeld = createServer(serveRequest);
+serverHeld.listen(serverPort, '127.0.0.1', () => { console.log(`game/ is on http://localhost:${serverPort}`); });

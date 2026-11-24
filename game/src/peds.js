@@ -3,841 +3,578 @@ import { chance, pick, ri, rr } from './random.js';
 import { groundH } from './world.js';
 import { animateFigure, makeFigure } from './player.js';
 import { loadHeroAsset } from './assets.js';
-// Ronin Bay crowd logic sits in this module: the first wave of
-// walkers, the standing chat rings, the kerb crossers, the later
-// top-up figures around busy spots, and the horn startle.
-const SKIN_SHADES = [0xf0c8a0, 0xe8b48c, 0xc98d64, 0xb97a4e, 0x8a5a34];
-const HAIR_STYLES = ['black topknot', 'red ponytail', 'violet bob', 'buzz', 'silver undercut', 'slick black', 'cap', 'long', 'bun'];
-const HAIR_SHADES = [0x14100e, 0x8c2f1d, 0x6a3fa0, 0x2a2a2e, 0xc9ccd4, 0x1a1512, 0x24406e, 0x3a2415, 0x101010];
-const TOP_STYLES = ['tank', 'hoodie', 'jacket'];
-const TOP_SHADES = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a, 0xff8ab0, 0x57b7ff, 0x8a5a34, 0xffb7d5, 0xa8e6cf, 0xfff0b3];
-const LEG_SHADES = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
-// Model backed citizens draw spawn slots out of the table below,
-// and one residue class is intentionally left unclaimed.
-const MODEL_YAW = 0;
-const MODEL_ROWS = [
-  { offset: 0, every: 5, key: 'citizenWoman' },
-  { offset: 1, every: 5, key: 'citizenTeen2' },
-  { offset: 2, every: 5, key: 'citizenOffice' },
-  { offset: 3, every: 5, key: 'citizenTeen' },
-];
-// Teen copies get one flat colour; textured rows never do.
-const TEEN_COLORS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a, 0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
-function shapeHasXZ(probeShape) {
-  const xOk = probeShape && Number.isFinite(probeShape.x);
-  const zOk = probeShape && Number.isFinite(probeShape.z);
-  if (xOk && zOk) return { x: probeShape.x, z: probeShape.z };
-  return undefined;
-}
-function rowForSpawn(spawnIdx) {
-  const finiteFlag = Number.isFinite(spawnIdx);
-  if (!finiteFlag) return null;
-  let hitRow = null;
-  let scanIdx = 0;
-  while (!hitRow && (MODEL_ROWS.length > scanIdx)) {
-    const rowEntry = MODEL_ROWS[scanIdx];
-    scanIdx = (1 + scanIdx);
-    const offVal = ((rowEntry || {}).offset || 0);
-    const rowClaims = rowEntry && (rowEntry.every > 0) && (offVal === (spawnIdx % rowEntry.every));
-    if (rowClaims) hitRow = rowEntry;
-  }
-  return hitRow;
-}
-function rollLook() {
-  const hairIdx = ri(0, HAIR_STYLES.length - 1);
-  const hairDuo = [HAIR_STYLES[hairIdx], HAIR_SHADES[hairIdx]];
-  const clothes = {
-    top: pick(TOP_STYLES),
-    topColor: pick(TOP_SHADES),
-    trim: pick(TOP_SHADES),
-    pants: chance(0.6) ? 'jeans' : 'cargo',
-    pantsColor: pick(LEG_SHADES),
-    shoes: pick([0xffffff, 0x222222, 0xd23b3b, 0x2e6fb7]),
-  };
-  const lookRec = {
-    name: 'Pedestrian',
-    skin: pick(SKIN_SHADES),
-    hair: hairDuo[0],
-    hairColor: hairDuo[1],
-    h: rr(0.9, 1.03),
-    build: rr(0.38, 0.7),
-    outfit: clothes,
-  };
-  return lookRec;
-}
-function scoreCandidate(gmRef, fromX, fromZ, isVert, lineCoord, offVal, alongCoord) {
-  const candOut = {};
-  candOut.vertical = isVert;
-  candOut.line = lineCoord;
-  candOut.off = offVal;
-  candOut.x = isVert ? (offVal + lineCoord) : alongCoord;
-  candOut.z = isVert ? alongCoord : (offVal + lineCoord);
-  const dxVal = candOut.x - fromX;
-  const dzVal = candOut.z - fromZ;
-  candOut.dist = Math.hypot(dxVal, dzVal);
-  return candOut;
-}
-function findPavementSpot(gmRef, fromX, fromZ, nearCap, farCap) {
-  let attemptsLeft = 24;
-  while (attemptsLeft > 0) {
-    attemptsLeft = (attemptsLeft - 1);
-    const isVert = chance(0.5);
-    const lineCoord = isVert ? pick(gmRef.roadX) : pick(gmRef.roadZ);
-    const offVal = ((chance(0.5) ? 1 : -1) * -17.2);
-    const candOut = scoreCandidate(gmRef, fromX, fromZ, isVert, lineCoord, offVal, rr(-640, 640));
-    const inBand = (!(nearCap > candOut.dist)) && (!(candOut.dist > farCap));
-    if (inBand) {
-      const spotOut = {};
-      spotOut.vertical = candOut.vertical;
-      spotOut.line = candOut.line;
-      spotOut.off = candOut.off;
-      spotOut.x = candOut.x;
-      spotOut.z = candOut.z;
-      return spotOut;
-    }
-  }
-  const fbLine = pick(gmRef.roadX);
-  const fbSpot = { vertical: true, line: fbLine, off: 17.2 };
-  fbSpot.x = (fbLine + 17.2);
-  fbSpot.z = rr(-300, 300);
-  return fbSpot;
-}
-// Landmark payloads show up wrapped in several shapes, so this
-// probe walks every plausible carrier without trusting any.
-function probeLandmark(markIn) {
-  try {
-    if (!markIn) return null;
-    const carriers = [markIn, markIn.pos, markIn.position, markIn.at];
-    let carrierIdx = 0;
-    while (carriers.length > carrierIdx) {
-      const carrierItem = carriers[carrierIdx];
-      carrierIdx = (carrierIdx + 1);
-      const hitRec = shapeHasXZ(carrierItem);
-      if (undefined !== hitRec) return hitRec;
-    }
-  } catch (swallowed) {}
-  return null;
-}
-function findMarket(gmRef) {
+// All of Ronin Bay's foot traffic is directed from this module:
+// the opening strollers, the gossip circles standing at kerbs,
+// the crossing pedestrians, the extra crowds layered in around
+// busy corners, and the flinch that a horn blast sets off.
+const SKIN_TONES = [0xf0c8a0, 0xe8b48c, 0xc98d64,
+  0xb97a4e, 0x8a5a34];
+const HAIR_CUTS = ['black topknot', 'red ponytail', 'violet bob', 'buzz', 'silver undercut',
+  'slick black', 'cap', 'long', 'bun'];
+const HAIR_TONES = [0x14100e, 0x8c2f1d, 0x6a3fa0, 0x2a2a2e, 0xc9ccd4,
+  0x1a1512, 0x24406e, 0x3a2415, 0x101010];
+const TOP_KINDS = ['tank', 'hoodie', 'jacket'];
+const TOP_TONES = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a,
+  0xff8ab0, 0x57b7ff, 0x8a5a34, 0xffb7d5, 0xa8e6cf, 0xfff0b3];
+const LEG_TONES = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
+// Model-backed citizens draw their spawn slot from the table
+// below; one residue class is deliberately left unclaimed, so
+// spawns landing on it keep their procedural figures instead.
+const GLB_YAW = 0;
+const GLB_SLOTS = [{ offset: 0, every: 5, key: 'citizenWoman' },
+  { offset: 1, every: 5, key: 'citizenTeen2' }, { offset: 2, every: 5, key: 'citizenOffice' },
+  { offset: 3, every: 5, key: 'citizenTeen' }];
+const TEEN_PAINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a,
+  0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
+// Teen copies are repainted in one flat colour; textured rows
+// never are, which is what the paint list above is for.
+function probeXZShape(carrierArg) {
+  if (!carrierArg) return undefined;
+  const pairOk = Number.isFinite(carrierArg.x) && Number.isFinite(carrierArg.z);
+  if (!pairOk) return undefined;
+  const foundPair = {}; foundPair.x = carrierArg.x; foundPair.z = carrierArg.z;
+  return foundPair; }
+function slotRowFor(spawnIdx) {
+  if (!Number.isFinite(spawnIdx)) return null;
+  let hitRow = null; let rowPos = 0;
+  while (GLB_SLOTS.length > rowPos) { const slotEntry = GLB_SLOTS[rowPos]; rowPos = (1 + rowPos);
+    if (hitRow) continue;
+    if (!slotEntry) continue;
+    const offNum = (slotEntry.offset || 0);
+    const matches = (slotEntry.every > 0) && (offNum === (spawnIdx % slotEntry.every));
+    if (matches) hitRow = slotEntry; }
+  return hitRow; }
+function buildLook() {
+  const cutIdx = ri(0, HAIR_CUTS.length - 1);
+  const cutPair = [HAIR_CUTS[cutIdx], HAIR_TONES[cutIdx]];
+  const kitRec = {}; kitRec.top = pick(TOP_KINDS);
+  kitRec.topColor = pick(TOP_TONES); kitRec.trim = pick(TOP_TONES);
+  kitRec.pants = chance(0.6) ? 'jeans' : 'cargo';
+  kitRec.pantsColor = pick(LEG_TONES);
+  kitRec.shoes = pick([0xffffff, 0x222222, 0xd23b3b, 0x2e6fb7]);
+  const styleRec = {}; styleRec.name = 'Pedestrian';
+  styleRec.skin = pick(SKIN_TONES);
+  styleRec.hair = cutPair.at(0); styleRec.hairColor = cutPair.at(1);
+  styleRec.h = rr(0.9, 1.03); styleRec.build = rr(0.38, 0.7);
+  styleRec.outfit = kitRec;
+  return styleRec; }
+function huntPavement(gmArg, srcX, srcZ, nearCap, farCap) {
+  let triesLeft = 24;
+  while (triesLeft > 0) { triesLeft = (triesLeft - 1);
+    const runsVertical = chance(0.5);
+    const linePick = runsVertical ? pick(gmArg.roadX) : pick(gmArg.roadZ);
+    const sideOff = ((chance(0.5) ? 1 : -1) * -17.2);
+    const alongPick = rr(-640, 640);
+    // Candidate scoring used to sit in a helper of its own; it
+    // is inlined here now, where the candidate itself is built.
+    const tryRec = { vertical: runsVertical, line: linePick, off: sideOff };
+    tryRec.x = runsVertical ? (sideOff + linePick) : alongPick;
+    tryRec.z = runsVertical ? alongPick : (sideOff + linePick);
+    const gapX = (tryRec.x + -srcX); const gapZ = (tryRec.z + -srcZ);
+    tryRec.dist = Math.hypot(gapX, gapZ);
+    const inBand = (tryRec.dist >= nearCap) && (farCap >= tryRec.dist);
+    if (inBand) { const spotOut = {};
+      spotOut.vertical = tryRec.vertical; spotOut.line = tryRec.line;
+      spotOut.off = tryRec.off; spotOut.x = tryRec.x; spotOut.z = tryRec.z;
+      return spotOut; } }
+  const fbSpot = {}; fbSpot.vertical = true;
+  fbSpot.line = pick(gmArg.roadX); fbSpot.off = 17.2;
+  fbSpot.x = (fbSpot.line + 17.2); fbSpot.z = rr(-300, 300);
+  return fbSpot; }
+// Landmark payloads arrive wrapped in assorted shapes, so this
+// scan pokes every plausible carrier and trusts none of them.
+function scanLandmark(markArg) {
+  try { if (!markArg) return null;
+    const carriersList = [markArg, markArg.pos, markArg.position, markArg.at];
+    let probePos = 0;
+    while (carriersList.length > probePos) { const carrierNode = carriersList[probePos]; probePos = (probePos + 1);
+      const hitRec = probeXZShape(carrierNode);
+      if (hitRec !== undefined) return hitRec; } } catch (muteErr) {}
+  return null; }
+function locateMarket(gmArg) {
   let foundPt = null;
-  try {
-    const marketRec = gmRef.landmarks && gmRef.landmarks.market;
-    if (marketRec) foundPt = probeLandmark(marketRec);
-  } catch (swallowed) {}
-  return foundPt;
-}
-export function initPeds(gameState) {
-  gameState.peds = [];
-  const WAVE_COUNT = 44;
-  const modelCache = {};
-  function tintTeenClone(rootIn, paintIn) {
-    rootIn.traverse((meshNode) => {
-      const paintable = meshNode && meshNode.isMesh && meshNode.material && meshNode.material.color;
-      if (paintable) {
-        meshNode.material = meshNode.material.clone();
-        meshNode.material.color.setHex(paintIn);
-      }
-    });
-  }
-  function shadowize(rootIn) {
-    rootIn.traverse((meshNode) => { if (meshNode && meshNode.isMesh) meshNode.castShadow = true; });
-  }
-  function adoptModel(walker) {
-    try {
-      if (!walker || walker.figIsGlb || !walker.citizenKey) return;
-      const tplIn = modelCache[walker.citizenKey];
-      if (!tplIn) return;
-      const wrapNode = new THREE.Group();
-      wrapNode.rotation.y = MODEL_YAW;
-      const cloneNode = tplIn.clone(true);
-      if (walker.citizenKey === 'citizenTeen') {
-        const paintSel = TEEN_COLORS[walker.idx % TEEN_COLORS.length];
-        tintTeenClone(cloneNode, paintSel);
-      }
-      shadowize(wrapNode);
-      wrapNode.add(cloneNode);
-      if (walker.visual) walker.fig.remove(walker.visual);
-      walker.fig.add(wrapNode);
-      walker.visual = wrapNode;
-      walker.glbInner = wrapNode;
-      walker.figIsGlb = true;
-    } catch (swallowed) {}
-  }
-  MODEL_ROWS.forEach((rowEntry) => {
-    try {
-      const loadJob = loadHeroAsset(rowEntry.key);
-      if (loadJob && ('function' === typeof loadJob.then)) {
-        loadJob.then((tplIn) => {
-          try {
-            if (!tplIn) return;
-            modelCache[rowEntry.key] = tplIn;
-            gameState.peds.forEach((walker) => adoptModel(walker));
-          } catch (swallowed) {}
-        }).catch(() => {});
-      }
-    } catch (swallowed) {}
-  });
-  function dropOnPavement(walker, spotIn) {
-    walker.x = spotIn.x;
-    walker.z = spotIn.z;
-    walker.vertical = spotIn.vertical;
-    walker.line = spotIn.line;
-    walker.off = spotIn.off;
-    walker.dir = chance(0.5) ? 1 : -1;
-    const dirIsPos = (walker.dir > 0);
-    walker.angle = walker.vertical ? (dirIsPos ? 0 : Math.PI) : (dirIsPos ? Math.PI / 2 : -Math.PI / 2);
-  }
-  function ringTheta(slotIdx, ringTotal) {
+  try { const marketRec = (gmArg.landmarks || {}).market;
+    if (marketRec) foundPt = scanLandmark(marketRec); } catch (muteErr) {}
+  return foundPt; }
+export function initPeds(game) {
+  game.peds = [];
+  const WAVE_TOTAL = 44;
+  const glbCache = {};
+  function paintTeen(rootArg, paintVal) {
+    rootArg.traverse((meshNode) => {
+      if (!(meshNode && meshNode.isMesh)) return;
+      if (!(meshNode.material && meshNode.material.color)) return;
+      meshNode.material = meshNode.material.clone();
+      meshNode.material.color.setHex(paintVal); }); }
+  function armShadows(rootArg) {
+    rootArg.traverse((meshNode) => {
+      if (meshNode && meshNode.isMesh) meshNode.castShadow = true; }); }
+  function graftModel(nomad) {
+    try { if (!nomad || nomad.figIsGlb || !nomad.citizenKey) return;
+      const tplNode = glbCache[nomad.citizenKey];
+      if (!tplNode) return;
+      const wrapNode = new THREE.Group(); wrapNode.rotation.y = GLB_YAW;
+      const cloneNode = tplNode.clone(true);
+      if ('citizenTeen' === nomad.citizenKey) { const paintSel = TEEN_PAINTS[(nomad.idx % TEEN_PAINTS.length)];
+        paintTeen(cloneNode, paintSel); }
+      armShadows(wrapNode); wrapNode.add(cloneNode);
+      if (nomad.visual) nomad.fig.remove(nomad.visual);
+      nomad.fig.add(wrapNode); nomad.visual = wrapNode;
+      nomad.glbInner = wrapNode; nomad.figIsGlb = true; } catch (muteErr) {} }
+  GLB_SLOTS.forEach((slotEntry) => {
+    try { const loadJob = loadHeroAsset(slotEntry.key);
+      if (!loadJob || ('function' !== typeof loadJob.then)) return;
+      loadJob.then((tplNode) => {
+        try { if (!tplNode) return;
+          glbCache[slotEntry.key] = tplNode;
+          game.peds.forEach((nomad) => graftModel(nomad)); } catch (muteErr) {}
+      }).catch(() => {}); } catch (muteErr) {} });
+  function placeOnPavement(nomad, spotIn) {
+    nomad.x = spotIn.x; nomad.z = spotIn.z;
+    nomad.vertical = spotIn.vertical; nomad.line = spotIn.line; nomad.off = spotIn.off;
+    nomad.dir = chance(0.5) ? 1 : -1;
+    const headingPositive = (nomad.dir > 0);
+    if (nomad.vertical) nomad.angle = headingPositive ? 0 : Math.PI;
+    else nomad.angle = headingPositive ? (Math.PI / 2) : (-Math.PI / 2); }
+  function ringThetaAmt(slotNo, ringSize) {
     const jitterAmt = rr(-0.25, 0.25);
-    const sweepAmt = (slotIdx / ringTotal) * Math.PI * 2;
-    return (sweepAmt + jitterAmt);
-  }
-  function dropInRing(walker, hubX, hubZ, slotIdx, ringTotal) {
-    const thetaAmt = ringTheta(slotIdx, ringTotal);
-    walker.x = hubX + (Math.sin(thetaAmt) * 1.25);
-    walker.z = hubZ + (Math.cos(thetaAmt) * 1.25);
-    walker.chatCx = hubX;
-    walker.chatCz = hubZ;
-    walker.chat = true;
-    walker.idle = true;
-    walker.angle = Math.atan2(hubX - walker.x, hubZ - walker.z);
-  }
-  function planCrossing(walker, cornerX, cornerZ, signX, signZ, snapIt) {
-    walker.mode = 'cross';
-    walker.crosser = true;
-    const kerbX = cornerX + (signX * 17.2);
-    const kerbZ = cornerZ + (signZ * 17.2);
-    if (snapIt) { walker.x = kerbX; walker.z = kerbZ; }
-    const farAway = (Math.hypot(kerbX - walker.x, kerbZ - walker.z) > 2);
-    const crossPlan = {
-      stage: farAway ? 'toCorner' : 'toCurb',
-      cx: cornerX,
-      cz: cornerZ,
-      sx: signX,
-      sz: signZ,
-      waitT: 0,
-      tx: farAway ? kerbX : (cornerX + (signX * 17.2)),
-      tz: farAway ? kerbZ : (cornerZ + (signZ * 9)),
-      faceAngle: Math.atan2(-signX, 0),
-    };
-    walker.cross = crossPlan;
-    walker.angle = Math.atan2(crossPlan.tx - walker.x, crossPlan.tz - walker.z);
-  }
-  function rebuildWalkHere(walker) {
-    let bestLine = gameState.roadX[0];
-    let bestGap = Infinity;
-    gameState.roadX.forEach((lineCoord) => {
-      const gapVal = Math.abs(walker.x - lineCoord);
-      if (bestGap > gapVal) { bestGap = gapVal; bestLine = lineCoord; }
-    });
-    walker.vertical = true;
-    walker.line = bestLine;
-    walker.off = THREE.MathUtils.clamp(walker.x - bestLine, -17.2, 17.2);
-    if (13 > Math.abs(walker.off)) walker.off = (17.2 * ((walker.off < 0) ? -1 : 1));
-    walker.x = (walker.off + bestLine);
-    walker.dir = chance(0.5) ? 1 : -1;
-    walker.mode = 'walk';
-  }
-  function modelBob(walker, bobVal, swayVal, leanVal, phaseVal) {
-    walker.glbInner.position.y = Math.abs(Math.sin(phaseVal)) * bobVal;
-    walker.glbInner.rotation.z = Math.sin(phaseVal) * swayVal;
-    walker.glbInner.rotation.x = leanVal;
-  }
-  function walkVisual(walker, amtIn) {
-    const usesModel = Boolean(walker.figIsGlb && walker.glbInner);
-    if (!usesModel) { try { animateFigure(walker.visual, walker.phase, amtIn); } catch (swallowed) {} return; }
-    try { modelBob(walker, (0.04 * (amtIn + amtIn)), 0.04, 0.05, walker.phase); } catch (swallowed) {}
-  }
-  function idleVisual(walker) {
-    const usesModel = Boolean(walker.figIsGlb && walker.glbInner);
-    if (!usesModel) { try { animateFigure(walker.visual, walker.sway * 0.7, 0.12); } catch (swallowed) {} return; }
-    try {
-      walker.glbInner.position.y = Math.sin((walker.sway * 1.5) + walker.idx) * 0.006;
-      walker.glbInner.rotation.z = Math.sin((walker.sway * 0.9) + walker.idx) * 0.01;
-      walker.glbInner.rotation.x = 0;
-    } catch (swallowed) {}
-  }
-  function fillWalkerDefaults(walker, figureNode, idxVal, keyIn) {
-    walker.fig = null;
-    walker.visual = figureNode;
-    walker.glbInner = null;
-    walker.figIsGlb = false;
-    walker.citizenKey = keyIn;
-    walker.idx = idxVal;
-    walker.angle = 0;
-    walker.x = 0;
-    walker.z = 0;
-    walker.speed = rr(1.2, 1.8);
-    walker.phase = rr(0, 10);
-    walker.dir = 1;
-    walker.vertical = true;
-    walker.line = 0;
-    walker.off = 17.2;
-    walker.idle = false;
-    walker.panicT = 0;
-    walker.sway = rr(0, 6);
-    walker.fleeDir = null;
-    walker.startleT = 0;
-    walker.fleeT = 0;
-    walker.chat = false;
-    walker.mode = 'walk';
-    walker.follow = null;
-    walker.scattered = false;
-    walker.chatGroup = null;
-    walker.crosser = false;
-    walker.cross = null;
-    walker.marketPlaced = false;
-    return walker;
-  }
-  function freshWalkerShell(figureNode, idxVal, keyIn) {
-    const shellNode = new THREE.Group();
-    shellNode.add(figureNode);
-    const walker = fillWalkerDefaults({}, figureNode, idxVal, keyIn);
-    walker.fig = shellNode;
-    return walker;
-  }
+    const sweepAmt = ((slotNo / ringSize) * Math.PI) * 2;
+    return (jitterAmt + sweepAmt); }
+  function placeInRing(nomad, hubX, hubZ, slotNo, ringSize) {
+    const thetaAmt = ringThetaAmt(slotNo, ringSize);
+    nomad.x = hubX + (Math.sin(thetaAmt) * 1.25);
+    nomad.z = hubZ + (Math.cos(thetaAmt) * 1.25);
+    nomad.chatCx = hubX; nomad.chatCz = hubZ;
+    nomad.chat = true; nomad.idle = true;
+    nomad.angle = Math.atan2((hubX + -nomad.x), (hubZ + -nomad.z)); }
+  function stageCrossing(nomad, cornerX, cornerZ, signX, signZ, snapFlag) {
+    nomad.mode = 'cross'; nomad.crosser = true;
+    const kerbX = (signX * 17.2) + cornerX;
+    const kerbZ = (signZ * 17.2) + cornerZ;
+    if (snapFlag) { nomad.x = kerbX; nomad.z = kerbZ; }
+    const gapAmt = Math.hypot((kerbX + -nomad.x), (kerbZ + -nomad.z));
+    const farFlag = (gapAmt > 2);
+    const routeRec = {}; routeRec.stage = farFlag ? 'toCorner' : 'toCurb';
+    routeRec.cx = cornerX; routeRec.cz = cornerZ;
+    routeRec.sx = signX; routeRec.sz = signZ; routeRec.waitT = 0;
+    routeRec.tx = farFlag ? kerbX : ((signX * 17.2) + cornerX);
+    routeRec.tz = farFlag ? kerbZ : ((signZ * 9) + cornerZ);
+    routeRec.faceAngle = Math.atan2(-signX, 0);
+    nomad.cross = routeRec;
+    nomad.angle = Math.atan2((routeRec.tx + -nomad.x), (routeRec.tz + -nomad.z)); }
+  function resetWalkHere(nomad) {
+    let bestLine = game.roadX[0]; let bestGap = Infinity;
+    game.roadX.forEach((lineVal) => {
+      const gapAmt = Math.abs((nomad.x + -lineVal));
+      if (bestGap > gapAmt) { bestGap = gapAmt; bestLine = lineVal; } });
+    nomad.vertical = true; nomad.line = bestLine;
+    nomad.off = THREE.MathUtils.clamp((nomad.x + -bestLine), -17.2, 17.2);
+    if (!(Math.abs(nomad.off) >= 13)) nomad.off = (17.2 * ((0 > nomad.off) ? -1 : 1));
+    nomad.x = (bestLine + nomad.off);
+    nomad.dir = chance(0.5) ? 1 : -1; nomad.mode = 'walk'; }
+  function bobModel(nomad, bobAmt, swayAmt, leanAmt, phaseAmt) {
+    nomad.glbInner.position.y = Math.abs(Math.sin(phaseAmt)) * bobAmt;
+    nomad.glbInner.rotation.z = Math.sin(phaseAmt) * swayAmt;
+    nomad.glbInner.rotation.x = leanAmt; }
+  function paintWalk(nomad, amtVal) {
+    const modelFlag = !(!(nomad.figIsGlb && nomad.glbInner));
+    if (!modelFlag) { try { animateFigure(nomad.visual, nomad.phase, amtVal); } catch (muteErr) {}
+      return; }
+    try { bobModel(nomad, ((amtVal + amtVal) * 0.04), 0.04, 0.05, nomad.phase); } catch (muteErr) {} }
+  function paintIdle(nomad) {
+    const modelFlag = !(!(nomad.figIsGlb && nomad.glbInner));
+    if (!modelFlag) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), 0.12); } catch (muteErr) {}
+      return; }
+    try { const innerNode = nomad.glbInner;
+      innerNode.position.y = (0.006 * Math.sin((nomad.idx + (nomad.sway * 1.5))));
+      innerNode.rotation.z = (0.01 * Math.sin((nomad.idx + (nomad.sway * 0.9))));
+      innerNode.rotation.x = 0; } catch (muteErr) {} }
+  function seedPedFields(nomad, figNode, idxNo, keyVal) {
+    nomad.fig = null; nomad.visual = figNode;
+    nomad.glbInner = null; nomad.figIsGlb = false;
+    nomad.citizenKey = keyVal; nomad.idx = idxNo;
+    nomad.angle = 0; nomad.x = 0; nomad.z = 0;
+    // The old standalone motion seeder is folded in here: gait
+    // speed, phase and pavement defaults are all planted inline.
+    nomad.speed = rr(1.2, 1.8); nomad.phase = rr(0, 10);
+    nomad.dir = 1; nomad.vertical = true;
+    nomad.line = 0; nomad.off = 17.2; nomad.sway = rr(0, 6);
+    nomad.idle = false; nomad.panicT = 0;
+    nomad.fleeDir = null; nomad.startleT = 0; nomad.fleeT = 0;
+    nomad.chat = false; nomad.mode = 'walk';
+    nomad.follow = null; nomad.scattered = false;
+    nomad.chatGroup = null; nomad.crosser = false;
+    nomad.cross = null; nomad.marketPlaced = false;
+    return nomad; }
+  function buildPedShell(figNode, idxNo, keyVal) {
+    const nomad = seedPedFields({}, figNode, idxNo, keyVal);
+    const shellGrp = new THREE.Group(); shellGrp.add(figNode);
+    nomad.fig = shellGrp;
+    return nomad; }
   function pairHomes() {
     const homesOut = [];
     homesOut.push({ x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 }, { x: -330, z: -330 });
     homesOut.push({ x: -412.5, z: 412.5 }, { x: 0, z: 0 }, { x: 250, z: 420 }, { x: -480, z: -255 });
-    return homesOut;
-  }
+    return homesOut; }
   function strollHomes() {
-    return [
-      { x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 }, { x: -330, z: -330 },
-      { x: -412.5, z: 412.5 }, { x: 0, z: 0 }, { x: 250, z: 420 }, { x: -480, z: -255 },
-    ];
-  }
-  function attachPhone(figureIn) {
-    try {
-      const phoneNode = new THREE.Mesh(
-        new THREE.BoxGeometry(0.09, 0.16, 0.02),
-        new THREE.MeshStandardMaterial({ color: 0x111318, roughness: 0.4, metalness: 0.4, emissive: 0x2a4a6a, emissiveIntensity: 0.7 })
-      );
-      phoneNode.position.set(0.22, 1.05, 0.22);
-      figureIn.add(phoneNode);
-    } catch (swallowed) {}
-  }
-  let spawnIdx = 0;
-  while (WAVE_COUNT > spawnIdx) {
-    const idxVal = spawnIdx;
-    spawnIdx = (1 + spawnIdx);
-    let figureNode = null;
-    try { figureNode = makeFigure(rollLook()); } catch (swallowed) { continue; }
-    const claimedModel = rowForSpawn(idxVal);
-    const walker = freshWalkerShell(figureNode, idxVal, claimedModel ? claimedModel.key : null);
-    if (12 > idxVal) {
-      walker.idle = true;
-      if (3 > idxVal) dropInRing(walker, -410, 418, idxVal, 3);
-      else if (6 > idxVal) dropInRing(walker, 330, -330, idxVal + -3, 3);
-      else if (9 > idxVal) dropInRing(walker, 182.2, 147.8, idxVal + -6, 3);
-      else {
-        walker.chatGroup = 'market';
-        const marketPt = findMarket(gameState);
-        if (marketPt) { dropInRing(walker, marketPt.x + 13, marketPt.z + 9, idxVal + -9, 3); walker.marketPlaced = true; }
-        else dropInRing(walker, -312.8, -147.8, idxVal + -9, 3);
-      }
-      if ((idxVal === 1) || (idxVal === 4)) attachPhone(figureNode);
-    } else if (24 > idxVal) {
-      if (0 === (idxVal % 2)) {
-        const homeSel = pick(pairHomes());
-        dropOnPavement(walker, findPavementSpot(gameState, homeSel.x, homeSel.z, 0, 190));
-      } else {
-        const leaderWalker = gameState.peds[gameState.peds.length - 1];
-        walker.follow = leaderWalker || null;
-        if (!leaderWalker) {
-          const homeSel = pick(pairHomes());
-          dropOnPavement(walker, findPavementSpot(gameState, homeSel.x, homeSel.z, 0, 190));
-        } else {
-          walker.x = ((leaderWalker.x - (Math.sin(leaderWalker.angle) * 2.3)) + (Math.cos(leaderWalker.angle) * 0.85));
-          walker.z = ((leaderWalker.z - (Math.cos(leaderWalker.angle) * 2.3)) - (Math.sin(leaderWalker.angle) * 0.85));
-          walker.angle = leaderWalker.angle;
-          walker.speed = leaderWalker.speed;
-        }
-      }
-    } else if (32 > idxVal) {
+    return [{ x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 }, { x: -330, z: -330 },
+      { x: -412.5, z: 412.5 }, { x: 0, z: 0 }, { x: 250, z: 420 }, { x: -480, z: -255 }]; }
+  function mountPhone(figureArg) {
+    try { const phoneGeo = new THREE.BoxGeometry(0.09, 0.16, 0.02);
+      const phoneMat = new THREE.MeshStandardMaterial({ color: 0x111318, roughness: 0.4, metalness: 0.4, emissive: 0x2a4a6a, emissiveIntensity: 0.7 });
+      const phoneNode = new THREE.Mesh(phoneGeo, phoneMat);
+      phoneNode.position.x = 0.22; phoneNode.position.y = 1.05; phoneNode.position.z = 0.22;
+      figureArg.add(phoneNode); } catch (muteErr) {} }
+  let spawnNo = 0;
+  while (WAVE_TOTAL > spawnNo) { const idxNo = spawnNo; spawnNo = (spawnNo + 1);
+    let figNode = null;
+    try { figNode = makeFigure(buildLook()); } catch (muteErr) { continue; }
+    const claimedRow = slotRowFor(idxNo);
+    const nomad = buildPedShell(figNode, idxNo, claimedRow ? claimedRow.key : null);
+    if (12 > idxNo) { nomad.idle = true;
+      if (!(idxNo >= 3)) placeInRing(nomad, -410, 418, idxNo, 3);
+      else if (!(idxNo >= 6)) placeInRing(nomad, 330, -330, (idxNo + -3), 3);
+      else if (!(idxNo >= 9)) placeInRing(nomad, 182.2, 147.8, (idxNo + -6), 3);
+      else { nomad.chatGroup = 'market';
+        const marketPt = locateMarket(game);
+        if (marketPt) { placeInRing(nomad, (13 + marketPt.x), (9 + marketPt.z), (idxNo + -9), 3); nomad.marketPlaced = true; }
+        else placeInRing(nomad, -312.8, -147.8, (idxNo + -9), 3); }
+      if ((1 === idxNo) || (4 === idxNo)) mountPhone(figNode);
+    } else if (24 > idxNo) {
+      if (0 === (idxNo % 2)) { const homeSel = pick(pairHomes());
+        placeOnPavement(nomad, huntPavement(game, homeSel.x, homeSel.z, 0, 190));
+      } else { const leaderRec = game.peds[(game.peds.length + -1)];
+        nomad.follow = leaderRec || null;
+        if (!leaderRec) { const homePick = pick(pairHomes());
+          placeOnPavement(nomad, huntPavement(game, homePick.x, homePick.z, 0, 190));
+        } else { nomad.x = ((leaderRec.x + -(Math.sin(leaderRec.angle) * 2.3)) + (Math.cos(leaderRec.angle) * 0.85));
+          nomad.z = ((leaderRec.z + -(Math.cos(leaderRec.angle) * 2.3)) + -(Math.sin(leaderRec.angle) * 0.85));
+          nomad.angle = leaderRec.angle; nomad.speed = leaderRec.speed; } }
+    } else if (32 > idxNo) {
       const cornerX = pick([-330, -165, 0, 165, 330]);
       const cornerZ = pick([-330, -165, 0, 165, 330]);
-      planCrossing(walker, cornerX, cornerZ, chance(0.5) ? 1 : -1, chance(0.5) ? 1 : -1, true);
-    } else {
-      const homeSel = pick(strollHomes());
-      dropOnPavement(walker, findPavementSpot(gameState, homeSel.x, homeSel.z, 0, 190));
-    }
-    shadowize(walker.fig);
-    walker.fig.position.set(walker.x, groundH(walker.x, walker.z), walker.z);
-    walker.fig.rotation.y = walker.angle;
-    gameState.scene.add(walker.fig);
-    gameState.peds.push(walker);
-    adoptModel(walker);
-  }
-  // The extra figures below stay procedural, never model backed.
+      stageCrossing(nomad, cornerX, cornerZ, chance(0.5) ? 1 : -1, chance(0.5) ? 1 : -1, true);
+    } else { const homeSel = pick(strollHomes());
+      placeOnPavement(nomad, huntPavement(game, homeSel.x, homeSel.z, 0, 190)); }
+    armShadows(nomad.fig);
+    nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
+    nomad.fig.rotation.y = nomad.angle;
+    game.scene.add(nomad.fig); game.peds.push(nomad);
+    graftModel(nomad); }
+  // The crowd topped up below never receives a model; those
+  // figures stay procedural from creation through to placement.
   function spawnBonusPed() {
-    let figureNode = null;
-    try { figureNode = makeFigure(rollLook()); } catch (swallowed) { return null; }
-    const shellNode = new THREE.Group();
-    shellNode.add(figureNode);
-    shadowize(shellNode);
-    const walker = {};
-    walker.fig = shellNode;
-    walker.visual = figureNode;
-    walker.glbInner = null;
-    walker.figIsGlb = false;
-    walker.citizenKey = null;
-    walker.idx = gameState.peds.length;
-    walker.angle = 0;
-    walker.x = 0;
-    walker.z = 0;
-    walker.speed = rr(1.2, 1.8);
-    walker.phase = rr(0, 10);
-    walker.dir = 1;
-    walker.vertical = true;
-    walker.line = 0;
-    walker.off = 17.2;
-    walker.idle = false;
-    walker.panicT = 0;
-    walker.sway = rr(0, 6);
-    walker.fleeDir = null;
-    walker.startleT = 0;
-    walker.fleeT = 0;
-    walker.chat = false;
-    walker.mode = 'walk';
-    walker.follow = null;
-    walker.scattered = false;
-    walker.chatGroup = null;
-    walker.crosser = false;
-    walker.cross = null;
-    walker.marketPlaced = false;
-    return walker;
-  }
-  function finishBonusPed(walker) {
-    if (!walker) return;
-    walker.fig.position.set(walker.x, groundH(walker.x, walker.z), walker.z);
-    walker.fig.rotation.y = walker.angle;
-    gameState.scene.add(walker.fig);
-    gameState.peds.push(walker);
-  }
-  function dropStanding(walker, standX, standZ, headingIn) {
-    walker.x = standX;
-    walker.z = standZ;
-    walker.idle = true;
-    walker.chat = true;
-    walker.chatCx = standX + (Math.sin(headingIn) * 3);
-    walker.chatCz = standZ + (Math.cos(headingIn) * 3);
-    walker.angle = headingIn;
-  }
-  function dropLaneWalker(walker, laneOffIn, loIn, hiIn, dirIn) {
-    walker.vertical = false;
-    walker.line = 495;
-    walker.off = laneOffIn;
-    walker.x = rr(loIn, hiIn);
-    walker.z = (laneOffIn + 495);
-    walker.dir = dirIn;
-    walker.angle = (dirIn > 0) ? Math.PI / 2 : -Math.PI / 2;
-    walker.mode = 'walk';
-    walker.idle = false;
-  }
-  const FALLBACK_SPOTS = [
-    { x: 100, z: 511, ry: 0, stall: false }, { x: 300, z: 552, ry: 0, stall: false },
-    { x: -60, z: -238, ry: 0, stall: false }, { x: -210, z: 481, ry: 0, stall: false },
-  ];
+    let figNode = null;
+    try { figNode = makeFigure(buildLook()); } catch (muteErr) { return null; }
+    const shellNode = new THREE.Group(); shellNode.add(figNode);
+    armShadows(shellNode);
+    // Bonus figures spell their fields out longhand rather than
+    // borrowing the wave seeder; the two crowds stay separate.
+    const nomad = {}; nomad.fig = shellNode; nomad.visual = figNode;
+    nomad.glbInner = null; nomad.figIsGlb = false; nomad.citizenKey = null;
+    nomad.idx = game.peds.length;
+    nomad.angle = 0; nomad.x = 0; nomad.z = 0;
+    nomad.speed = rr(1.2, 1.8); nomad.phase = rr(0, 10);
+    nomad.dir = 1; nomad.vertical = true;
+    nomad.line = 0; nomad.off = 17.2;
+    nomad.idle = false; nomad.panicT = 0; nomad.sway = rr(0, 6);
+    nomad.fleeDir = null; nomad.startleT = 0; nomad.fleeT = 0;
+    nomad.chat = false; nomad.mode = 'walk';
+    nomad.follow = null; nomad.scattered = false;
+    nomad.chatGroup = null; nomad.crosser = false;
+    nomad.cross = null; nomad.marketPlaced = false;
+    return nomad; }
+  function placeBonusPed(nomad) {
+    if (!nomad) return;
+    nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
+    nomad.fig.rotation.y = nomad.angle;
+    game.scene.add(nomad.fig); game.peds.push(nomad); }
+  function placeStanding(nomad, standX, standZ, headingVal) {
+    nomad.x = standX; nomad.z = standZ;
+    nomad.idle = true; nomad.chat = true;
+    nomad.chatCx = (Math.sin(headingVal) * 3) + standX;
+    nomad.chatCz = (Math.cos(headingVal) * 3) + standZ;
+    nomad.angle = headingVal; }
+  function placeLaneWalker(nomad, laneOff, loVal, hiVal, dirVal) {
+    nomad.vertical = false; nomad.line = 495; nomad.off = laneOff;
+    nomad.x = rr(loVal, hiVal); nomad.z = (495 + laneOff);
+    nomad.dir = dirVal;
+    nomad.angle = (0 < dirVal) ? (Math.PI / 2) : (-Math.PI / 2);
+    nomad.mode = 'walk'; nomad.idle = false; }
+  const RESERVE_SPOTS = [{ x: 100, z: 511, ry: 0, stall: false },
+    { x: 300, z: 552, ry: 0, stall: false }, { x: -60, z: -238, ry: 0, stall: false },
+    { x: -210, z: 481, ry: 0, stall: false }];
   let gatheredList = null;
-  try {
-    const gsUsable = Array.isArray(gameState.gatherSpots) && gameState.gatherSpots.length;
-    if (gsUsable) gatheredList = gameState.gatherSpots;
-  } catch (swallowed) {}
-  const activeSpots = gatheredList || FALLBACK_SPOTS;
-  function spotFrame(spotIn) {
-    const yawVal = Number.isFinite(spotIn.ry) ? spotIn.ry : 0;
-    const frameOut = { yaw: yawVal, fwdX: Math.sin(yawVal), fwdZ: Math.cos(yawVal) };
-    frameOut.sideX = Math.cos(yawVal);
-    frameOut.sideZ = -Math.sin(yawVal);
-    return frameOut;
-  }
+  try { if (Array.isArray(game.gatherSpots) && game.gatherSpots.length) gatheredList = game.gatherSpots; } catch (muteErr) {}
+  const activeSpots = gatheredList || RESERVE_SPOTS;
+  function frameForSpot(spotIn) {
+    const yawAmt = Number.isFinite(spotIn.ry) ? spotIn.ry : 0;
+    const basisRec = {}; basisRec.yaw = yawAmt;
+    basisRec.fwdX = Math.sin(yawAmt); basisRec.fwdZ = Math.cos(yawAmt);
+    basisRec.sideX = Math.cos(yawAmt); basisRec.sideZ = -Math.sin(yawAmt);
+    return basisRec; }
   activeSpots.forEach((spotIn) => {
     if (!spotIn || !Number.isFinite(spotIn.x) || !Number.isFinite(spotIn.z)) return;
-    const frameOut = spotFrame(spotIn);
-    const ringHubX = spotIn.x + (frameOut.sideX * 4.5);
-    const ringHubZ = spotIn.z + (frameOut.sideZ * 4.5);
-    let ringIdx = 0;
-    while (3 > ringIdx) {
-      const bonusWalker = spawnBonusPed();
-      if (bonusWalker) { dropInRing(bonusWalker, ringHubX, ringHubZ, ringIdx, 3); finishBonusPed(bonusWalker); }
-      ringIdx = (1 + ringIdx);
-    }
-    [-1, 1].forEach(function (sideAmt) {
-      const bonusWalker = spawnBonusPed();
-      if (bonusWalker) {
-        dropStanding(bonusWalker, (spotIn.x - (frameOut.fwdX * 3.5)) + (frameOut.sideX * sideAmt * 2.2), (spotIn.z - (frameOut.fwdZ * 3.5)) + (frameOut.sideZ * sideAmt * 2.2), frameOut.yaw);
-        finishBonusPed(bonusWalker);
-      }
-    });
-    if (spotIn.stall) {
-      [-1, 1].forEach(function (sideAmt) {
-        const bonusWalker = spawnBonusPed();
-        if (bonusWalker) {
-          dropStanding(bonusWalker, (spotIn.x + (frameOut.fwdX * 1.9)) + (frameOut.sideX * sideAmt * 0.95), (spotIn.z + (frameOut.fwdZ * 1.9)) + (frameOut.sideZ * sideAmt * 0.95), frameOut.yaw + Math.PI);
-          finishBonusPed(bonusWalker);
-        }
-      });
-      const vendorWalker = spawnBonusPed();
-      if (vendorWalker) { dropStanding(vendorWalker, spotIn.x - (frameOut.fwdX * 1.6), spotIn.z - (frameOut.fwdZ * 1.6), frameOut.yaw); finishBonusPed(vendorWalker); }
-    }
-  });
+    const basisRec = frameForSpot(spotIn);
+    const ringHubX = (basisRec.sideX * 4.5) + spotIn.x;
+    const ringHubZ = (basisRec.sideZ * 4.5) + spotIn.z;
+    let ringNo = 0;
+    while (3 > ringNo) { const bonusPed = spawnBonusPed();
+      if (bonusPed) { placeInRing(bonusPed, ringHubX, ringHubZ, ringNo, 3); placeBonusPed(bonusPed); }
+      ringNo = (ringNo + 1); }
+    [-1, 1].forEach((sideAmt) => {
+      const bonusPed = spawnBonusPed();
+      if (bonusPed) { placeStanding(bonusPed, (spotIn.x + -(basisRec.fwdX * 3.5)) + (basisRec.sideX * sideAmt * 2.2), (spotIn.z + -(basisRec.fwdZ * 3.5)) + (basisRec.sideZ * sideAmt * 2.2), basisRec.yaw);
+        placeBonusPed(bonusPed); } });
+    if (spotIn.stall) { [-1, 1].forEach((sideAmt) => {
+        const bonusPed = spawnBonusPed();
+        if (bonusPed) { placeStanding(bonusPed, (spotIn.x + (basisRec.fwdX * 1.9)) + (basisRec.sideX * sideAmt * 0.95), (spotIn.z + (basisRec.fwdZ * 1.9)) + (basisRec.sideZ * sideAmt * 0.95), (Math.PI + basisRec.yaw));
+          placeBonusPed(bonusPed); } });
+      const vendorPed = spawnBonusPed();
+      if (vendorPed) { placeStanding(vendorPed, (spotIn.x + -(basisRec.fwdX * 1.6)), (spotIn.z + -(basisRec.fwdZ * 1.6)), basisRec.yaw); placeBonusPed(vendorPed); } } });
   activeSpots.forEach((spotIn) => {
     if (!spotIn || !spotIn.stall) return;
     if (!Number.isFinite(spotIn.x) || !Number.isFinite(spotIn.z)) return;
-    const frameOut = spotFrame(spotIn);
-    let queueIdx = 0;
-    while (2 > queueIdx) {
-      const queuedWalker = spawnBonusPed();
-      if (queuedWalker) {
-        const backStep = (1.9 + (0.9 * (queueIdx + 1)));
-        const wobbleVal = (0 === queueIdx) ? -0.18 : 0.22;
-        dropStanding(queuedWalker, (spotIn.x + (frameOut.fwdX * backStep)) + (frameOut.sideX * wobbleVal), (spotIn.z + (frameOut.fwdZ * backStep)) + (frameOut.sideZ * wobbleVal), frameOut.yaw + Math.PI);
-        finishBonusPed(queuedWalker);
-      }
-      queueIdx = (1 + queueIdx);
-    }
-  });
-  const LANE_TABLE = [
-    { off: -9, n: 8, xMin: -420, xMax: 560 }, { off: 10, n: 7, xMin: -420, xMax: 560 },
-    { off: 57, n: 5, xMin: -380, xMax: 600 },
-  ];
-  LANE_TABLE.forEach((laneRow) => {
-    let laneIdx = 0;
-    while (laneRow.n > laneIdx) {
-      const laneWalker = spawnBonusPed();
-      if (laneWalker) { dropLaneWalker(laneWalker, laneRow.off, laneRow.xMin, laneRow.xMax, (0 === (laneIdx % 2)) ? 1 : -1); finishBonusPed(laneWalker); }
-      laneIdx = (1 + laneIdx);
-    }
-  });
-  {
-    let martIdx = 0;
-    while (4 > martIdx) {
-      const martWalker = spawnBonusPed();
-      if (martWalker) { dropInRing(martWalker, -79.5, -251, martIdx, 4); finishBonusPed(martWalker); }
-      martIdx = (1 + martIdx);
-    }
-  }
-  {
-    let dtIdx = 0;
-    while (4 > dtIdx) {
-      const dtWalker = spawnBonusPed();
-      if (dtWalker) { dropOnPavement(dtWalker, findPavementSpot(gameState, 0, 0, 0, 70)); finishBonusPed(dtWalker); }
-      dtIdx = (1 + dtIdx);
-    }
-  }
-  {
-    let dtMoreIdx = 0;
-    while (4 > dtMoreIdx) {
-      const dtMoreWalker = spawnBonusPed();
-      if (dtMoreWalker) { dropOnPavement(dtMoreWalker, findPavementSpot(gameState, 0, 0, 0, 70)); finishBonusPed(dtMoreWalker); }
-      dtMoreIdx = (1 + dtMoreIdx);
-    }
-  }
-  // Gathering block anchored on the park spot.
-  {
-    let parkSpotRec = { x: 82, z: 415, stallX: (32 + 82), stallZ: (8 + 415) };
-    try {
-      const liveParkSpot = gameState.parkSpot;
+    const basisRec = frameForSpot(spotIn);
+    let queueNo = 0;
+    while (2 > queueNo) { const queuedPed = spawnBonusPed();
+      if (queuedPed) { const backStep = ((0.9 * (queueNo + 1)) + 1.9);
+        const wobbleAmt = (0 === queueNo) ? -0.18 : 0.22;
+        placeStanding(queuedPed, (spotIn.x + (basisRec.fwdX * backStep)) + (basisRec.sideX * wobbleAmt), (spotIn.z + (basisRec.fwdZ * backStep)) + (basisRec.sideZ * wobbleAmt), (Math.PI + basisRec.yaw));
+        placeBonusPed(queuedPed); }
+      queueNo = (queueNo + 1); } });
+  const LANE_ROWS = [{ off: -9, n: 8, xMin: -420, xMax: 560 },
+    { off: 10, n: 7, xMin: -420, xMax: 560 }, { off: 57, n: 5, xMin: -380, xMax: 600 }];
+  LANE_ROWS.forEach((laneRow) => {
+    let laneNo = 0;
+    while (laneRow.n > laneNo) { const lanePed = spawnBonusPed();
+      if (lanePed) { placeLaneWalker(lanePed, laneRow.off, laneRow.xMin, laneRow.xMax, (0 === (laneNo % 2)) ? 1 : -1); placeBonusPed(lanePed); }
+      laneNo = (laneNo + 1); } });
+  let martNo = 0;
+  while (4 > martNo) { const martPed = spawnBonusPed();
+    if (martPed) { placeInRing(martPed, -79.5, -251, martNo, 4); placeBonusPed(martPed); }
+    martNo = (martNo + 1); }
+  let dtNo = 0;
+  while (4 > dtNo) { const dtPed = spawnBonusPed();
+    if (dtPed) { placeOnPavement(dtPed, huntPavement(game, 0, 0, 0, 70)); placeBonusPed(dtPed); }
+    dtNo = (dtNo + 1); }
+  let dtMoreNo = 0;
+  while (4 > dtMoreNo) { const dtMorePed = spawnBonusPed();
+    if (dtMorePed) { placeOnPavement(dtMorePed, huntPavement(game, 0, 0, 0, 70)); placeBonusPed(dtMorePed); }
+    dtMoreNo = (dtMoreNo + 1); }
+  // The get-together cluster that anchors itself on the park.
+  { let parkSpotRec = { x: 82, z: 415, stallX: (32 + 82), stallZ: (8 + 415) };
+    try { const liveParkSpot = game.parkSpot;
       if (liveParkSpot && Number.isFinite(liveParkSpot.x) && Number.isFinite(liveParkSpot.z)) {
-        const rebuiltSpot = {};
-        rebuiltSpot.x = liveParkSpot.x;
-        rebuiltSpot.z = liveParkSpot.z;
+        const rebuiltSpot = {}; rebuiltSpot.x = liveParkSpot.x; rebuiltSpot.z = liveParkSpot.z;
         rebuiltSpot.stallX = Number.isFinite(liveParkSpot.stallX) ? liveParkSpot.stallX : (32 + liveParkSpot.x);
         rebuiltSpot.stallZ = Number.isFinite(liveParkSpot.stallZ) ? liveParkSpot.stallZ : (8 + liveParkSpot.z);
-        parkSpotRec = rebuiltSpot;
-      }
-    } catch (swallowed) {}
-    const parkHubX = parkSpotRec.x;
-    const parkHubZ = parkSpotRec.z;
-    {
-      let benchIdx = 0;
-      while (3 > benchIdx) {
-        const benchWalker = spawnBonusPed();
-        if (benchWalker) { dropInRing(benchWalker, parkHubX + 10, parkHubZ + 6, benchIdx, 3); finishBonusPed(benchWalker); }
-        benchIdx = (1 + benchIdx);
-      }
-    }
-    {
-      let benchMoreIdx = 0;
-      while (3 > benchMoreIdx) {
-        const benchMoreWalker = spawnBonusPed();
-        if (benchMoreWalker) { dropInRing(benchMoreWalker, parkHubX - 10, parkHubZ - 6, benchMoreIdx, 3); finishBonusPed(benchMoreWalker); }
-        benchMoreIdx = (1 + benchMoreIdx);
-      }
-    }
+        parkSpotRec = rebuiltSpot; } } catch (muteErr) {}
+    const parkHubX = parkSpotRec.x; const parkHubZ = parkSpotRec.z;
+    let benchNo = 0;
+    while (3 > benchNo) { const benchPed = spawnBonusPed();
+      if (benchPed) { placeInRing(benchPed, (10 + parkHubX), (6 + parkHubZ), benchNo, 3); placeBonusPed(benchPed); }
+      benchNo = (benchNo + 1); }
+    let benchMoreNo = 0;
+    while (3 > benchMoreNo) { const benchMorePed = spawnBonusPed();
+      if (benchMorePed) { placeInRing(benchMorePed, (parkHubX + -10), (parkHubZ + -6), benchMoreNo, 3); placeBonusPed(benchMorePed); }
+      benchMoreNo = (benchMoreNo + 1); }
     const parkVendor = spawnBonusPed();
-    if (parkVendor) { dropStanding(parkVendor, parkSpotRec.stallX + 0.9, parkSpotRec.stallZ, -Math.PI / 2); finishBonusPed(parkVendor); }
-    [-1, 1].forEach(function (sideAmt) {
-      const custWalker = spawnBonusPed();
-      if (custWalker) { dropStanding(custWalker, parkSpotRec.stallX - 2.6, parkSpotRec.stallZ + (sideAmt * 0.95), Math.PI / 2); finishBonusPed(custWalker); }
-    });
+    if (parkVendor) { placeStanding(parkVendor, (0.9 + parkSpotRec.stallX), parkSpotRec.stallZ, (-Math.PI / 2)); placeBonusPed(parkVendor); }
+    [-1, 1].forEach((sideAmt) => {
+      const custPed = spawnBonusPed();
+      if (custPed) { placeStanding(custPed, (parkSpotRec.stallX + -2.6), (parkSpotRec.stallZ + (sideAmt * 0.95)), (Math.PI / 2)); placeBonusPed(custPed); } });
     const duoSpecs = [[16, 0, Math.PI / 2], [0, 16, 0]];
     duoSpecs.forEach((duoSpec) => {
-      const [duoDx, duoDz] = duoSpec;
-      const duoFacing = duoSpec[2];
-      [-1, 1].forEach(function (sideAmt) {
-        const duoWalker = spawnBonusPed();
-        if (duoWalker) {
-          const splitVal = (sideAmt * 0.85);
-          dropStanding(duoWalker, (parkHubX + duoDx) + ((0 !== duoFacing) ? splitVal : 0), (parkHubZ + duoDz) + ((0 === duoFacing) ? splitVal : 0), duoFacing + ((sideAmt > 0) ? Math.PI : 0));
-          finishBonusPed(duoWalker);
-        }
-      });
-    });
+      const [duoDx, duoDz] = duoSpec; const duoFacing = duoSpec[2];
+      [-1, 1].forEach((sideAmt) => {
+        const duoPed = spawnBonusPed();
+        if (duoPed) { const splitAmt = (sideAmt * 0.85);
+          placeStanding(duoPed, ((duoDx + parkHubX) + ((duoFacing !== 0) ? splitAmt : 0)), ((duoDz + parkHubZ) + ((duoFacing === 0) ? splitAmt : 0)), (duoFacing + ((0 < sideAmt) ? Math.PI : 0)));
+          placeBonusPed(duoPed); } }); });
     const walkSpecs = [[-1.5, -20, 1], [1.5, 18, -1]];
     walkSpecs.forEach((walkSpec) => {
-      const strollerWalker = spawnBonusPed();
+      const strollerPed = spawnBonusPed();
       const [walkOff, walkDz, walkDir] = walkSpec;
-      if (strollerWalker) {
-        strollerWalker.vertical = true;
-        strollerWalker.line = parkHubX;
-        strollerWalker.off = walkSpec[0];
-        strollerWalker.x = parkHubX + walkOff;
-        strollerWalker.z = parkHubZ + walkDz;
-        strollerWalker.dir = walkDir;
-        strollerWalker.angle = (walkDir > 0) ? 0 : Math.PI;
-        strollerWalker.mode = 'walk';
-        strollerWalker.idle = false;
-        finishBonusPed(strollerWalker);
-      }
-    });
-  }
-  // Horn startle and stepping clear of the road, best effort.
-  gameState.pedsStartle = function pedsStartle(hitX, hitZ, radiusIn) {
-    try {
-      if (!Array.isArray(gameState.peds) || !Number.isFinite(hitX) || !Number.isFinite(hitZ)) return;
-      const reachVal = (Number.isFinite(radiusIn) && (radiusIn > 0)) ? radiusIn : 12;
-      const nearAnyLine = (coordIn, linesIn) => Array.isArray(linesIn) && linesIn.some((lineCoord) => !(Math.abs(coordIn - lineCoord) > 20));
-      gameState.peds.forEach((walker) => {
-        if (!walker || walker.downed) return;
-        const awayXVal = walker.x - hitX;
-        const awayZVal = walker.z - hitZ;
-        const distVal = Math.hypot(awayXVal, awayZVal);
-        if (distVal > reachVal) return;
-        walker.startleT = 0.25;
-        const roadNear = nearAnyLine(walker.x, gameState.roadX) || nearAnyLine(walker.z, gameState.roadZ);
-        if (roadNear || ((walker.fleeT > 0) && walker.fleeDir)) {
-          const denomVal = (distVal > 0.001) ? distVal : 1;
-          walker.fleeDir = (distVal > 0.001) ? { x: awayXVal / denomVal, z: awayZVal / denomVal } : { x: 1, z: 0 };
-          walker.fleeT = Math.max(walker.fleeT || 0, 0.8);
-        }
-      });
-    } catch (swallowed) {}
-  };
-  gameState.updaters.push((frameState, dtStep) => {
-    const heroXVal = gameState.car ? gameState.car.x : gameState.player.x;
-    const heroZVal = gameState.car ? gameState.car.z : gameState.player.z;
-    const fastCar = gameState.car && gameState.flags.inCar && ((gameState.speedKmh || 0) > 40);
-    function placeFigure(walker, hopIn) {
-      walker.fig.position.set(walker.x, groundH(walker.x, walker.z) + hopIn, walker.z);
-      walker.fig.rotation.y = walker.angle;
-    }
-    gameState.peds.forEach((walker) => {
-      const heroGap = Math.hypot(walker.x - heroXVal, walker.z - heroZVal);
-      let hopVal = 0;
-      if (walker.startleT > 0) {
-        walker.startleT = (walker.startleT - dtStep);
-        const fracDone = Math.min(1, Math.max(0, 1 - (walker.startleT / 0.25)));
-        hopVal = Math.sin(fracDone * Math.PI) * 0.14;
-      }
-      if (walker.downed) {
-        walker.downedT = ((walker.downedT || 0) - dtStep);
-        if (!(walker.downedT > 0)) {
-          walker.downed = false;
-          walker._tipped = false;
-          walker.hp = 100;
-          try { walker.fig.rotation.set(0, walker.angle, 0); } catch (swallowed) {}
-          dropOnPavement(walker, findPavementSpot(gameState, heroXVal, heroZVal, 60, 180));
-          walker.chat = false;
-          walker.idle = false;
-          walker.mode = 'walk';
-          walker.follow = null;
-          walker.scattered = false;
-          walker.fig.position.set(walker.x, groundH(walker.x, walker.z), walker.z);
-          walker.fig.rotation.y = walker.angle;
-        }
-        return;
-      }
-      if ((walker.fleeT > 0) && walker.fleeDir) {
-        if (walker.chat) walker.scattered = true;
-        walker.fleeT = (walker.fleeT - dtStep);
-        walker.x = walker.x + ((walker.fleeDir.x * 3.4) * dtStep);
-        walker.z = walker.z + ((walker.fleeDir.z * 3.4) * dtStep);
-        walker.angle = Math.atan2(walker.fleeDir.x, walker.fleeDir.z);
-        walker.phase = walker.phase + ((3.4 * dtStep) * 2.4);
-        if (!(walker.figIsGlb && walker.glbInner)) {
-          try { animateFigure(walker.visual, walker.phase, 1.6); } catch (swallowed) {}
-        } else {
-          try { modelBob(walker, 0.06, 0.05, 0.13, walker.phase); } catch (swallowed) {}
-        }
-        placeFigure(walker, hopVal);
-        return;
-      }
-      if (walker.scattered) { walker.scattered = false; walker.chat = false; walker.idle = false; rebuildWalkHere(walker); }
-      if ((heroGap > 350) && !walker.chat && !('cross' === walker.mode) && !walker.follow) {
-        dropOnPavement(walker, findPavementSpot(gameState, heroXVal, heroZVal, 150, 250));
-        walker.idle = false;
-      }
-      if (walker.idle) {
-        walker.sway = (walker.sway + dtStep);
-        if (walker.chat) {
-          if (('market' === walker.chatGroup) && !walker.marketPlaced) {
-            const marketPt = findMarket(gameState);
-            if (marketPt) { dropInRing(walker, marketPt.x + 13, marketPt.z + 9, walker.idx % 3, 3); walker.marketPlaced = true; }
-          }
-          walker.angle = Math.atan2(walker.chatCx - walker.x, walker.chatCz - walker.z);
-          const talkAmt = (0.5 + (0.5 * Math.sin((walker.sway * 0.33) + (walker.idx * 2.1))));
-          if (!(walker.figIsGlb && walker.glbInner)) {
-            try { animateFigure(walker.visual, walker.sway * 0.7, 0.12 + (talkAmt * 0.2)); } catch (swallowed) {}
-          } else {
-            try {
-              walker.glbInner.position.y = (0.006 + (talkAmt * 0.008)) * Math.sin((walker.sway * 1.5) + walker.idx);
-              walker.glbInner.rotation.z = (0.01 + (talkAmt * 0.014)) * Math.sin((walker.sway * 0.9) + walker.idx);
-              walker.glbInner.rotation.x = 0;
-            } catch (swallowed) {}
-          }
-          walker.fig.position.set(walker.x, groundH(walker.x, walker.z) + hopVal, walker.z);
-          walker.fig.rotation.y = walker.angle + (Math.sin(walker.sway * 0.4) * 0.15);
-          return;
-        }
-        if (!(walker.figIsGlb && walker.glbInner)) {
-          try { animateFigure(walker.visual, walker.sway * 0.7, 0.12); } catch (swallowed) {}
-        } else {
-          try {
-            walker.glbInner.position.y = Math.sin((walker.sway * 1.5) + walker.idx) * 0.006;
-            walker.glbInner.rotation.z = Math.sin((walker.sway * 0.9) + walker.idx) * 0.01;
-            walker.glbInner.rotation.x = 0;
-          } catch (swallowed) {}
-        }
-        walker.fig.position.set(walker.x, groundH(walker.x, walker.z) + hopVal, walker.z);
-        walker.fig.rotation.y = walker.angle + (Math.sin(walker.sway * 0.4) * 0.15);
-        return;
-      }
-      if (walker.follow) {
-        const leaderWalker = walker.follow;
-        if (!leaderWalker || leaderWalker.downed) {
-          walker.sway = (walker.sway + dtStep);
-          idleVisual(walker);
-          placeFigure(walker, hopVal);
-          return;
-        }
-        const trailXVal = ((leaderWalker.x - (Math.sin(leaderWalker.angle) * 2.3)) + (Math.cos(leaderWalker.angle) * 0.85));
-        const trailZVal = ((leaderWalker.z - (Math.cos(leaderWalker.angle) * 2.3)) - (Math.sin(leaderWalker.angle) * 0.85));
-        const trailGapVal = Math.hypot(trailXVal - walker.x, trailZVal - walker.z);
-        if (trailGapVal > 25) { walker.x = trailXVal; walker.z = trailZVal; }
-        else {
-          const easeAmt = Math.min(1, dtStep * 4.5);
-          walker.x = walker.x + ((trailXVal - walker.x) * easeAmt);
-          walker.z = walker.z + ((trailZVal - walker.z) * easeAmt);
-        }
-        walker.angle = leaderWalker.angle;
-        walker.phase = leaderWalker.phase;
-        if (trailGapVal > 0.25) walkVisual(walker, 0.55);
-        placeFigure(walker, hopVal);
-        return;
-      }
-      if (('cross' === walker.mode) && walker.cross) {
-        const crossPlan = walker.cross;
-        if ('wait' === crossPlan.stage) {
-          crossPlan.waitT = (crossPlan.waitT - dtStep);
-          walker.sway = (walker.sway + dtStep);
-          idleVisual(walker);
-          walker.fig.position.set(walker.x, groundH(walker.x, walker.z) + hopVal, walker.z);
-          walker.fig.rotation.y = crossPlan.faceAngle + (Math.sin(walker.sway * 1.7) * 0.55);
-          if (!(crossPlan.waitT > 0)) { crossPlan.stage = 'cross'; crossPlan.tx = crossPlan.cx - (crossPlan.sx * 17.2); crossPlan.tz = crossPlan.cz + (crossPlan.sz * 9); }
-          return;
-        }
-        const stepXVal = crossPlan.tx - walker.x;
-        const stepZVal = crossPlan.tz - walker.z;
-        const stepGap = Math.hypot(stepXVal, stepZVal);
-        const speedNow = walker.speed * (('cross' === crossPlan.stage) ? 1.2 : 1);
-        if (0.35 > stepGap) {
-          if ('toCorner' === crossPlan.stage) { crossPlan.stage = 'toCurb'; crossPlan.tx = crossPlan.cx + (crossPlan.sx * 17.2); crossPlan.tz = crossPlan.cz + (crossPlan.sz * 9); }
-          else if ('toCurb' === crossPlan.stage) { crossPlan.stage = 'wait'; crossPlan.waitT = rr(1.4, 3.8); walker.sway = rr(0, 6); }
-          else if ('cross' === crossPlan.stage) { crossPlan.stage = 'toWalk'; crossPlan.tx = crossPlan.cx - (crossPlan.sx * 17.2); crossPlan.tz = crossPlan.cz + (crossPlan.sz * 17.2); }
-          else {
-            walker.mode = 'walk';
-            walker.vertical = true;
-            walker.line = crossPlan.cx;
-            walker.off = (-crossPlan.sx * 17.2);
-            walker.x = crossPlan.cx + walker.off;
-            walker.dir = (crossPlan.sz > 0) ? 1 : -1;
-            walker.cross = null;
-          }
-        } else {
-          const moveVal = Math.min(stepGap, speedNow * dtStep);
-          walker.x = walker.x + ((stepXVal / stepGap) * moveVal);
-          walker.z = walker.z + ((stepZVal / stepGap) * moveVal);
-          walker.angle = Math.atan2(stepXVal, stepZVal);
-          walker.phase = walker.phase + ((speedNow * dtStep) * 2.4);
-          walkVisual(walker, 0.55);
-        }
-        placeFigure(walker, hopVal);
-        return;
-      }
-      if (fastCar && (6 > heroGap)) walker.panicT = 0.9;
-      let paceVal = walker.speed;
-      let lateralVal = 0;
-      if (walker.panicT > 0) {
-        walker.panicT = (walker.panicT - dtStep);
-        paceVal = (walker.speed * 2.1);
-        const awaySignVal = Math.sign(((walker.x - heroXVal) * Math.cos(walker.angle)) - ((walker.z - heroZVal) * Math.sin(walker.angle))) || 1;
-        lateralVal = (awaySignVal * 2.4);
-      }
-      if (walker.startleT > 0) paceVal = 0;
-      const fwdVal = (walker.dir * paceVal) * dtStep;
-      if (!walker.vertical) { walker.x = (walker.x + fwdVal); walker.z = (walker.line + walker.off) + ((lateralVal * dtStep) * 3); }
-      else { walker.z = (walker.z + fwdVal); walker.x = (walker.line + walker.off) + ((lateralVal * dtStep) * 3); }
-      walker.phase = walker.phase + ((paceVal * dtStep) * 2.4);
-      const crossLineList = walker.vertical ? gameState.roadZ : gameState.roadX;
-      const alongCoord = walker.vertical ? walker.z : walker.x;
+      if (strollerPed) { strollerPed.vertical = true;
+        strollerPed.line = parkHubX; strollerPed.off = walkSpec[0];
+        strollerPed.x = (walkOff + parkHubX); strollerPed.z = (walkDz + parkHubZ);
+        strollerPed.dir = walkDir;
+        strollerPed.angle = (0 < walkDir) ? 0 : Math.PI;
+        strollerPed.mode = 'walk'; strollerPed.idle = false;
+        placeBonusPed(strollerPed); } }); }
+  // A horn going off makes nearby standers jump, and whoever is
+  // close to a road line runs from the sound; best effort only.
+  game.pedsStartle = function pedsStartle(hitX, hitZ, radiusIn) {
+    try { if (!Array.isArray(game.peds)) return;
+      if (!Number.isFinite(hitX) || !Number.isFinite(hitZ)) return;
+      const reachAmt = (Number.isFinite(radiusIn) && (0 < radiusIn)) ? radiusIn : 12;
+      const nearLine = (coordVal, linesArr) => Array.isArray(linesArr) && linesArr.some((lineVal) => !(Math.abs((coordVal + -lineVal)) > 20));
+      game.peds.forEach((nomad) => {
+        if (!nomad || nomad.downed) return;
+        const awayX = (nomad.x + -hitX); const awayZ = (nomad.z + -hitZ);
+        const distAmt = Math.hypot(awayX, awayZ);
+        if (distAmt > reachAmt) return;
+        nomad.startleT = 0.25;
+        const onRoad = nearLine(nomad.x, game.roadX) || nearLine(nomad.z, game.roadZ);
+        const fleeing = (nomad.fleeT > 0) && nomad.fleeDir;
+        if (!(onRoad || fleeing)) return;
+        const denomAmt = (distAmt > 0.001) ? distAmt : 1;
+        nomad.fleeDir = (distAmt > 0.001) ? { x: (awayX / denomAmt), z: (awayZ / denomAmt) } : { x: 1, z: 0 };
+        nomad.fleeT = Math.max((nomad.fleeT || 0), 0.8); }); } catch (muteErr) {} };
+  game.updaters.push((frameArg, dtAmt) => {
+    const heroX = game.car ? game.car.x : game.player.x;
+    const heroZ = game.car ? game.car.z : game.player.z;
+    const fastCar = Boolean(game.car && game.flags.inCar && ((game.speedKmh || 0) > 40));
+    function setFigPose(nomad, hopAmt) {
+      nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
+      nomad.fig.rotation.y = nomad.angle; }
+    // One pedestrian's whole per-frame decision tree, lifted out
+    // of the sweep so the loop body below is nothing but a pass.
+    function stepWalker(nomad) {
+      const heroGap = Math.hypot((nomad.x + -heroX), (nomad.z + -heroZ));
+      let hopAmt = 0;
+      if (nomad.startleT > 0) { nomad.startleT = (nomad.startleT + -dtAmt);
+        const fracDone = Math.min(1, Math.max(0, (1 + -(nomad.startleT / 0.25))));
+        hopAmt = (0.14 * Math.sin(Math.PI * fracDone)); }
+      if (nomad.downed) { nomad.downedT = ((nomad.downedT || 0) + -dtAmt);
+        if (nomad.downedT > 0) return;
+        nomad.downed = false; nomad._tipped = false; nomad.hp = 100;
+        try { nomad.fig.rotation.set(0, nomad.angle, 0); } catch (muteErr) {}
+        placeOnPavement(nomad, huntPavement(game, heroX, heroZ, 60, 180));
+        nomad.chat = false; nomad.idle = false; nomad.mode = 'walk';
+        nomad.follow = null; nomad.scattered = false;
+        nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
+        nomad.fig.rotation.y = nomad.angle;
+        return; }
+      if ((nomad.fleeT > 0) && nomad.fleeDir) {
+        if (nomad.chat) nomad.scattered = true;
+        nomad.fleeT = (nomad.fleeT + -dtAmt);
+        nomad.x = ((nomad.fleeDir.x * 3.4) * dtAmt) + nomad.x;
+        nomad.z = ((nomad.fleeDir.z * 3.4) * dtAmt) + nomad.z;
+        nomad.angle = Math.atan2(nomad.fleeDir.x, nomad.fleeDir.z);
+        nomad.phase = (((3.4 * dtAmt) * 2.4) + nomad.phase);
+        if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, nomad.phase, 1.6); } catch (muteErr) {}
+        } else { try { bobModel(nomad, 0.06, 0.05, 0.13, nomad.phase); } catch (muteErr) {} }
+        setFigPose(nomad, hopAmt);
+        return; }
+      if (nomad.scattered) { nomad.scattered = false;
+        nomad.chat = false; nomad.idle = false;
+        resetWalkHere(nomad); }
+      if ((350 < heroGap) && !nomad.chat && ('cross' !== nomad.mode) && !nomad.follow) {
+        placeOnPavement(nomad, huntPavement(game, heroX, heroZ, 150, 250));
+        nomad.idle = false; }
+      if (nomad.idle) { nomad.sway = (nomad.sway + dtAmt);
+        if (nomad.chat) {
+          if (('market' === nomad.chatGroup) && !nomad.marketPlaced) { const marketPt = locateMarket(game);
+            if (marketPt) { placeInRing(nomad, (13 + marketPt.x), (9 + marketPt.z), (nomad.idx % 3), 3); nomad.marketPlaced = true; } }
+          nomad.angle = Math.atan2((nomad.chatCx + -nomad.x), (nomad.chatCz + -nomad.z));
+          const talkAmt = (0.5 + (0.5 * Math.sin(((nomad.idx * 2.1) + (nomad.sway * 0.33)))));
+          if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), ((talkAmt * 0.2) + 0.12)); } catch (muteErr) {}
+          } else { try { nomad.glbInner.position.y = ((talkAmt * 0.008) + 0.006) * Math.sin(((nomad.sway * 1.5) + nomad.idx));
+              nomad.glbInner.rotation.z = ((talkAmt * 0.014) + 0.01) * Math.sin(((nomad.sway * 0.9) + nomad.idx));
+              nomad.glbInner.rotation.x = 0; } catch (muteErr) {} }
+          nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
+          nomad.fig.rotation.y = ((Math.sin(nomad.sway * 0.4) * 0.15) + nomad.angle);
+          return; }
+        if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), 0.12); } catch (muteErr) {}
+        } else { try { nomad.glbInner.position.y = (0.006 * Math.sin(((nomad.sway * 1.5) + nomad.idx)));
+            nomad.glbInner.rotation.z = (0.01 * Math.sin(((nomad.sway * 0.9) + nomad.idx)));
+            nomad.glbInner.rotation.x = 0; } catch (muteErr) {} }
+        nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
+        nomad.fig.rotation.y = ((Math.sin(nomad.sway * 0.4) * 0.15) + nomad.angle);
+        return; }
+      if (nomad.follow) { const leaderRec = nomad.follow;
+        if (!leaderRec || leaderRec.downed) { nomad.sway = (nomad.sway + dtAmt);
+          paintIdle(nomad); setFigPose(nomad, hopAmt);
+          return; }
+        const trailX = ((leaderRec.x + -(Math.sin(leaderRec.angle) * 2.3)) + (Math.cos(leaderRec.angle) * 0.85));
+        const trailZ = ((leaderRec.z + -(Math.cos(leaderRec.angle) * 2.3)) + -(Math.sin(leaderRec.angle) * 0.85));
+        const trailGap = Math.hypot((trailX + -nomad.x), (trailZ + -nomad.z));
+        if (trailGap > 25) { nomad.x = trailX; nomad.z = trailZ; }
+        else { const easeAmt = Math.min(1, (4.5 * dtAmt));
+          nomad.x = (((trailX + -nomad.x) * easeAmt) + nomad.x);
+          nomad.z = (((trailZ + -nomad.z) * easeAmt) + nomad.z); }
+        nomad.angle = leaderRec.angle; nomad.phase = leaderRec.phase;
+        if (trailGap > 0.25) paintWalk(nomad, 0.55);
+        setFigPose(nomad, hopAmt);
+        return; }
+      if (('cross' === nomad.mode) && nomad.cross) { const routeRec = nomad.cross;
+        if ('wait' === routeRec.stage) { routeRec.waitT = (routeRec.waitT + -dtAmt);
+          nomad.sway = (nomad.sway + dtAmt); paintIdle(nomad);
+          nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
+          nomad.fig.rotation.y = ((Math.sin(nomad.sway * 1.7) * 0.55) + routeRec.faceAngle);
+          if (!(routeRec.waitT > 0)) { routeRec.stage = 'cross'; routeRec.tx = (routeRec.cx + -(routeRec.sx * 17.2)); routeRec.tz = ((routeRec.sz * 9) + routeRec.cz); }
+          return; }
+        const stepX = (routeRec.tx + -nomad.x); const stepZ = (routeRec.tz + -nomad.z);
+        const stepGap = Math.hypot(stepX, stepZ);
+        const speedNow = (('cross' === routeRec.stage) ? 1.2 : 1) * nomad.speed;
+        if (stepGap < 0.35) {
+          if ('toCorner' === routeRec.stage) { routeRec.stage = 'toCurb';
+            routeRec.tx = ((routeRec.sx * 17.2) + routeRec.cx);
+            routeRec.tz = ((routeRec.sz * 9) + routeRec.cz);
+          } else if ('toCurb' === routeRec.stage) { routeRec.stage = 'wait';
+            routeRec.waitT = rr(1.4, 3.8); nomad.sway = rr(0, 6);
+          } else if ('cross' === routeRec.stage) { routeRec.stage = 'toWalk';
+            routeRec.tx = (routeRec.cx + -(routeRec.sx * 17.2));
+            routeRec.tz = ((routeRec.sz * 17.2) + routeRec.cz);
+          } else { nomad.mode = 'walk'; nomad.vertical = true;
+            nomad.line = routeRec.cx; nomad.off = (-routeRec.sx * 17.2);
+            nomad.x = (nomad.off + routeRec.cx);
+            nomad.dir = (0 < routeRec.sz) ? 1 : -1; nomad.cross = null; }
+        } else { const moveAmt = Math.min(stepGap, (speedNow * dtAmt));
+          nomad.x = (((stepX / stepGap) * moveAmt) + nomad.x);
+          nomad.z = (((stepZ / stepGap) * moveAmt) + nomad.z);
+          nomad.angle = Math.atan2(stepX, stepZ);
+          nomad.phase = (((speedNow * dtAmt) * 2.4) + nomad.phase);
+          paintWalk(nomad, 0.55); }
+        setFigPose(nomad, hopAmt);
+        return; }
+      if (fastCar && (heroGap < 6)) nomad.panicT = 0.9;
+      let paceAmt = nomad.speed; let lateralAmt = 0;
+      if (nomad.panicT > 0) { nomad.panicT = (nomad.panicT + -dtAmt);
+        paceAmt = (2.1 * nomad.speed);
+        const awaySign = Math.sign((((nomad.x + -heroX) * Math.cos(nomad.angle)) + -((nomad.z + -heroZ) * Math.sin(nomad.angle)))) || 1;
+        lateralAmt = (2.4 * awaySign); }
+      if (nomad.startleT > 0) paceAmt = 0;
+      const fwdAmt = (paceAmt * nomad.dir) * dtAmt;
+      if (!nomad.vertical) { nomad.x = (fwdAmt + nomad.x); nomad.z = ((nomad.line + nomad.off) + ((lateralAmt * dtAmt) * 3)); }
+      else { nomad.z = (fwdAmt + nomad.z); nomad.x = ((nomad.line + nomad.off) + ((lateralAmt * dtAmt) * 3)); }
+      nomad.phase = (((paceAmt * dtAmt) * 2.4) + nomad.phase);
+      const crossLines = nomad.vertical ? game.roadZ : game.roadX;
+      const alongCoord = nomad.vertical ? nomad.z : nomad.x;
       let replanned = false;
-      for (const lineCoord of crossLineList) {
-        if (walker.crosser && (1.2 > Math.abs(alongCoord - lineCoord)) && chance(0.30)) {
-          if (walker.vertical) planCrossing(walker, walker.line, lineCoord, Math.sign(walker.off) || 1, walker.dir);
-          else planCrossing(walker, lineCoord, walker.line, walker.dir, Math.sign(walker.off) || 1);
-          replanned = true;
-          break;
-        }
-        if ((1.2 > Math.abs(alongCoord - lineCoord)) && chance(0.012)) {
-          const oldLine = walker.line;
-          const oldOff = walker.off;
-          walker.vertical = !walker.vertical;
-          walker.line = lineCoord;
-          walker.off = (17.2 * (chance(0.5) ? -1 : 1));
-          walker.dir = chance(0.5) ? 1 : -1;
-          if (!walker.vertical) { walker.z = walker.line + walker.off; walker.x = oldLine + oldOff; }
-          else { walker.x = walker.line + walker.off; walker.z = oldLine + oldOff; }
-          break;
-        }
-      }
-      if (replanned) { placeFigure(walker, hopVal); return; }
-      if ((walker.x > 640) || (-640 > walker.x) || (walker.z > 640) || (-640 > walker.z)) {
-        walker.dir = (walker.dir * -1);
-        walker.x = THREE.MathUtils.clamp(walker.x, -638, 638);
-        walker.z = THREE.MathUtils.clamp(walker.z, -638, 638);
-      }
-      walker.angle = walker.vertical ? ((walker.dir > 0) ? 0 : Math.PI) : ((walker.dir > 0) ? Math.PI / 2 : -Math.PI / 2);
-      if (!gameState.flags.inCar && (heroGap > 0.001) && (1.1 > heroGap)) {
-        const pushVal = (((1.1 - heroGap) * 2.2) * dtStep);
-        walker.x = walker.x + (((walker.x - heroXVal) / heroGap) * pushVal);
-        walker.z = walker.z + (((walker.z - heroZVal) / heroGap) * pushVal);
-      }
-      if (!(walker.figIsGlb && walker.glbInner)) {
-        try { animateFigure(walker.visual, walker.phase, (walker.panicT > 0) ? 1.6 : 0.55); } catch (swallowed) {}
-      } else {
-        try {
-          const isPanic = (walker.panicT > 0);
-          let bobVal = Math.abs(Math.sin(walker.phase)) * 0.04;
-          if (isPanic) bobVal = bobVal + (Math.abs(Math.sin(walker.phase * 1.7)) * 0.06);
-          walker.glbInner.position.y = bobVal;
-          walker.glbInner.rotation.z = Math.sin(walker.phase) * (isPanic ? 0.05 : 0.04);
-          walker.glbInner.rotation.x = isPanic ? 0.10 : 0.05;
-        } catch (swallowed) {}
-      }
-      placeFigure(walker, hopVal);
-    });
-  });
+      for (const lineVal of crossLines) {
+        if (nomad.crosser && (Math.abs((alongCoord + -lineVal)) < 1.2) && chance(0.30)) {
+          if (nomad.vertical) stageCrossing(nomad, nomad.line, lineVal, (Math.sign(nomad.off) || 1), nomad.dir);
+          else stageCrossing(nomad, lineVal, nomad.line, nomad.dir, (Math.sign(nomad.off) || 1));
+          replanned = true; break; }
+        if ((Math.abs((alongCoord + -lineVal)) < 1.2) && chance(0.012)) {
+          const oldLine = nomad.line; const oldOff = nomad.off;
+          nomad.vertical = !(nomad.vertical); nomad.line = lineVal;
+          nomad.off = ((chance(0.5) ? -1 : 1) * 17.2);
+          nomad.dir = chance(0.5) ? 1 : -1;
+          if (!nomad.vertical) { nomad.z = (nomad.off + nomad.line); nomad.x = (oldOff + oldLine); }
+          else { nomad.x = (nomad.off + nomad.line); nomad.z = (oldOff + oldLine); }
+          break; } }
+      if (replanned) { setFigPose(nomad, hopAmt); return; }
+      if ((nomad.x > 640) || (-640 > nomad.x) || (nomad.z > 640) || (-640 > nomad.z)) {
+        nomad.dir = (-1 * nomad.dir);
+        nomad.x = THREE.MathUtils.clamp(nomad.x, -638, 638);
+        nomad.z = THREE.MathUtils.clamp(nomad.z, -638, 638); }
+      if (nomad.vertical) nomad.angle = (0 < nomad.dir) ? 0 : Math.PI;
+      else nomad.angle = (0 < nomad.dir) ? (Math.PI / 2) : (-Math.PI / 2);
+      if (!game.flags.inCar && (heroGap > 0.001) && (heroGap < 1.1)) {
+        const pushAmt = (((1.1 + -heroGap) * 2.2) * dtAmt);
+        nomad.x = ((((nomad.x + -heroX) / heroGap) * pushAmt) + nomad.x);
+        nomad.z = ((((nomad.z + -heroZ) / heroGap) * pushAmt) + nomad.z); }
+      if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, nomad.phase, (nomad.panicT > 0) ? 1.6 : 0.55); } catch (muteErr) {}
+      } else { try { const panicFlag = (nomad.panicT > 0);
+          let bobAmt = (0.04 * Math.abs(Math.sin(nomad.phase)));
+          if (panicFlag) bobAmt = ((Math.abs(Math.sin(nomad.phase * 1.7)) * 0.06) + bobAmt);
+          nomad.glbInner.position.y = bobAmt;
+          nomad.glbInner.rotation.z = (panicFlag ? 0.05 : 0.04) * Math.sin(nomad.phase);
+          nomad.glbInner.rotation.x = panicFlag ? 0.10 : 0.05; } catch (muteErr) {} }
+      setFigPose(nomad, hopAmt); }
+    game.peds.forEach((nomad) => stepWalker(nomad)); });
 }

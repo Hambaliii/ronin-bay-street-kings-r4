@@ -1,51 +1,43 @@
-// Saved progress lives in browser storage for this build
-// Every storage touch sits behind a guard so a blocked store
-// falls back to a fresh start rather than breaking the boot
-const STORAGE_KEY = 'roninbay-r4-save-v1';
-const STARTER_CAR = 'hachi';
-function looksLikeRecord(candidateGiven) {
-  const presentGiven = (candidateGiven !== null);
-  const objectGiven = (typeof candidateGiven === 'object');
-  return (objectGiven && presentGiven); }
-function looksLikeNumber(candidateGiven) {
-  const numberGiven = (typeof candidateGiven === 'number');
-  return numberGiven; }
-function copySavedNumbers(stateGiven, recordGiven) {
-  const appliersNow = [
-    () => { if (looksLikeNumber(recordGiven.money)) stateGiven.money = recordGiven.money; },
-    () => { if (looksLikeNumber(recordGiven.rep)) stateGiven.rep = recordGiven.rep; },
-    () => { if (looksLikeNumber(recordGiven.rankIdx)) stateGiven.rankIdx = recordGiven.rankIdx; },
-    () => { if (looksLikeNumber(recordGiven.missionIndex)) stateGiven.missionIndex = recordGiven.missionIndex; }];
-  appliersNow.forEach((applyNow) => applyNow()); }
-function copySavedGarage(stateGiven, recordGiven) {
-  const garageGiven = recordGiven.garage;
-  const garageUsable = garageGiven && Array.isArray(garageGiven) && garageGiven.length;
-  if (!garageUsable) return;
-  stateGiven.garage = garageGiven.slice(); }
-function copySavedDistricts(stateGiven, recordGiven) {
-  const { districtState: districtsGiven } = recordGiven;
-  if (looksLikeRecord(districtsGiven)) stateGiven.districtState = districtsGiven; }
-export function initSave(stateGiven) {
+// Progress persists in browser storage between sessions
+// Each storage access is wrapped so a denied or full store
+// degrades into a clean start instead of a failed launch
+const STORAGE_SLOT_LABEL = 'roninbay-r4-save-v1';
+const STARTER_CAR_ID = 'hachi';
+function matchesType(valueIn, typeLabel) {
+  return typeof valueIn === typeLabel; }
+function asRecord(valueIn) {
+  const recordReady = (valueIn !== null) && matchesType(valueIn, 'object');
+  return recordReady ? valueIn : null; }
+function whenNumeric(valueIn, applyFn) {
+  if (matchesType(valueIn, 'number')) applyFn(valueIn); }
+function restoreRecord(targetState, sourceRecord) {
+  whenNumeric(sourceRecord.money, (heldMoney) => { targetState.money = heldMoney; });
+  whenNumeric(sourceRecord.rep, (heldRep) => { targetState.rep = heldRep; });
+  whenNumeric(sourceRecord.rankIdx, (heldRank) => { targetState.rankIdx = heldRank; });
+  whenNumeric(sourceRecord.missionIndex, (heldMission) => { targetState.missionIndex = heldMission; });
+  const garageHeld = sourceRecord.garage;
+  const garageReady = garageHeld && Array.isArray(garageHeld) && garageHeld.length;
+  if (garageReady) targetState.garage = garageHeld.slice();
+  const districtsHeld = asRecord(sourceRecord.districtState);
+  if (districtsHeld) targetState.districtState = districtsHeld; }
+function garageHasCars(targetState) {
+  return Array.isArray(targetState.garage) && (targetState.garage.length > 0); }
+function guaranteeGarage(targetState) {
+  if (!garageHasCars(targetState)) targetState.garage = [STARTER_CAR_ID];
+  const mirroredCars = targetState.garage.slice();
+  targetState.ownedCars = mirroredCars; }
+function makePersistFn(targetState) {
+  const persistFn = () => { try {
+      if (Array.isArray(targetState.garage)) targetState.ownedCars = targetState.garage.slice();
+      const snapshotHeld = { money: targetState.money, rep: targetState.rep, rankIdx: targetState.rankIdx, missionIndex: targetState.missionIndex, garage: targetState.garage, districtState: targetState.districtState };
+      localStorage.setItem(STORAGE_SLOT_LABEL, JSON.stringify(snapshotHeld));
+    } catch (ignoredErr) { /* a blocked store must never take the game down */ } };
+  return persistFn; }
+export function initSave(targetState) {
   try {
-    const storedRaw = localStorage.getItem(STORAGE_KEY);
-    if (storedRaw) {
-      const decodedNow = JSON.parse(storedRaw);
-      if (looksLikeRecord(decodedNow)) {
-        copySavedNumbers(stateGiven, decodedNow);
-        copySavedGarage(stateGiven, decodedNow);
-        copySavedDistricts(stateGiven, decodedNow); } }
-  } catch (ignoredFault) { /* an unreadable save simply means starting over */ }
-  const garageIsList = Array.isArray(stateGiven.garage);
-  const garageEmpty = garageIsList && (stateGiven.garage.length === 0);
-  const garageMissing = !garageIsList;
-  if (garageMissing || garageEmpty) stateGiven.garage = [STARTER_CAR];
-  stateGiven.ownedCars = stateGiven.garage.slice();
-  stateGiven.saveGame = () => { try {
-      if (Array.isArray(stateGiven.garage)) stateGiven.ownedCars = stateGiven.garage.slice();
-      const recordOut = {};
-      recordOut.money = stateGiven.money; recordOut.rep = stateGiven.rep;
-      recordOut.rankIdx = stateGiven.rankIdx; recordOut.missionIndex = stateGiven.missionIndex;
-      recordOut.garage = stateGiven.garage; recordOut.districtState = stateGiven.districtState;
-      const encodedNow = JSON.stringify(recordOut);
-      localStorage.setItem(STORAGE_KEY, encodedNow);
-    } catch (ignoredFault) { /* full or blocked storage must stay survivable */ } }; }
+    const rawText = localStorage.getItem(STORAGE_SLOT_LABEL);
+    const parsedRecord = rawText ? asRecord(JSON.parse(rawText)) : null;
+    if (parsedRecord) restoreRecord(targetState, parsedRecord);
+  } catch (ignoredErr) { /* a corrupt save is treated as no save at all */ }
+  guaranteeGarage(targetState);
+  targetState.saveGame = makePersistFn(targetState); }
