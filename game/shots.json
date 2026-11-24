@@ -1,17 +1,12 @@
 {
-  "shots": [
-    {
-      "file": "screenshots/1-cover.jpg",
-      "url": "game/index.html?shot=city&seed=1"
-    },    {
-      "file": "screenshots/2-meet.jpg",
-      "url": "game/index.html?shot=meet&seed=1"
-    },    {
-      "file": "screenshots/3-chase.jpg",
-      "url": "game/index.html?shot=chase&seed=1"
-    },    {
-      "file": "screenshots/4-hero.jpg",
-      "url": "game/index.html?shot=hero&seed=1"
-    }
-  ]
+    "shots": [
+        {"url": "game/index.html?shot=city&seed=1",
+            "file": "screenshots/1-cover.jpg"},
+        {"url": "game/index.html?shot=meet&seed=1",
+            "file": "screenshots/2-meet.jpg"},
+        {"url": "game/index.html?shot=chase&seed=1",
+            "file": "screenshots/3-chase.jpg"},
+        {"url": "game/index.html?shot=hero&seed=1",
+            "file": "screenshots/4-hero.jpg"}
+    ]
 }

@@ -1,27 +1,27 @@
-# Ronin Bay — STREET SAMURAI
+# STREET SAMURAI — Ronin Bay
 
-A whole city, playable straight from the browser tab. Ronin Bay draws on Japanese street racing and a crew war over turf, with the player rolling alongside the Ronin Kai. Take the map district by district while the garage grows: a dozen linked story jobs carry the run from the harbour up into the mountain passes, ground already won still has to be held, and every extra minute spent roaming draws a heavier RBPD response.
+Ronin Bay is a complete city that runs inside a single browser tab. Its story mixes Japanese street racing with a turf war between crews: you drive with the Ronin Kai, fighting for the map one district at a time as your garage fills up. Twelve connected story jobs form the spine of the campaign, running from the harbour all the way to the mountain passes. Territory you have already taken still needs defending, and the longer you spend roaming freely, the harder the RBPD comes after you.
 
-## Keys you will use
+## How it is played
 
-- **WASD / arrow keys** — move around on foot, steer once you are driving
-- **F** — climb into a car, or get out again
-- **Space** — pull the handbrake and slide
-- **Shift** — NOS while driving; a sprint while walking
-- **E** — the interact key, garage included
-- **P / Esc** — pause the game and bring up the city map
-- **M** — toggle the sound off or back on
+- **WASD / arrow keys** — steering when you are in a car; movement when you are on foot
+- **F** — enter a car, or climb back out
+- **Space** — handbrake, for sliding the car
+- **Shift** — sprinting on foot; NOS once you are driving
+- **E** — interact, including inside the garage
+- **P / Esc** — pause; this also opens the city map
+- **M** — sound on or off
 
-## Highlights of the build
+## What is in the game
 
-- Seventeen cars, each one formed by extruding its side silhouette, alongside hero machines won off rivals through pinkslip races
-- Seven named characters steer the plot from the first scene through to the ending
-- Heat rises across five wanted stars, bringing roadblocks, spike strips and a helicopter that sweeps its searchlight over the streets
-- Holding territory earns a steady passive income as time passes
-- One mountain loop is reserved purely for touge runs
-- The day and night cycle keeps rolling without pause
-- Vice flavour runs throughout: a neon shoreline timed for sunset, pastel Coral Strip facades, open paved plazas and screenshots staged at dusk
+- A roster of seventeen cars, every one of them built by extruding its side silhouette — plus hero machines taken from rivals in pinkslip races
+- A cast of seven named characters who carry the plot from the opening scene to the ending
+- A wanted system of five heat stars, escalating to roadblocks, spike strips and a helicopter sweeping the streets with its searchlight
+- Passive income that keeps arriving while you hold territory
+- A mountain loop set aside for nothing but touge runs
+- A day and night cycle that never stops rolling
+- A Vice streak throughout the presentation: a neon shoreline timed for sunset, pastel facades along the Coral Strip, open paved plazas, and screenshots staged at dusk
 
-## Technical notes
+## Under the hood
 
-Underneath sits a vendored three.js. Textures never leave the machine either, since each one is painted procedurally onto a canvas at runtime, while WebAudio synthesis handles the engine notes, the skid noise, the sirens and the music. With no build step and no external fetching involved, opening `game/index.html` in a desktop browser is the whole setup.
+The engine sits on a vendored copy of three.js. Nothing is fetched from outside and there is no build step: every texture is painted procedurally onto a canvas at runtime, and WebAudio synthesis produces the engine notes, skid noise, sirens and music. To play, simply open `game/index.html` in a desktop browser — that is the entire setup.
