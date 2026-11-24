@@ -1,263 +1,190 @@
 import * as THREE from 'three';
-
-// ---------------------------------------------------------------- assets.js
-// Hero-asset system: real GLB models (Tripo etc.) that replace procedural
-// builds, with the procedural version kept as the automatic fallback.
-// No GLTFLoader addon ships with the repo, so parseGLB below is a minimal,
-// bounds-checked GLB v2 reader: JSON + BIN chunks, generic accessors
-// (float32 / uint16 / uint32, SCALAR/VEC2/VEC3/VEC4, byteStride respected),
-// one embedded image. Anything unsupported throws — loadGLBModel catches
-// and returns null, and callers keep the procedural visual.
-//
-// To add a future hero asset (hero car, main character, garage landmark):
-// drop the .glb in game/assets/, add one HERO_ASSETS entry, and call
-// loadHeroAsset('<name>') where the procedural build is created.
-
-// --- GLB parsing (pure — no three.js usage) ----------------------------------
-
-const COMP = {
-  5121: { bytes: 1, get: 'getUint8', Array: Uint8Array },
-  5123: { bytes: 2, get: 'getUint16', Array: Uint16Array },
-  5125: { bytes: 4, get: 'getUint32', Array: Uint32Array },
-  5126: { bytes: 4, get: 'getFloat32', Array: Float32Array },
+// Loaded hero models replace procedural builds whenever they arrive
+// A model that fails to fetch simply leaves the procedural visual
+// No loader addon ships here, so a compact GLB reader lives below
+// It understands the JSON and BIN chunks plus generic accessors
+// covering float and integer kinds, scalar through four wide vectors,
+// with stride honoured and a single embedded image
+// Anything beyond that support throws, and the loader turns a throw
+// into null so callers keep their fallback visual untouched
+// Adding an asset later means dropping the file into the assets
+// folder, registering it below, and asking for it where the
+// procedural build gets created
+// The parsing section comes first and never touches the renderer
+const COMPONENTS_PER_TYPE = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+const GLB_MAGIC = 0x46546c67;
+const COMPONENT_INFO = {
+  5121: { bytes: 1, get: 'getUint8',
+    Array: Uint8Array },
+  5123: { bytes: 2, get: 'getUint16',
+    Array: Uint16Array },
+  5125: { bytes: 4, get: 'getUint32',
+    Array: Uint32Array },
+  5126: { bytes: 4, get: 'getFloat32',
+    Array: Float32Array },
 };
-const TYPE_COMPS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
-const GLB_MAGIC = 0x46546c67; // 'glTF' — Vice V3 sweep: named, not a magic literal
-
-export function parseGLB(arrayBuffer) {
-  if (!arrayBuffer || arrayBuffer.byteLength < 20) throw new Error('GLB: too small');
-  const dv = new DataView(arrayBuffer);
-  if (dv.getUint32(0, true) !== GLB_MAGIC) throw new Error('GLB: bad magic'); // 'glTF'
-  if (dv.getUint32(4, true) !== 2) throw new Error('GLB: not version 2');
-  const totalLen = dv.getUint32(8, true);
-  if (totalLen > arrayBuffer.byteLength) throw new Error('GLB: length exceeds buffer');
-
-  let json = null;
-  let binStart = -1;
-  let binLen = 0;
-  let off = 12;
-  while (off + 8 <= totalLen) {
-    const chunkLen = dv.getUint32(off, true);
-    const chunkType = dv.getUint32(off + 4, true);
-    const dataStart = off + 8;
-    if (chunkLen < 0 || dataStart + chunkLen > totalLen) throw new Error('GLB: chunk out of bounds');
-    if (chunkType === 0x4e4f534a) { // 'JSON'
-      json = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(arrayBuffer, dataStart, chunkLen)));
-    } else if (chunkType === 0x004e4942) { // 'BIN\0'
-      binStart = dataStart;
-      binLen = chunkLen;
-    }
-    off = dataStart + chunkLen;
-  }
-  if (!json) throw new Error('GLB: no JSON chunk');
-  if (binStart < 0) throw new Error('GLB: no BIN chunk');
-  if (!Array.isArray(json.accessors) || !Array.isArray(json.bufferViews)) {
-    throw new Error('GLB: missing accessors/bufferViews');
-  }
-
-  function readAccessor(index) {
-    const acc = json.accessors[index];
-    if (!acc) throw new Error('GLB: accessor missing');
-    const comp = COMP[acc.componentType];
-    const nComp = TYPE_COMPS[acc.type];
-    if (!comp || !nComp) throw new Error('GLB: unsupported accessor type');
-    const bv = json.bufferViews[acc.bufferView ?? 0];
-    if (!bv || (bv.buffer ?? 0) !== 0) throw new Error('GLB: unsupported bufferView');
-    const packed = comp.bytes * nComp;
-    const stride = bv.byteStride || packed;
-    if (stride < packed) throw new Error('GLB: bad byteStride');
-    const base = binStart + (bv.byteOffset || 0) + (acc.byteOffset || 0);
-    const span = acc.count > 0 ? (acc.count - 1) * stride + packed : 0;
-    if (base < binStart || base + span > binStart + binLen) throw new Error('GLB: accessor out of range');
-    if (bv.byteLength !== undefined && (acc.byteOffset || 0) + span > bv.byteLength) {
-      throw new Error('GLB: accessor exceeds bufferView');
-    }
-    const out = new comp.Array(acc.count * nComp);
-    for (let i = 0; i < acc.count; i++) {
-      const o = base + i * stride;
-      for (let c = 0; c < nComp; c++) out[i * nComp + c] = dv[comp.get](o + c * comp.bytes, true);
-    }
-    return out;
-  }
-
-  const geometries = [];
-  for (const mesh of json.meshes || []) {
-    for (const prim of mesh.primitives || []) {
-      const attrs = prim.attributes || {};
-      if (attrs.POSITION === undefined) throw new Error('GLB: primitive without POSITION');
-      geometries.push({
-        position: readAccessor(attrs.POSITION),
-        normal: attrs.NORMAL !== undefined ? readAccessor(attrs.NORMAL) : null,
-        uv: attrs.TEXCOORD_0 !== undefined ? readAccessor(attrs.TEXCOORD_0) : null,
-        index: prim.indices !== undefined ? readAccessor(prim.indices) : null,
-      });
-    }
-  }
-  if (!geometries.length) throw new Error('GLB: no geometry');
-
-  let image = null;
-  const img = (json.images || [])[0];
-  if (img && img.bufferView !== undefined) {
-    const bv = json.bufferViews[img.bufferView];
-    if (!bv || (bv.buffer ?? 0) !== 0) throw new Error('GLB: unsupported image bufferView');
-    const start = binStart + (bv.byteOffset || 0);
-    if (start < binStart || start + bv.byteLength > binStart + binLen) {
-      throw new Error('GLB: image out of range');
-    }
-    image = {
-      mime: img.mimeType || 'image/jpeg',
-      bytes: new Uint8Array(arrayBuffer, start, bv.byteLength).slice(),
-    };
-  }
-  return { geometries, image };
-}
-
-// --- three.js model building ---------------------------------------------------
-
-export async function loadGLBModel(url) {
+function headerMagicDiffers(viewIn) { return viewIn.getUint32(0, true) !== GLB_MAGIC; }
+export function parseGLB(bufIn) {
+  if (!bufIn || !(bufIn.byteLength >= 20)) throw new Error('GLB: too small');
+  const view = new DataView(bufIn);
+  if (headerMagicDiffers(view)) throw new Error('GLB: bad magic');
+  if (view.getUint32(4, true) !== 2) throw new Error('GLB: not version 2');
+  const declaredLen = view.getUint32(8, true);
+  if (bufIn.byteLength < declaredLen) throw new Error('GLB: length exceeds buffer');
+  let docJson = null; let binOffset = -1; let binSize = 0; let walkPos = 12;
+  while (!(walkPos + 8 > declaredLen)) {
+    const thisChunkLen = view.getUint32(walkPos, true);
+    const thisChunkKind = view.getUint32(walkPos + 4, true);
+    const payloadAt = walkPos + 8;
+    if (thisChunkLen < 0 || declaredLen < payloadAt + thisChunkLen) throw new Error('GLB: chunk out of bounds');
+    if (thisChunkKind === 0x4e4f534a) {
+      docJson = JSON.parse(new TextDecoder('utf-8').decode(new Uint8Array(bufIn, payloadAt, thisChunkLen)));
+    } else if (thisChunkKind === 0x004e4942) { binOffset = payloadAt; binSize = thisChunkLen; }
+    walkPos = payloadAt + thisChunkLen; }
+  if (!docJson) throw new Error('GLB: no JSON chunk');
+  if (!(binOffset >= 0)) throw new Error('GLB: no BIN chunk');
+  if (!Array.isArray(docJson.bufferViews) || !Array.isArray(docJson.accessors)) throw new Error('GLB: missing accessors/bufferViews');
+  function accessorSpanCheck(accDef, viewDef, elemBytes, strideVal) {
+    const startByte = binOffset + (viewDef.byteOffset || 0) + (accDef.byteOffset || 0);
+    const spanTotal = accDef.count > 0 ? elemBytes + (accDef.count - 1) * strideVal : 0;
+    if (startByte < binOffset || binOffset + binSize < startByte + spanTotal) throw new Error('GLB: accessor out of range');
+    if (viewDef.byteLength !== undefined && viewDef.byteLength < (accDef.byteOffset || 0) + spanTotal) throw new Error('GLB: accessor exceeds bufferView');
+    return { startByte: startByte, spanTotal: spanTotal }; }
+  function decodeAccessor(accIndex) {
+    const accDef = docJson.accessors[accIndex];
+    if (!accDef) throw new Error('GLB: accessor missing');
+    const compInfo = COMPONENT_INFO[accDef.componentType];
+    const perElemCount = COMPONENTS_PER_TYPE[accDef.type];
+    if (!compInfo || !perElemCount) throw new Error('GLB: unsupported accessor type');
+    const viewDef = docJson.bufferViews[accDef.bufferView ?? 0];
+    if (!viewDef || (viewDef.buffer ?? 0) !== 0) throw new Error('GLB: unsupported bufferView');
+    const packedBytes = compInfo.bytes * perElemCount;
+    const strideVal = viewDef.byteStride || packedBytes;
+    if (packedBytes > strideVal) throw new Error('GLB: bad byteStride');
+    const spanInfo = accessorSpanCheck(accDef, viewDef, packedBytes, strideVal);
+    const outValues = new compInfo.Array(accDef.count * perElemCount);
+    let elemCursor = 0;
+    while (elemCursor < accDef.count) {
+      const elemBase = spanInfo.startByte + elemCursor * strideVal;
+      let partCursor = 0;
+      while (partCursor < perElemCount) {
+        outValues[elemCursor * perElemCount + partCursor] = view[compInfo.get](elemBase + partCursor * compInfo.bytes, true);
+        partCursor++; }
+      elemCursor++; }
+    return outValues; }
+  const geometryList = [];
+  (docJson.meshes || []).forEach((meshDef) => {
+    (meshDef.primitives || []).forEach((primDef) => {
+      const attrMap = primDef.attributes || {};
+      if (attrMap.POSITION === undefined) throw new Error('GLB: primitive without POSITION');
+      const geomEntry = {};
+      geomEntry.position = decodeAccessor(attrMap.POSITION);
+      geomEntry.normal = attrMap.NORMAL !== undefined ? decodeAccessor(attrMap.NORMAL) : null;
+      geomEntry.uv = attrMap.TEXCOORD_0 !== undefined ? decodeAccessor(attrMap.TEXCOORD_0) : null;
+      geomEntry.index = primDef.indices !== undefined ? decodeAccessor(primDef.indices) : null;
+      geometryList.push(geomEntry); }); });
+  if (!(geometryList.length > 0)) throw new Error('GLB: no geometry');
+  let embeddedImage = null;
+  const firstImageDef = (docJson.images || [])[0];
+  if (firstImageDef && firstImageDef.bufferView !== undefined) {
+    const imageView = docJson.bufferViews[firstImageDef.bufferView];
+    if (!imageView || (imageView.buffer ?? 0) !== 0) throw new Error('GLB: unsupported image bufferView');
+    const imageAt = binOffset + (imageView.byteOffset || 0);
+    if (imageAt < binOffset || binOffset + binSize < imageAt + imageView.byteLength) throw new Error('GLB: image out of range');
+    embeddedImage = { mime: firstImageDef.mimeType || 'image/jpeg', bytes: new Uint8Array(bufIn, imageAt, imageView.byteLength).slice() }; }
+  return { geometries: geometryList, image: embeddedImage }; }
+// Turning parsed data into scene models
+export async function loadGLBModel(urlIn) {
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
-    let buf;
+    const abortCtl = new AbortController();
+    const abortTimer = setTimeout(() => abortCtl.abort(), 8000);
+    let fetchedBytes;
     try {
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) return null;
-      buf = await res.arrayBuffer();
-    } finally {
-      clearTimeout(timer);
-    }
-    const parsed = parseGLB(buf);
-
+      const response = await fetch(urlIn, { signal: abortCtl.signal });
+      if (!response.ok) return null;
+      fetchedBytes = await response.arrayBuffer();
+    } finally { clearTimeout(abortTimer); }
+    const parsed = parseGLB(fetchedBytes);
     let texture = null;
     if (parsed.image) {
       try {
-        const blob = new Blob([parsed.image.bytes], { type: parsed.image.mime });
-        texture = await new THREE.TextureLoader().loadAsync(URL.createObjectURL(blob));
-        if (texture) {
-          texture.colorSpace = THREE.SRGBColorSpace;
-          texture.flipY = false; // glTF UVs assume flipY=false (TextureLoader defaults true)
-        }
-      } catch (e) { texture = null; }
-    }
-    const material = texture
+        const imageBlob = new Blob([parsed.image.bytes], { type: parsed.image.mime });
+        texture = await new THREE.TextureLoader().loadAsync(URL.createObjectURL(imageBlob));
+        if (texture) { texture.flipY = false; texture.colorSpace = THREE.SRGBColorSpace; }
+      } catch (err) { texture = null; } }
+    const surfaceMat = texture
       ? new THREE.MeshStandardMaterial({ map: texture, roughness: 0.9, metalness: 0 })
       : new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.9, metalness: 0 });
-
-    const group = new THREE.Group();
-    for (const g of parsed.geometries) {
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(g.position, 3));
-      if (g.normal) geo.setAttribute('normal', new THREE.BufferAttribute(g.normal, 3));
-      if (g.uv) geo.setAttribute('uv', new THREE.BufferAttribute(g.uv, 2));
-      if (g.index) geo.setIndex(new THREE.BufferAttribute(g.index, 1));
-      if (!g.normal) geo.computeVertexNormals();
-      group.add(new THREE.Mesh(geo, material));
-    }
-    return group;
-  } catch (e) {
-    return null; // any failure -> caller keeps the procedural fallback
-  }
-}
-
-// --- registry ------------------------------------------------------------------
-
-export const HERO_ASSETS = {
-  helicopter: { url: 'assets/helicopter.glb', scale: 11 },
-  // S35: garage promoted to the front of the registry — the eager loop
-  // below starts loads in registry order and the browser only runs a
-  // handful of fetches concurrently, so a late entry's fetch can lose
-  // loadGLBModel's 8 s abort race behind ~30 MB of earlier GLBs. The
-  // garage is a landmark swap with no second caller, so it goes second.
-  garage: { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } },
-  heroCar: { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } },
-  npcPolice: { url: 'assets/npc-police.glb', targetSize: { x: 1.82, y: 1.42, z: 4.85 } },
-  npcSedan: { url: 'assets/npc-sedan.glb', targetSize: { x: 4.75, y: 1.45, z: 1.80 } },
-  npcTaxi: { url: 'assets/npc-taxi.glb', targetSize: { x: 1.82, y: 1.50, z: 4.80 } },
-  npcVespa: { url: 'assets/npc-vespa.glb', targetSize: { x: 0.75, y: 1.55, z: 1.95 } },
-  npcSportbike: { url: 'assets/npc-sportbike.glb', targetSize: { x: 2.05, y: 1.15, z: 0.80 } },
-  gtr35: { url: 'assets/gtr35.glb', targetSize: { x: 1.89, y: 1.36, z: 4.71 } },
-  lamboSvj: { url: 'assets/lambo-svj.glb', targetSize: { x: 2.10, y: 1.14, z: 4.94 } },
-  mc: { url: 'assets/mc-ren.glb', scale: 1.78 },
-  rivalDriver: { url: 'assets/rival-driver.glb', scale: 1.80 },
-  policeOfficer: { url: 'assets/police-officer.glb', scale: 1.78 },
-  citizenWoman: { url: 'assets/citizen-woman.glb', scale: 1.68 },
-  // Untextured GLB (POSITION+NORMAL only, no UVs/material/image): parseGLB
-  // returns uv:null, loadGLBModel skips the uv attribute and uses the plain
-  // no-map material; peds.js tints each clone per-ped instead.
-  citizenTeen: { url: 'assets/citizen-teen.glb', scale: 1.62 },
-  // Textured GLB (face + dark hoodie + backpack baked in): peds.js uses it
-  // as the primary teen — its clones keep the model's own texture, no tint.
-  citizenTeen2: { url: 'assets/citizen-teen2.glb', scale: 1.62 },
-  citizenOffice: { url: 'assets/citizen-office.glb', scale: 1.76 },
-  weaponPistol: { url: 'assets/weapon-pistol.glb', scale: 0.30 },
-  weaponSmg: { url: 'assets/weapon-smg.glb', scale: 0.55 },
-  weaponBat: { url: 'assets/weapon-bat.glb', scale: 0.72 },
-};
-
-const _heroCache = new Map();
-
-// Loads a registered hero asset and wraps it in a Group scaled into game
-// units (wrapper origin = model origin). Two scaling modes:
-//  - entry.scale: uniform scalar (helicopter).
-//  - entry.targetSize {x,y,z}: per-axis scale so the model's local bbox
-//    (measured on the UNWRAPPED model) lands exactly on the target size in
-//    metres — needed for stylized models whose proportions are off.
-// Resolves null on any failure. Cached per name: repeat calls share one
-// fetch and one wrapper instance.
-export async function loadHeroAsset(name) {
-  const entry = HERO_ASSETS[name];
-  if (!entry) return null;
-  if (!_heroCache.has(name)) {
-    const p = (async () => {
-      // S35: one in-promise retry on a null load. A transient failure
-      // (the 8 s fetch abort in loadGLBModel losing the eager-load
-      // concurrency race) used to be cached forever: the cache stored
-      // this promise permanently, so a single abort poisoned the asset
-      // for the whole session and every swap site (garage HQ, player
-      // MC Ren) silently kept its procedural fallback. The retry runs
-      // after the first wave of fetches has drained, and a still-null
-      // result evicts the cache entry so a later caller can try again.
-      let model = await loadGLBModel(entry.url);
-      if (!model) model = await loadGLBModel(entry.url);
-      if (!model) { _heroCache.delete(name); return null; }
+    const modelRoot = new THREE.Group();
+    parsed.geometries.forEach((geomDef) => {
+      const bufferGeo = new THREE.BufferGeometry();
+      bufferGeo.setAttribute('position', new THREE.BufferAttribute(geomDef.position, 3));
+      if (geomDef.normal) bufferGeo.setAttribute('normal', new THREE.BufferAttribute(geomDef.normal, 3));
+      if (geomDef.uv) bufferGeo.setAttribute('uv', new THREE.BufferAttribute(geomDef.uv, 2));
+      if (geomDef.index) bufferGeo.setIndex(new THREE.BufferAttribute(geomDef.index, 1));
+      if (!geomDef.normal) bufferGeo.computeVertexNormals();
+      modelRoot.add(new THREE.Mesh(bufferGeo, surfaceMat)); });
+    return modelRoot;
+  } catch (err) { return null; } }
+// Registry of hero assets
+export const HERO_ASSETS = {};
+HERO_ASSETS.helicopter = { url: 'assets/helicopter.glb', scale: 11 };
+HERO_ASSETS.garage = { url: 'assets/garage.glb', targetSize: { x: 30, y: 15, z: 30 } };
+HERO_ASSETS.heroCar = { url: 'assets/hero-car.glb', targetSize: { x: 1.81, y: 1.275, z: 4.51 } };
+HERO_ASSETS.npcPolice = { url: 'assets/npc-police.glb', targetSize: { x: 1.82, y: 1.42, z: 4.85 } };
+HERO_ASSETS.npcSedan = { url: 'assets/npc-sedan.glb', targetSize: { x: 4.75, y: 1.45, z: 1.80 } };
+HERO_ASSETS.npcTaxi = { url: 'assets/npc-taxi.glb', targetSize: { x: 1.82, y: 1.50, z: 4.80 } };
+HERO_ASSETS.npcVespa = { url: 'assets/npc-vespa.glb', targetSize: { x: 0.75, y: 1.55, z: 1.95 } };
+HERO_ASSETS.npcSportbike = { url: 'assets/npc-sportbike.glb', targetSize: { x: 2.05, y: 1.15, z: 0.80 } };
+HERO_ASSETS.gtr35 = { url: 'assets/gtr35.glb', targetSize: { x: 1.89, y: 1.36, z: 4.71 } };
+HERO_ASSETS.lamboSvj = { url: 'assets/lambo-svj.glb', targetSize: { x: 2.10, y: 1.14, z: 4.94 } };
+HERO_ASSETS.mc = { url: 'assets/mc-ren.glb', scale: 1.78 };
+HERO_ASSETS.rivalDriver = { url: 'assets/rival-driver.glb', scale: 1.80 };
+HERO_ASSETS.policeOfficer = { url: 'assets/police-officer.glb', scale: 1.78 };
+HERO_ASSETS.citizenWoman = { url: 'assets/citizen-woman.glb', scale: 1.68 };
+HERO_ASSETS.citizenTeen = { url: 'assets/citizen-teen.glb', scale: 1.62 };
+HERO_ASSETS.citizenTeen2 = { url: 'assets/citizen-teen2.glb', scale: 1.62 };
+HERO_ASSETS.citizenOffice = { url: 'assets/citizen-office.glb', scale: 1.76 };
+HERO_ASSETS.weaponPistol = { url: 'assets/weapon-pistol.glb', scale: 0.30 };
+HERO_ASSETS.weaponSmg = { url: 'assets/weapon-smg.glb', scale: 0.55 };
+HERO_ASSETS.weaponBat = { url: 'assets/weapon-bat.glb', scale: 0.72 };
+const inFlightByName = new Map();
+// Fetch one registered asset and hand back a wrapper group scaled
+// into game units, with its origin on the model origin
+// Two scaling routes exist: a plain uniform scale, or a per axis
+// target size derived from the unwrapped bounding box so the model
+// lands at exact metre dimensions
+// Failures resolve null, and results cache by name so repeat callers
+// share one fetch and one wrapper
+export async function loadHeroAsset(nameIn) {
+  const registryEntry = HERO_ASSETS[nameIn];
+  if (!registryEntry) return null;
+  if (!inFlightByName.has(nameIn)) {
+    const pendingLoad = (async () => {
+      let loadedModel = await loadGLBModel(registryEntry.url);
+      if (!loadedModel) loadedModel = await loadGLBModel(registryEntry.url);
+      if (!loadedModel) { inFlightByName.delete(nameIn); return null; }
       const wrapper = new THREE.Group();
-      wrapper.name = 'hero:' + name;
-      if (entry.targetSize) {
-        const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+      wrapper.name = 'hero:' + nameIn;
+      if (registryEntry.targetSize) {
+        const boundsSize = new THREE.Box3().setFromObject(loadedModel).getSize(new THREE.Vector3());
         wrapper.scale.set(
-          size.x > 0 ? entry.targetSize.x / size.x : 1,
-          size.y > 0 ? entry.targetSize.y / size.y : 1,
-          size.z > 0 ? entry.targetSize.z / size.z : 1
-        );
-      } else {
-        wrapper.scale.setScalar(entry.scale || 1);
-      }
-      wrapper.add(model);
+          boundsSize.x > 0 ? registryEntry.targetSize.x / boundsSize.x : 1,
+          boundsSize.y > 0 ? registryEntry.targetSize.y / boundsSize.y : 1,
+          boundsSize.z > 0 ? registryEntry.targetSize.z / boundsSize.z : 1);
+      } else { wrapper.scale.setScalar(registryEntry.scale || 1); }
+      wrapper.add(loadedModel);
       return wrapper;
     })().catch(() => null);
-    _heroCache.set(name, p);
-  }
-  return _heroCache.get(name);
-}
-
-// --- S34: eager registry loads + readiness gate ------------------------------
-// Start loading EVERY registry entry at module init so all GLB swaps race
-// from the same t=0 instead of whenever each caller happens to ask. The
-// per-asset procedural fallbacks are untouched: a failed load still
-// resolves null and callers keep the procedural visual exactly as before.
-for (const _name of Object.keys(HERO_ASSETS)) {
-  try { loadHeroAsset(_name); } catch (e) { /* fallback stays procedural */ }
-}
-// Settles when every registry load started above has finished (success or
-// failure). Never rejects (allSettled).
-export const heroAssetsReady = Promise.allSettled([..._heroCache.values()]);
-// Same gate, evaluated at call time: allSettled over every load started so
-// far plus the full registry list (registry loads are all started above,
-// so the cache already covers the registry; the extra pass is a no-op
-// safety net for any entry somehow not yet started).
+    inFlightByName.set(nameIn, pendingLoad); }
+  return inFlightByName.get(nameIn); }
+// Eager loading plus the readiness gate
+// Every registry entry starts loading when this module evaluates, so
+// each swap races from the same moment rather than from whenever a
+// caller happens to ask, and fallbacks stay unaffected because a
+// failed load still resolves null
+Object.keys(HERO_ASSETS).forEach((assetName) => { try { loadHeroAsset(assetName); } catch (err) { /* procedural fallback stays */ } });
+export const heroAssetsReady = Promise.allSettled([...inFlightByName.values()]);
 export function whenHeroAssetsReady() {
-  for (const name of Object.keys(HERO_ASSETS)) {
-    try { loadHeroAsset(name); } catch (e) { /* fallback stays procedural */ }
-  }
-  return Promise.allSettled([..._heroCache.values()]);
-}
+  Object.keys(HERO_ASSETS).forEach((assetName) => { try { loadHeroAsset(assetName); } catch (err) { /* procedural fallback stays */ } });
+  return Promise.allSettled(Array.from(inFlightByName.values())); }

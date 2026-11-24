@@ -1,27 +1,28 @@
-# STREET SAMURAI
+# STREET SAMURAI — Ronin Bay
 
-A browser open-world JDM street-racing crime game. Take over Ronin Bay with the Ronin Kai club: build your garage, run 12 missions across the city and the mountain, take territory, and outrun the RBPD when the heat comes down.
+A browser open world built around JDM street racing and turf crime. You ride with the Ronin Kai club through Ronin Bay: take districts one at a time, grow the garage, work through a dozen missions that run from downtown out to the mountain passes, defend the ground you hold, and stay ahead of the RBPD whenever the heat climbs.
 
-## Controls
+## Controls and keys
 
-- **WASD / arrows** — drive (on foot: move)
-- **F** — enter / exit car
-- **Space** — handbrake / drift
-- **Shift** — NOS
-- **E** — interact / garage
-- **P / Esc** — pause + city map
-- **M** — mute
+- **WASD / arrows** — driving, and movement on foot
+- **F** — get into a car, or climb back out
+- **Space** — handbrake, for drifting
+- **Shift** — NOS boost
+- **E** — interact, including at the garage
+- **P / Esc** — pause and open the city map
+- **M** — mute the sound
 
-## Features
 
-- 17-car roster built from extruded side profiles, including pinkslip hero cars won from rivals
-- Named cast of 7 characters driving the story
-- Wanted system, 1–5 stars: roadblocks, spike strips and a searchlight helicopter
-- Territory control with passive income
-- Touge mountain loop
-- Full day/night cycle
-- Vice round: neon-coastal sunset grade — Coral Strip pastels, paved plazas, and dusk shot staging
+## What is inside
 
-## Tech
+- Seventeen cars shaped from extruded side profiles, plus hero cars taken from rivals on pinkslips
+- A story carried from the opening to the finale by seven named characters
+- Wanted heat running from one star to five, with roadblocks, spike strips and a helicopter searchlight on your tail
+- Passive income paid by territory under your control
+- A mountain loop that exists purely for touge runs
+- A complete cycle that turns day into night and back again
+- Vice flavour: a neon coastline graded for sunset, the pastel Coral Strip, paved plazas, and screenshots staged at dusk
 
-three.js (vendored), procedural canvas textures, WebAudio-synthesized engine/skid/siren/music — no build step, no external assets. Open `game/index.html` in a desktop browser and play.
+## Build notes
+
+The whole thing runs on vendored three.js with procedural canvas textures, and WebAudio synthesis supplies the engine, skid, siren and music. There is no build step and nothing gets fetched from outside: open `game/index.html` in a desktop browser and play.

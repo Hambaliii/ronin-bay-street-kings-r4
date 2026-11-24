@@ -3,672 +3,483 @@ import { rr, chance } from './random.js';
 import { groundH, glowSprite } from './world.js';
 import { damageVehicle, spawnSmokeAt } from './cars.js';
 import { loadHeroAsset, HERO_ASSETS } from './assets.js';
-
-// ---------------------------------------------------------------- weapons.js
-// Free shooting system (S10): pistol / micro SMG / baseball bat.
-// SEPARABLE layer: everything works through defensive hooks into existing
-// state (G.wanted, G.peds, G.vehicles, damageVehicle, spawnSmokeAt). Remove
-// the initWeapons(G) call in main.js and the game runs exactly as before.
-// GLB weapon models are drop-ins: if the .glb files are absent, the
-// procedural shapes below stay — silently.
-
-export const WEAPON_TABLE = {
-  pistol: { name: 'PISTOL', dmg: 34, interval: 0.34, auto: false, mag: 12, reload: 0.9, range: 130, spread: 0.006 },
-  smg: { name: 'MICRO SMG', dmg: 15, interval: 0.085, auto: true, mag: 30, reload: 1.3, range: 110, spread: 0.02 },
-  bat: { name: 'BASEBALL BAT', dmg: 55, interval: 0.55, auto: false, mag: Infinity, reload: 0, range: 2.4, melee: true },
-};
-const ORDER = ['pistol', 'smg', 'bat'];
-const GLB_FOR = { pistol: 'weaponPistol', smg: 'weaponSmg', bat: 'weaponBat' };
-
-// ---------------------------------------------------------- GLB orientation
-// Tripo weapon GLBs do not share the game's axes (held root on the player
-// fig sits at (0.24, 1.02, 0.28) and points +Z). WEAPON_POSE corrects each
-// model INSIDE its per-weapon group, relative to that root. Procedural
-// children are untouched, so the fallback is exact when a GLB is absent.
-// SMG muzzle direction is the one uncertain call (see below): flipping it
-// is this single constant.
-const SMG_ROT_Y = Math.PI;
-export const WEAPON_POSE = {
-  // Pistol bounds x +-0.5, y 0..0.661, z +-0.266: barrel along X, muzzle
-  // at +X, grip/rear at -X, up +Y. rotY -PI/2 maps +X -> +Z (forward).
-  // Offset: model height 0.661 * scale 0.30 ~= 0.20 m; the hand grips the
-  // rear-lower part, so shift the wrapper down/back by this amount in the
-  // weapon group's local space.
-  pistol: { rotY: -Math.PI / 2, offset: new THREE.Vector3(0, -0.10, -0.02) },
-  // SMG bounds x +-0.068, y 0..0.703, z +-0.5: barrel along Z, muzzle
-  // believed at -Z (tall thin front-sight slice at z -0.5, grip drops at
-  // z -0.2..-0.1, long magazine drops to y=0 at z +0.2..+0.3, buttstock
-  // at z +0.4..+0.5). rotY PI maps -Z -> +Z. Hand position: under the
-  // receiver near the grip — after the PI flip the grip (model z
-  // -0.2..-0.1, * scale 0.55 = -0.11..-0.055) lands at group z
-  // +0.055..+0.11 and the receiver underside sits ~0.13 m above the hand
-  // origin, hence offset (0, -0.13, +0.03) centres the grip in the palm.
-  // Verify with the 'smg' shot mode; if the muzzle faces the player,
-  // set SMG_ROT_Y = 0.
-  smg: { rotY: SMG_ROT_Y, offset: new THREE.Vector3(0, -0.13, 0.03) },
-  // Bat bounds x +-0.5, y 0..0.844, z +-0.074: posed diagonally in XY.
-  // axisFrom A = barrel->knob principal axis; axisTo D is where A must
-  // land so knob->barrel ends up ~(0, +0.75, -0.66) — up-and-back over
-  // the shoulder, matching the procedural bat's rest pose. knobLocal is
-  // the knob position in model space; the holder is then translated by
-  // -R*(knobLocal * batScale) so the knob lands on the group origin.
-  bat: {
-    axisFrom: new THREE.Vector3(-0.775, -0.631, 0.001).normalize(),
+// Shooting layer kept free standing: pistol plus micro SMG plus bat
+// It reaches the wider game only through defensive hooks into shared
+// state, so removing its init call restores the earlier behaviour
+// Model files are drop in replacements, and while they are absent the
+// procedural shapes below stay in silent use
+export const WEAPON_TABLE = { bat: { name: 'BASEBALL BAT', dmg: 55,
+    interval: 0.55, auto: false, mag: Infinity, reload: 0, range: 2.4, melee: true },
+  smg: { name: 'MICRO SMG', dmg: 15,
+    interval: 0.085, auto: true, mag: 30, reload: 1.3, range: 110, spread: 0.02 },
+  pistol: { name: 'PISTOL', dmg: 34,
+    interval: 0.34, auto: false, mag: 12, reload: 0.9, range: 130, spread: 0.006 } };
+const SLOT_SEQUENCE = ['pistol', 'smg', 'bat'];
+const ASSET_NAME_FOR_SLOT = { pistol: 'weaponPistol', smg: 'weaponSmg', bat: 'weaponBat' };
+// Model orientation notes: vendor models share none of the game axes
+// The held root on the figure points forward, and the pose table below
+// corrects each model inside its own group relative to that root
+// Procedural children never get touched, so a missing model leaves the
+// fallback exact, and the SMG flip stays a single constant change
+const SMG_FLIP_YAW = Math.PI;
+export const WEAPON_POSE = { bat: { axisFrom: new THREE.Vector3(-0.775, -0.631, 0.001).normalize(),
     axisTo: new THREE.Vector3(0, -0.75, 0.66).normalize(),
-    knobLocal: new THREE.Vector3(-0.49, 0.02, 0),
-  },
-};
-
-// Build the oriented holder for one weapon's GLB wrapper. The holder is a
-// child of the per-weapon group, so recoil (group position) and the bat
-// swing (group rotation.x) carry the GLB exactly like the procedural mesh.
-function orientWrapper(id, holder, wrapper) {
-  const pose = WEAPON_POSE[id];
-  if (!pose) { holder.add(wrapper); return; }
-  if (id === 'bat') {
-    const R = new THREE.Quaternion().setFromUnitVectors(pose.axisFrom, pose.axisTo);
-    holder.quaternion.copy(R);
+    knobLocal: new THREE.Vector3(-0.49, 0.02, 0) },
+  smg: { rotY: SMG_FLIP_YAW, offset: new THREE.Vector3(0, -0.13, 0.03) },
+  pistol: { rotY: -Math.PI / 2,
+    offset: new THREE.Vector3(0, -0.10, -0.02) } };
+// Wrap one model in its oriented holder inside the per weapon group
+// Recoil moving the group, and the bat swing rotating it, then carry
+// the model exactly like the procedural mesh
+function orientModelHolder(slotName, holderGroup, modelWrap) {
+  const poseDef = WEAPON_POSE[slotName];
+  if (!poseDef) { holderGroup.add(modelWrap); return; }
+  if (slotName === 'bat') {
+    const alignQuat = new THREE.Quaternion().setFromUnitVectors(poseDef.axisFrom, poseDef.axisTo);
+    holderGroup.quaternion.copy(alignQuat);
     const batScale = (HERO_ASSETS.weaponBat && HERO_ASSETS.weaponBat.scale) || 0.72;
-    const knobScaled = pose.knobLocal.clone().multiplyScalar(batScale);
-    holder.position.copy(knobScaled.applyQuaternion(R)).negate();
-    holder.add(wrapper);
+    const knobOffset = poseDef.knobLocal.clone().multiplyScalar(batScale);
+    holderGroup.position.copy(knobOffset.applyQuaternion(alignQuat)).negate();
+    holderGroup.add(modelWrap);
   } else {
-    wrapper.rotation.y = pose.rotY;
-    wrapper.position.copy(pose.offset);
-    holder.add(wrapper);
-  }
-}
-
-function vPos(v) {
-  // Vehicle position: v.x/v.z mirror the mesh (verified in cars.js
-  // spawnVehicle: v = { ..., x, z } and the traffic/drive updaters keep
-  // them in sync); fall back to mesh.position when absent.
-  if (v && Number.isFinite(v.x) && Number.isFinite(v.z)) return { x: v.x, z: v.z, y: v.mesh ? v.mesh.position.y : 0 };
-  if (v && v.mesh && v.mesh.position) return { x: v.mesh.position.x, z: v.mesh.position.z, y: v.mesh.position.y };
-  return null;
-}
-
-const STAR_TEX_SIZE = 128; // Vice V3 sweep: muzzle-star canvas size, named for starTexture()
-function starTexture() {
-  const c = document.createElement('canvas'); c.width = c.height = STAR_TEX_SIZE;
-  const g = c.getContext('2d');
-  const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
-  gr.addColorStop(0, 'rgba(255,240,200,1)');
-  gr.addColorStop(0.35, 'rgba(255,190,90,.75)');
-  gr.addColorStop(1, 'rgba(255,150,40,0)');
-  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
-  g.strokeStyle = 'rgba(255,230,170,.9)'; g.lineWidth = 5; g.lineCap = 'round';
-  for (const [dx, dy] of [[52, 0], [-52, 0], [0, 52], [0, -52], [34, 34], [-34, -34], [34, -34], [-34, 34]]) {
-    g.beginPath(); g.moveTo(64, 64); g.lineTo(64 + dx, 64 + dy); g.stroke();
-  }
-  return new THREE.CanvasTexture(c);
-}
-
-function box(w, h, d, color, metal) {
-  const m = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: metal == null ? 0.6 : metal })
-  );
-  return m;
-}
-
-function buildProcedural(id) {
-  const grp = new THREE.Group();
-  const dark = 0x1a1c20;
-  if (id === 'pistol') {
-    const slide = box(0.055, 0.07, 0.24, dark); slide.position.set(0, 0.03, 0.05); grp.add(slide);
-    const grip = box(0.05, 0.13, 0.06, 0x111214, 0.3); grip.position.set(0, -0.05, -0.05); grip.rotation.x = 0.25; grp.add(grip);
-  } else if (id === 'smg') {
-    const body = box(0.06, 0.09, 0.34, dark); body.position.set(0, 0.02, 0.06); grp.add(body);
-    const mag = box(0.045, 0.16, 0.06, 0x24262b); mag.position.set(0, -0.08, 0.02); mag.rotation.x = 0.15; grp.add(mag);
-    const sup = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.028, 0.14, 10),
-      new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.4, metalness: 0.7 })
-    );
-    sup.rotation.x = Math.PI / 2; sup.position.set(0, 0.03, 0.29); grp.add(sup);
-  } else { // bat
-    const geo = new THREE.CylinderGeometry(0.032, 0.02, 0.85, 10);
-    const bat = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xb08954, roughness: 0.7, metalness: 0.05 }));
-    bat.rotation.x = Math.PI / 2 - 0.5; bat.position.set(0, 0.12, 0.18); grp.add(bat);
-  }
-  return grp;
-}
-
-// Closest approach between a ray (o + t*d, t>=0) and a segment a..b.
-// Returns { t, h } where h is the height of the closest point on the segment
-// above the segment base, or null when the ray passes behind.
-function raySegment(o, d, a, b) {
-  const u = new THREE.Vector3().subVectors(b, a);
-  const w0 = new THREE.Vector3().subVectors(o, a);
-  const A = d.dot(d), B = d.dot(u), C = u.dot(u), D = d.dot(w0), E = u.dot(w0);
-  const den = A * C - B * B;
-  let t = 0, s = 0;
-  if (Math.abs(den) > 1e-8) {
-    t = (B * E - C * D) / den;
-    s = (A * E - B * D) / den;
-  }
-  t = Math.max(0, t); s = Math.min(1, Math.max(0, s));
-  const pRay = new THREE.Vector3().copy(o).addScaledVector(d, t);
-  const pSeg = new THREE.Vector3().copy(a).addScaledVector(u, s);
-  return { t, dist: pRay.distanceTo(pSeg), h: pSeg.y - a.y, point: pSeg };
-}
-
-export function initWeapons(G) {
-  try {
-    if (!G || G.weapons) return;
-    const W = {
+    modelWrap.rotation.y = poseDef.rotY; modelWrap.position.copy(poseDef.offset); holderGroup.add(modelWrap); } }
+function coordsOfVehicle(vehIn) {
+  // Coordinates mirror the mesh, because the car module keeps them in
+  // sync, and the mesh position serves as fallback when they are absent
+  const coordsPresent = vehIn && Number.isFinite(vehIn.x) && Number.isFinite(vehIn.z);
+  if (coordsPresent) return { x: vehIn.x, z: vehIn.z, y: vehIn.mesh ? vehIn.mesh.position.y : 0 };
+  if (vehIn && vehIn.mesh && vehIn.mesh.position) return { x: vehIn.mesh.position.x, z: vehIn.mesh.position.z, y: vehIn.mesh.position.y };
+  return null; }
+const STAR_CANVAS_SIZE = 128;
+function buildStarTexture() {
+  const canvasEl = document.createElement('canvas'); canvasEl.width = STAR_CANVAS_SIZE; canvasEl.height = STAR_CANVAS_SIZE;
+  const ctx = canvasEl.getContext('2d');
+  const radial = ctx.createRadialGradient(64, 64, 2, 64, 64, 64);
+  radial.addColorStop(0, 'rgba(255,240,200,1)'); radial.addColorStop(0.35, 'rgba(255,190,90,.75)'); radial.addColorStop(1, 'rgba(255,150,40,0)');
+  ctx.fillStyle = radial; ctx.fillRect(0, 0, 128, 128);
+  ctx.strokeStyle = 'rgba(255,230,170,.9)'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  [[52, 0], [-52, 0], [0, 52], [0, -52], [34, 34], [-34, -34], [34, -34], [-34, 34]].forEach(([spokeX, spokeY]) => {
+    ctx.beginPath(); ctx.moveTo(64, 64); ctx.lineTo(64 + spokeX, 64 + spokeY); ctx.stroke(); });
+  return new THREE.CanvasTexture(canvasEl); }
+const makeBoxMesh = (widthIn, heightIn, depthIn, colourIn, metalIn) => {
+  const boxMat = new THREE.MeshStandardMaterial({ color: colourIn, roughness: 0.45, metalness: metalIn == null ? 0.6 : metalIn });
+  const boxOut = new THREE.Mesh(new THREE.BoxGeometry(widthIn, heightIn, depthIn), boxMat);
+  return boxOut; };
+function buildProceduralWeapon(slotName) {
+  const weaponGroup = new THREE.Group();
+  const darkTone = 0x1a1c20;
+  if (slotName === 'pistol') {
+    const slideMesh = makeBoxMesh(0.055, 0.07, 0.24, darkTone); slideMesh.position.set(0, 0.03, 0.05); weaponGroup.add(slideMesh);
+    const gripMesh = makeBoxMesh(0.05, 0.13, 0.06, 0x111214, 0.3); gripMesh.position.set(0, -0.05, -0.05); gripMesh.rotation.x = 0.25; weaponGroup.add(gripMesh);
+  } else if (slotName === 'smg') {
+    const bodyMesh = makeBoxMesh(0.06, 0.09, 0.34, darkTone); bodyMesh.position.set(0, 0.02, 0.06); weaponGroup.add(bodyMesh);
+    const magMesh = makeBoxMesh(0.045, 0.16, 0.06, 0x24262b); magMesh.position.set(0, -0.08, 0.02); magMesh.rotation.x = 0.15; weaponGroup.add(magMesh);
+    const suppressorMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.14, 10),
+      new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.4, metalness: 0.7 }));
+    suppressorMesh.rotation.x = Math.PI / 2; suppressorMesh.position.set(0, 0.03, 0.29); weaponGroup.add(suppressorMesh);
+  } else {
+    const batGeometry = new THREE.CylinderGeometry(0.032, 0.02, 0.85, 10);
+    const batMesh = new THREE.Mesh(batGeometry, new THREE.MeshStandardMaterial({ color: 0xb08954, roughness: 0.7, metalness: 0.05 }));
+    batMesh.rotation.x = Math.PI / 2 - 0.5; batMesh.position.set(0, 0.12, 0.18); weaponGroup.add(batMesh); }
+  return weaponGroup; }
+// Closest approach between a ray and a segment
+// The result carries the ray parameter plus the height of the closest
+// segment point above its base, and a ray passing behind yields null
+function closestRaySegment(originIn, dirIn, segStart, segEnd) {
+  const segmentDir = new THREE.Vector3().subVectors(segEnd, segStart);
+  const originDelta = new THREE.Vector3().subVectors(originIn, segStart);
+  const coeffAA = dirIn.dot(dirIn), coeffBB = dirIn.dot(segmentDir), coeffCC = segmentDir.dot(segmentDir), coeffDD = dirIn.dot(originDelta), coeffEE = segmentDir.dot(originDelta);
+  const denomVal = coeffCC * coeffAA - coeffBB * coeffBB;
+  let rayParam = 0, segParam = 0;
+  if (Math.abs(denomVal) > 1e-8) {
+    rayParam = (coeffEE * coeffBB - coeffDD * coeffCC) / denomVal; segParam = (coeffEE * coeffAA - coeffDD * coeffBB) / denomVal; }
+  rayParam = Math.max(0, rayParam); segParam = Math.min(1, Math.max(0, segParam));
+  const rayPoint = new THREE.Vector3().copy(originIn).addScaledVector(dirIn, rayParam);
+  const segPoint = new THREE.Vector3().copy(segStart).addScaledVector(segmentDir, segParam);
+  return { t: rayParam, dist: rayPoint.distanceTo(segPoint), h: segPoint.y - segStart.y, point: segPoint }; }
+export function initWeapons(G) { try { if (!G || G.weapons) return;
+    const weaponState = {
       current: 'pistol',
-      ammo: {
-        pistol: { mag: 12, reserve: Infinity },
+      ammo: { pistol: { mag: 12, reserve: Infinity },
         smg: { mag: 30, reserve: 240 },
-        bat: { mag: Infinity, reserve: Infinity },
-      },
-      reloading: 0,
-      equip,
-    };
-    G.weapons = W;
-
-    const S = {
-      firing: false, semiLatch: false, cooldown: 0, autoShots: 0,
-      lastEsc: -10, swingT: 0, flashLife: 0, hitMarkT: 0,
-      held: {}, tracers: [], flatVehicles: new Set(), slotDirty: true,
-    };
-
-    // ------------------------------------------------------------ held models
-    const heldRoot = new THREE.Group();
-    heldRoot.position.set(0.24, 1.02, 0.28);
-    try { if (G.player && G.player.fig) G.player.fig.add(heldRoot); } catch (e) {}
-    for (const id of ORDER) {
-      const grp = buildProcedural(id);
-      grp.visible = false;
-      heldRoot.add(grp);
-      S.held[id] = grp;
-      // Oriented holder for the GLB drop-in: a child of the per-weapon
-      // group (so swing/recoil on the group carries it). Empty — and
-      // therefore invisible — while the procedural fallback is in use.
-      const holder = new THREE.Group();
-      holder.name = 'glbHolder:' + id;
-      grp.add(holder);
-      // GLB drop-in: swap children when (if) the model arrives. Remove
-      // the procedural children only (keep the holder), then put the
-      // wrapper into the holder with its WEAPON_POSE orientation.
+        bat: { mag: Infinity, reserve: Infinity } }, reloading: 0, equip };
+    G.weapons = weaponState;
+    const session = { firing: false, semiLatch: false, cooldown: 0, autoShots: 0, lastEsc: -10, swingT: 0, flashLife: 0, hitMarkT: 0,
+      held: {}, tracers: [], flatVehicles: new Set(), slotDirty: true };
+    // Held models and their root on the figure
+    const heldRootGroup = new THREE.Group();
+    heldRootGroup.position.set(0.24, 1.02, 0.28);
+    try { if (G.player && G.player.fig) G.player.fig.add(heldRootGroup); } catch (err) {}
+    SLOT_SEQUENCE.forEach((slotName) => {
+      const weaponGroup = buildProceduralWeapon(slotName);
+      weaponGroup.visible = false;
+      heldRootGroup.add(weaponGroup);
+      session.held[slotName] = weaponGroup;
+      const glbHolder = new THREE.Group();
+      glbHolder.name = 'glbHolder:' + slotName;
+      weaponGroup.add(glbHolder);
       try {
-        const p = loadHeroAsset(GLB_FOR[id]);
-        if (p && typeof p.then === 'function') {
-          p.then((wrapper) => {
+        const pendingWrap = loadHeroAsset(ASSET_NAME_FOR_SLOT[slotName]);
+        if (pendingWrap && typeof pendingWrap.then === 'function') {
+          pendingWrap.then((wrapIn) => {
             try {
-              if (!wrapper) return;
-              for (const child of [...grp.children]) {
-                if (child !== holder) grp.remove(child);
-              }
-              orientWrapper(id, holder, wrapper);
-            } catch (e) { /* procedural stays */ }
-          }).catch(() => {});
-        }
-      } catch (e) { /* procedural stays */ }
-    }
-
-    // ------------------------------------------------------------ muzzle FX
-    const flash = new THREE.Group();
-    try {
-      const tex = starTexture();
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, color: 0xffc873 });
-      const p1 = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), mat);
-      const p2 = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), mat); p2.rotation.z = Math.PI / 4; p2.rotation.y = Math.PI / 2;
-      flash.add(p1); flash.add(p2);
-      const glow = glowSprite(0xffc873, 1.6); flash.add(glow);
-    } catch (e) {}
-    const flashLight = new THREE.PointLight(0xffc873, 0, 18);
-    flash.add(flashLight);
-    flash.visible = false;
-    try { G.scene.add(flash); } catch (e) {}
-
-    for (let i = 0; i < 4; i++) {
-      const m = new THREE.Mesh(
-        new THREE.BoxGeometry(0.02, 0.02, 1),
-        new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false })
-      );
-      m.visible = false;
-      try { G.scene.add(m); } catch (e) {}
-      S.tracers.push({ mesh: m, life: 0 });
-    }
+              if (!wrapIn) return;
+              [...weaponGroup.children].forEach((childIn) => {
+                if (childIn !== glbHolder) weaponGroup.remove(childIn); });
+              orientModelHolder(slotName, glbHolder, wrapIn);
+            } catch (err) { /* procedural fallback stays */ }
+          }).catch(() => {}); }
+      } catch (err) { /* procedural fallback stays */ } });
+    // Muzzle flash visuals
+    const flashGroup = new THREE.Group(); try {
+      const starTexture = buildStarTexture();
+      const flashMaterial = new THREE.MeshBasicMaterial({ map: starTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, color: 0xffc873 });
+      const flashPlaneA = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), flashMaterial);
+      const flashPlaneB = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.55), flashMaterial); flashPlaneB.rotation.z = Math.PI / 4; flashPlaneB.rotation.y = Math.PI / 2;
+      flashGroup.add(flashPlaneA); flashGroup.add(flashPlaneB);
+      const flashGlow = glowSprite(0xffc873, 1.6); flashGroup.add(flashGlow);
+    } catch (err) {}
+    const flashLamp = new THREE.PointLight(0xffc873, 0, 18);
+    flashGroup.add(flashLamp);
+    flashGroup.visible = false;
+    try { G.scene.add(flashGroup); } catch (err) {}
+    for (let idx = 0; idx < 4; idx++) {
+      const tracerMesh = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 1),
+        new THREE.MeshBasicMaterial({ color: 0xffd9a0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+      tracerMesh.visible = false;
+      try { G.scene.add(tracerMesh); } catch (err) {}
+      session.tracers.push({ mesh: tracerMesh, life: 0 }); }
     let tracerIdx = 0;
-
-    // ------------------------------------------------------------ DOM
-    let crossEl = null, slotEl = null, slotName = null, slotAmmo = null;
-    try {
-      const style = document.createElement('style');
-      style.textContent =
-        '#crosshair{position:fixed;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;pointer-events:none;z-index:60;mix-blend-mode:difference;display:none}' +
-        '#crosshair .ring{position:absolute;inset:0;border:2px solid #fff;border-radius:50%;opacity:.85}' +
-        '#crosshair .dot{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px 0 0 -2px;background:#fff;border-radius:50%}' +
-        '#crosshair.hit .ring{border-color:#ff9a2a}#crosshair.hit .dot{background:#ff9a2a}' +
+    // HUD pieces owned by this layer
+    let crosshairEl = null, slotPanelEl = null, slotNameEl = null, slotAmmoEl = null; try {
+      const styleNode = document.createElement('style');
+      styleNode.textContent =
+        '#crosshair{position:fixed;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;pointer-events:none;z-index:60;mix-blend-mode:difference;display:none}' + '#crosshair .ring{position:absolute;inset:0;border:2px solid #fff;border-radius:50%;opacity:.85}' +
+        '#crosshair .dot{position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px 0 0 -2px;background:#fff;border-radius:50%}' + '#crosshair.hit .ring{border-color:#ff9a2a}#crosshair.hit .dot{background:#ff9a2a}' +
         '#crosshair.bat .ring{display:none}';
-      document.head.appendChild(style);
-      crossEl = document.createElement('div'); crossEl.id = 'crosshair';
-      crossEl.innerHTML = '<div class="ring"></div><div class="dot"></div>';
-      document.body.appendChild(crossEl);
-      slotEl = document.createElement('div'); slotEl.id = 'weaponSlot';
-      slotEl.style.cssText = 'position:fixed;right:236px;bottom:18px;z-index:60;background:rgba(8,12,20,.72);border:1px solid rgba(0,245,212,.35);border-radius:12px;padding:8px 12px;font-family:system-ui,sans-serif;color:#e8f6ff;pointer-events:none;min-width:118px;text-align:right';
-      slotEl.innerHTML = '<div id="wsName" style="font-size:11px;letter-spacing:.14em;color:#00f5d4"></div>' +
-        '<div id="wsAmmo" style="font-size:22px;font-weight:700;line-height:1.15"></div>' +
+      document.head.appendChild(styleNode);
+      crosshairEl = document.createElement('div'); crosshairEl.id = 'crosshair';
+      crosshairEl.innerHTML = '<div class="ring"></div><div class="dot"></div>';
+      document.body.appendChild(crosshairEl);
+      slotPanelEl = document.createElement('div'); slotPanelEl.id = 'weaponSlot';
+      slotPanelEl.style.cssText = 'position:fixed;right:236px;bottom:18px;z-index:60;background:rgba(8,12,20,.72);border:1px solid rgba(0,245,212,.35);border-radius:12px;padding:8px 12px;font-family:system-ui,sans-serif;color:#e8f6ff;pointer-events:none;min-width:118px;text-align:right';
+      slotPanelEl.innerHTML = '<div id="wsName" style="font-size:11px;letter-spacing:.14em;color:#00f5d4"></div>' + '<div id="wsAmmo" style="font-size:22px;font-weight:700;line-height:1.15"></div>' +
         '<div style="font-size:10px;opacity:.65">[1][2][3] &middot; R reload</div>';
-      document.body.appendChild(slotEl);
-      slotName = slotEl.querySelector('#wsName');
-      slotAmmo = slotEl.querySelector('#wsAmmo');
-    } catch (e) { /* HUD is best-effort */ }
-
-    function fmtAmmo() {
-      const a = W.ammo[W.current];
-      if (!WEAPON_TABLE[W.current].melee) return a.mag + ' / ' + (a.reserve === Infinity ? '\u221E' : a.reserve);
-      return '\u221E';
-    }
-    function refreshSlot() {
-      if (!S.slotDirty) return;
-      S.slotDirty = false;
+      document.body.appendChild(slotPanelEl);
+      slotNameEl = slotPanelEl.querySelector('#wsName');
+      slotAmmoEl = slotPanelEl.querySelector('#wsAmmo');
+    } catch (err) { /* the HUD here is best effort */ }
+    function currentAmmoLabel() {
+      const ammoNow = weaponState.ammo[weaponState.current];
+      if (WEAPON_TABLE[weaponState.current].melee) return '\u221E';
+      return ammoNow.mag + ' / ' + (ammoNow.reserve === Infinity ? '\u221E' : ammoNow.reserve); }
+    function syncHud() {
+      if (!session.slotDirty) return;
+      session.slotDirty = false;
       try {
-        if (slotName) slotName.textContent = WEAPON_TABLE[W.current].name + (W.reloading > 0 ? ' \u00B7 RELOADING' : '');
-        if (slotAmmo) slotAmmo.textContent = fmtAmmo();
-        if (crossEl) crossEl.className = (W.current === 'bat' ? 'bat' : '') + (S.hitMarkT > 0 ? ' hit' : '');
-      } catch (e) {}
-    }
-
-    function equip(id) {
-      if (!WEAPON_TABLE[id]) return;
-      W.current = id;
-      W.reloading = 0;
-      S.slotDirty = true;
-      for (const k of ORDER) if (S.held[k]) S.held[k].visible = (k === id);
-      refreshSlot();
-    }
-
-    // ------------------------------------------------------------ helpers
-    function shooterPos() {
-      if (G.car) { const p = vPos(G.car); if (p) return p; }
+        if (slotNameEl) slotNameEl.textContent = WEAPON_TABLE[weaponState.current].name + (weaponState.reloading > 0 ? ' \u00B7 RELOADING' : '');
+        if (slotAmmoEl) slotAmmoEl.textContent = currentAmmoLabel();
+        if (crosshairEl) crosshairEl.className = (weaponState.current === 'bat' ? 'bat' : '') + (session.hitMarkT > 0 ? ' hit' : '');
+      } catch (err) {} }
+    function equip(slotName) {
+      if (!WEAPON_TABLE[slotName]) return;
+      weaponState.current = slotName; weaponState.reloading = 0; session.slotDirty = true;
+      SLOT_SEQUENCE.forEach((keyName) => { if (session.held[keyName]) session.held[keyName].visible = (keyName === slotName); });
+      syncHud(); }
+    // Small shared helpers first
+    function shooterOrigin() {
+      if (G.car) { const carCoords = coordsOfVehicle(G.car); if (carCoords) return carCoords; }
       if (G.player) return { x: G.player.x, z: G.player.z, y: 0 };
-      return { x: 0, z: 0, y: 0 };
-    }
-    function muzzlePos() {
+      return { x: 0, z: 0, y: 0 }; }
+    function muzzlePosition() {
       try {
         if (G.car && G.car.mesh) return G.car.mesh.localToWorld(new THREE.Vector3(0.55, 0.8, 0.2));
-        const p = G.player; if (!p) return new THREE.Vector3();
-        const a = p.angle || 0;
-        const gy = groundH(p.x, p.z);
+        const pl = G.player; if (!pl) return new THREE.Vector3();
+        const headingAngle = pl.angle || 0;
+        const groundLevel = groundH(pl.x, pl.z);
         return new THREE.Vector3(
-          p.x + Math.sin(a) * 0.35 + Math.cos(a) * 0.18,
-          gy + 1.32,
-          p.z + Math.cos(a) * 0.35 - Math.sin(a) * 0.18
-        );
-      } catch (e) { return new THREE.Vector3(); }
-    }
-    function play(name) { try { if (G.audio && G.audio.play) G.audio.play(name); } catch (e) {} }
-
-    function addWanted(amount) {
+          pl.x + (0.35 * Math.sin(headingAngle) + 0.18 * Math.cos(headingAngle)),
+          groundLevel + 1.32,
+          pl.z + (0.35 * Math.cos(headingAngle) - 0.18 * Math.sin(headingAngle)));
+      } catch (err) { return new THREE.Vector3(); } }
+    function emitSfx(sfxName) { try { const audioNow = G.audio; if (audioNow && audioNow.play) audioNow.play(sfxName); } catch (err) {} }
+    function escalateWanted(amountIn) {
       try {
-        const now = G.elapsed || 0;
-        if (now - S.lastEsc < 0.4) return; // 0.4s escalation cooldown
-        S.lastEsc = now;
-        G.wanted = Math.min(5, Math.max(0, (G.wanted || 0) + amount));
-      } catch (e) {}
-    }
-    function anyWitness(rCop, rPed, sx, sz) {
+        const stampNow = G.elapsed || 0;
+        if (stampNow - session.lastEsc < 0.4) return;
+        session.lastEsc = stampNow;
+        G.wanted = Math.min(5, Math.max(0, (G.wanted || 0) + amountIn));
+      } catch (err) {} }
+    function anyWitnessNear(copRadius, pedRadius, srcX, srcZ) {
       try {
-        for (const c of G.cops || []) { const p = vPos(c); if (p && Math.hypot(p.x - sx, p.z - sz) < rCop) return true; }
-        for (const pd of G.peds || []) { if (!pd.downed && Math.hypot(pd.x - sx, pd.z - sz) < rPed) return true; }
-      } catch (e) {}
-      return false;
-    }
-    function fleePed(ped, fromX, fromZ, t) {
-      const dx = ped.x - fromX, dz = ped.z - fromZ;
-      const len = Math.hypot(dx, dz) || 1;
-      ped.fleeDir = { x: dx / len, z: dz / len };
-      ped.fleeT = t;
-    }
-    function witnessesFlee(fromX, fromZ, radius, tMin, tMax, prob) {
+        for (const copVeh of G.cops || []) { const copCoords = coordsOfVehicle(copVeh); if (copCoords && Math.hypot(copCoords.x - srcX, copCoords.z - srcZ) < copRadius) return true; }
+        for (const pedIn of G.peds || []) { if (!pedIn.downed && Math.hypot(pedIn.x - srcX, pedIn.z - srcZ) < pedRadius) return true; }
+      } catch (err) {}
+      return false; }
+    function startPedFleeing(pedIn, fromX, fromZ, durationIn) {
+      const awayX = pedIn.x - fromX, awayZ = pedIn.z - fromZ;
+      const awayLen = Math.hypot(awayX, awayZ) || 1;
+      pedIn.fleeDir = { x: awayX / awayLen, z: awayZ / awayLen };
+      pedIn.fleeT = durationIn; }
+    function disperseCrowd(fromX, fromZ, radiusIn, timeLo, timeHi, probIn) {
       try {
-        for (const pd of G.peds || []) {
-          if (pd.downed) continue;
-          if (Math.hypot(pd.x - fromX, pd.z - fromZ) < radius && (prob == null || chance(prob))) {
-            fleePed(pd, fromX, fromZ, rr(tMin, tMax));
-          }
-        }
-      } catch (e) {}
-    }
-    function downPed(ped) {
-      ped.downed = true;
-      ped.downedT = rr(6, 10);
-      ped._tipped = true;
-      ped.fleeT = 0;
+        (G.peds || []).forEach((pedIn) => {
+          if (pedIn.downed) return;
+          if (Math.hypot(pedIn.x - fromX, pedIn.z - fromZ) < radiusIn && (probIn == null || chance(probIn))) startPedFleeing(pedIn, fromX, fromZ, rr(timeLo, timeHi)); });
+      } catch (err) {} }
+    function topplePed(pedIn) {
+      pedIn.downed = true; pedIn.downedT = rr(6, 10); pedIn._tipped = true; pedIn.fleeT = 0;
       try {
-        ped.fig.rotation.x = -1.35;
-        ped.fig.position.y = groundH(ped.x, ped.z) + 0.15;
-      } catch (e) {}
-    }
-    function damagePed(ped, dmg, isBat, sx, sz) {
-      if (ped.hp == null) ped.hp = 100;
-      ped.hp -= dmg;
-      if (ped.hp <= 0 || isBat) { downPed(ped); return true; }
-      fleePed(ped, sx, sz, 1.6);
-      return false;
-    }
-
-    function showFlash(pos) {
+        pedIn.fig.rotation.x = -1.35;
+        pedIn.fig.position.y = groundH(pedIn.x, pedIn.z) + 0.15;
+      } catch (err) {} }
+    function injurePed(pedIn, damageIn, batHit, srcX, srcZ) {
+      if (pedIn.hp == null) pedIn.hp = 100;
+      pedIn.hp -= damageIn;
+      if (!(pedIn.hp > 0) || batHit) { topplePed(pedIn); return true; }
+      startPedFleeing(pedIn, srcX, srcZ, 1.6);
+      return false; }
+    function showFlashAt(posIn) {
       try {
-        flash.position.copy(pos);
-        flash.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3));
-        flash.visible = true;
-        flashLight.intensity = 26;
-        S.flashLife = 0.05;
-      } catch (e) {}
-    }
-    function showTracer(from, to) {
-      const tr = S.tracers[tracerIdx++ % S.tracers.length];
-      if (!tr) return;
-      const len = from.distanceTo(to);
-      if (len < 0.5) return;
-      tr.mesh.position.copy(from).add(to).multiplyScalar(0.5);
-      tr.mesh.lookAt(to);
-      tr.mesh.scale.set(1, 1, len);
-      tr.mesh.material.opacity = 0.85;
-      tr.mesh.visible = true;
-      tr.life = 0.04;
-    }
-
-    // ------------------------------------------------------------ shooting
+        flashGroup.position.copy(posIn);
+        flashGroup.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3));
+        flashGroup.visible = true; flashLamp.intensity = 26; session.flashLife = 0.05;
+      } catch (err) {} }
+    function drawTracer(fromVec, toVec) {
+      const tracerSlot = session.tracers[tracerIdx++ % session.tracers.length];
+      if (!tracerSlot) return;
+      const spanLen = fromVec.distanceTo(toVec);
+      if (!(spanLen >= 0.5)) return;
+      tracerSlot.mesh.position.copy(fromVec).add(toVec).multiplyScalar(0.5);
+      tracerSlot.mesh.lookAt(toVec);
+      tracerSlot.mesh.scale.set(1, 1, spanLen);
+      tracerSlot.mesh.material.opacity = 0.85; tracerSlot.mesh.visible = true; tracerSlot.life = 0.04; }
+    // Firing paths: reload, then bat swing, then hitscan shot
     function startReload() {
-      const spec = WEAPON_TABLE[W.current];
-      const a = W.ammo[W.current];
-      if (spec.melee || W.reloading > 0) return;
-      if (a.mag >= spec.mag || a.reserve <= 0) return;
-      W.reloading = spec.reload;
-      S.slotDirty = true;
-      play('reload');
-    }
-
-    function fireBat() {
-      const spec = WEAPON_TABLE.bat;
-      S.swingT = 0.22;
-      play('swing');
-      const sp = shooterPos();
-      const a = G.car ? (G.car.angle || 0) : (G.player ? G.player.angle || 0 : 0);
-      const fx = Math.sin(a), fz = Math.cos(a);
+      const specNow = WEAPON_TABLE[weaponState.current];
+      const ammoNow = weaponState.ammo[weaponState.current];
+      if (specNow.melee || weaponState.reloading > 0) return;
+      if (ammoNow.mag >= specNow.mag || !(ammoNow.reserve > 0)) return;
+      weaponState.reloading = specNow.reload; session.slotDirty = true; emitSfx('reload'); }
+    function swingBatNow() {
+      const batSpec = WEAPON_TABLE.bat;
+      session.swingT = 0.22; emitSfx('swing');
+      const srcPos = shooterOrigin();
+      const headingAngle = G.car ? (G.car.angle || 0) : (G.player ? G.player.angle || 0 : 0);
+      const forwardX = Math.sin(headingAngle), forwardZ = Math.cos(headingAngle);
       let hitSomething = false;
       try {
-        for (const ped of G.peds || []) {
-          if (ped.downed) continue;
-          const dx = ped.x - sp.x, dz = ped.z - sp.z;
-          const d = Math.hypot(dx, dz);
-          if (d <= spec.range && d > 0.001 && (dx / d) * fx + (dz / d) * fz > 0.4) {
-            damagePed(ped, spec.dmg, true, sp.x, sp.z);
-            hitSomething = true;
-          }
-        }
-      } catch (e) {}
+        (G.peds || []).forEach((pedIn) => {
+          if (pedIn.downed) return;
+          const deltaX = pedIn.x - srcPos.x, deltaZ = pedIn.z - srcPos.z;
+          const distNow = Math.hypot(deltaX, deltaZ);
+          if (!(distNow > batSpec.range) && distNow > 0.001 && (deltaX / distNow) * forwardX + (deltaZ / distNow) * forwardZ > 0.4) {
+            injurePed(pedIn, batSpec.dmg, true, srcPos.x, srcPos.z); hitSomething = true; } });
+      } catch (err) {}
       try {
-        for (const v of [...(G.vehicles || []), ...(G.cops || []), ...(G.traffic || [])]) {
-          if (G.car && v === G.car) continue;
-          const p = vPos(v); if (!p) continue;
-          if (Math.hypot(p.x - sp.x, p.z - sp.z) <= spec.range + 1.2) {
-            try { damageVehicle(G, v, spec.dmg); } catch (e) {}
+        [...(G.vehicles || []), ...(G.cops || []), ...(G.traffic || [])].forEach((vehIn) => {
+          if (G.car && vehIn === G.car) return;
+          const vehCoords = coordsOfVehicle(vehIn); if (!vehCoords) return;
+          if (!(Math.hypot(vehCoords.x - srcPos.x, vehCoords.z - srcPos.z) > batSpec.range + 1.2)) {
+            try { damageVehicle(G, vehIn, batSpec.dmg); } catch (err) {}
             hitSomething = true;
-            // Bat is silent unless a cop is close to the hit.
-            let copNear = false;
-            for (const c of G.cops || []) { const cp = vPos(c); if (cp && Math.hypot(cp.x - p.x, cp.z - p.z) < 25) { copNear = true; break; } }
-            if (copNear) addWanted(0.4);
-          }
-        }
-      } catch (e) {}
+            let copNearby = false;
+            for (const copVeh of G.cops || []) { const copCoords = coordsOfVehicle(copVeh); if (copCoords && Math.hypot(copCoords.x - vehCoords.x, copCoords.z - vehCoords.z) < 25) { copNearby = true; break; } }
+            if (copNearby) escalateWanted(0.4); } });
+      } catch (err) {}
       if (hitSomething) {
-        play('thud');
-        witnessesFlee(sp.x, sp.z, 6, 1.2, 2.2, 0.4);
-        S.hitMarkT = 0.09; S.slotDirty = true;
-      }
-    }
-
-    function fireGun() {
-      const id = W.current;
-      const spec = WEAPON_TABLE[id];
-      const a = W.ammo[id];
-      if (a.mag <= 0) {
-        if (a.reserve > 0) { startReload(); }
-        else { play('dry'); try { if (G.toast) G.toast('Out of ammo'); } catch (e) {} }
-        return;
-      }
-      a.mag--;
-      S.slotDirty = true;
-      play(id === 'smg' ? 'smg' : 'shot');
-      if (!G.car && G.player) { try { G.player.angle = G.camYaw; } catch (e) {} }
-
-      const origin = new THREE.Vector3();
-      const dir = new THREE.Vector3();
+        emitSfx('thud'); disperseCrowd(srcPos.x, srcPos.z, 6, 1.2, 2.2, 0.4);
+        session.hitMarkT = 0.09; session.slotDirty = true; } }
+    function fallbackEndPoint(groundVec, originVec, dirVec, specNow) {
+      return groundVec || new THREE.Vector3().copy(originVec).addScaledVector(dirVec, specNow.range); }
+    function forwardComponent(fComp, lenVal, signIn) { return 0.32 * lenVal * signIn * fComp; }
+    function fireGunNow() {
+      const slotName = weaponState.current;
+      const specNow = WEAPON_TABLE[slotName];
+      const ammoNow = weaponState.ammo[slotName];
+      if (!(ammoNow.mag > 0)) {
+        if (ammoNow.reserve > 0) { startReload(); }
+        else { emitSfx('dry'); try { if (G.toast) G.toast('Out of ammo'); } catch (err) {} }
+        return; }
+      ammoNow.mag--; session.slotDirty = true;
+      emitSfx(slotName === 'smg' ? 'smg' : 'shot');
+      if (!G.car && G.player) { try { G.player.angle = G.camYaw; } catch (err) {} }
+      const rayOriginVec = new THREE.Vector3();
+      const rayDirVec = new THREE.Vector3();
       try {
-        G.camera.getWorldPosition(origin);
-        G.camera.getWorldDirection(dir);
-      } catch (e) { return; }
-      // Spread: jitter the direction on its perpendicular plane.
-      if (spec.spread > 0) {
-        const up = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-        const r1 = new THREE.Vector3().crossVectors(dir, up).normalize();
-        const r2 = new THREE.Vector3().crossVectors(dir, r1).normalize();
-        dir.addScaledVector(r1, rr(-spec.spread, spec.spread)).addScaledVector(r2, rr(-spec.spread, spec.spread)).normalize();
-      }
-      const muzzle = muzzlePos();
-      showFlash(muzzle);
-      const sp = shooterPos();
-
-      // --- hitscan: peds ---
-      let bestT = spec.range, bestHit = null;
+        G.camera.getWorldPosition(rayOriginVec); G.camera.getWorldDirection(rayDirVec);
+      } catch (err) { return; }
+      if (specNow.spread > 0) {
+        const upChoice = Math.abs(rayDirVec.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+        const spreadAxisA = new THREE.Vector3().crossVectors(rayDirVec, upChoice).normalize();
+        const spreadAxisB = new THREE.Vector3().crossVectors(rayDirVec, spreadAxisA).normalize();
+        rayDirVec.addScaledVector(spreadAxisA, rr(-specNow.spread, specNow.spread)).addScaledVector(spreadAxisB, rr(-specNow.spread, specNow.spread)).normalize(); }
+      const muzzleVec = muzzlePosition();
+      showFlashAt(muzzleVec);
+      const srcPos = shooterOrigin();
+      let nearestT = specNow.range, nearestHit = null;
       try {
-        for (const ped of G.peds || []) {
-          if (ped.downed) continue;
-          const gy = groundH(ped.x, ped.z);
-          const segA = new THREE.Vector3(ped.x, gy + 0.2, ped.z);
-          const segB = new THREE.Vector3(ped.x, gy + 1.6, ped.z);
-          const r = raySegment(origin, dir, segA, segB);
-          if (r && r.dist < 0.42 && r.t < bestT) { bestT = r.t; bestHit = { kind: 'ped', ped, point: r.point, head: r.h > 1.45 }; }
-        }
-      } catch (e) {}
-      // --- hitscan: vehicles ---
+        (G.peds || []).forEach((pedIn) => {
+          if (pedIn.downed) return;
+          const baseGroundY = groundH(pedIn.x, pedIn.z);
+          const segLower = new THREE.Vector3(pedIn.x, baseGroundY + 0.2, pedIn.z);
+          const segUpper = new THREE.Vector3(pedIn.x, baseGroundY + 1.6, pedIn.z);
+          const probe = closestRaySegment(rayOriginVec, rayDirVec, segLower, segUpper);
+          if (probe && probe.dist < 0.42 && probe.t < nearestT) { nearestT = probe.t; nearestHit = { kind: 'ped', ped: pedIn, point: probe.point, head: probe.h > 1.45 }; } });
+      } catch (err) {}
       try {
-        const all = [...(G.vehicles || []), ...(G.cops || []), ...(G.traffic || [])];
-        for (const v of all) {
-          if (G.car && v === G.car) continue;
-          const p = vPos(v); if (!p) continue;
-          const specV = v.spec || {};
-          const rad = Math.max(specV.len || 4, specV.wid || 1.8) / 2 * 0.9;
-          const centre = new THREE.Vector3(p.x, (p.y || groundH(p.x, p.z)) + 0.55, p.z);
-          const oc = new THREE.Vector3().subVectors(origin, centre);
-          const b = oc.dot(dir);
-          const c = oc.lengthSq() - rad * rad;
-          const disc = b * b - c;
-          if (disc < 0) continue;
-          const t = -b - Math.sqrt(disc);
-          if (t > 0 && t < bestT) {
-            bestT = t;
-            bestHit = { kind: 'vehicle', v, point: new THREE.Vector3().copy(origin).addScaledVector(dir, t) };
-          }
-        }
-      } catch (e) {}
-      // --- ground plane ---
-      let groundPoint = null;
-      if (dir.y < -0.001) {
-        const t = -origin.y / dir.y;
-        if (t > 0 && t <= spec.range) groundPoint = new THREE.Vector3().copy(origin).addScaledVector(dir, t);
-      }
-      const endPoint = bestHit ? bestHit.point : (groundPoint || new THREE.Vector3().copy(origin).addScaledVector(dir, spec.range));
-      showTracer(muzzle, endPoint);
-
-      // --- resolve hit ---
-      let hitPedOrCop = false;
-      if (bestHit && bestHit.kind === 'ped') {
-        const dmg = spec.dmg * (bestHit.head ? 2 : 1);
-        damagePed(bestHit.ped, dmg, false, sp.x, sp.z);
-        S.hitMarkT = 0.09; S.slotDirty = true;
-        addWanted(0.5); hitPedOrCop = true;
-        witnessesFlee(bestHit.ped.x, bestHit.ped.z, 14, 1.2, 2.2, null);
-      } else if (bestHit && bestHit.kind === 'vehicle') {
-        const v = bestHit.v;
-        try { damageVehicle(G, v, spec.dmg); } catch (e) {}
-        try { spawnSmokeAt(G, bestHit.point, 2, false); } catch (e) {}
-        S.hitMarkT = 0.09; S.slotDirty = true;
-        // Tire check: low hit near a wheel approximation flattens a tire.
+        const allVehicles = [...(G.vehicles || []), ...(G.cops || []), ...(G.traffic || [])];
+        allVehicles.forEach((vehIn) => {
+          if (G.car && vehIn === G.car) return;
+          const vehCoords = coordsOfVehicle(vehIn); if (!vehCoords) return;
+          const vehSpec = vehIn.spec || {};
+          const hitRadius = Math.max(vehSpec.len || 4, vehSpec.wid || 1.8) / 2 * 0.9;
+          const centreVec = new THREE.Vector3(vehCoords.x, (vehCoords.y || groundH(vehCoords.x, vehCoords.z)) + 0.55, vehCoords.z);
+          const relVec = new THREE.Vector3().subVectors(rayOriginVec, centreVec);
+          const projVal = relVec.dot(rayDirVec);
+          const remainder = relVec.lengthSq() - hitRadius * hitRadius;
+          const discriminant = projVal * projVal - remainder;
+          if (discriminant < 0) return;
+          const hitParam = -projVal - Math.sqrt(discriminant);
+          if (hitParam > 0 && hitParam < nearestT) {
+            nearestT = hitParam;
+            nearestHit = { kind: 'vehicle', v: vehIn, point: new THREE.Vector3().copy(rayOriginVec).addScaledVector(rayDirVec, hitParam) }; } });
+      } catch (err) {}
+      let groundHitVec = null;
+      if (rayDirVec.y < -0.001) {
+        const groundParam = -rayOriginVec.y / rayDirVec.y;
+        if (groundParam > 0 && !(groundParam > specNow.range)) groundHitVec = new THREE.Vector3().copy(rayOriginVec).addScaledVector(rayDirVec, groundParam); }
+      const endVec = nearestHit ? nearestHit.point : (fallbackEndPoint(groundHitVec, rayOriginVec, rayDirVec, specNow));
+      drawTracer(muzzleVec, endVec);
+      let crimeFlagged = false;
+      if (nearestHit && nearestHit.kind === 'ped') {
+        const damageDealt = specNow.dmg * (nearestHit.head ? 2 : 1);
+        injurePed(nearestHit.ped, damageDealt, false, srcPos.x, srcPos.z);
+        session.hitMarkT = 0.09; session.slotDirty = true;
+        escalateWanted(0.5); crimeFlagged = true;
+        disperseCrowd(nearestHit.ped.x, nearestHit.ped.z, 14, 1.2, 2.2, null);
+      } else if (nearestHit && nearestHit.kind === 'vehicle') {
+        const vehHit = nearestHit.v;
+        try { damageVehicle(G, vehHit, specNow.dmg); } catch (err) {}
+        try { spawnSmokeAt(G, nearestHit.point, 2, false); } catch (err) {}
+        session.hitMarkT = 0.09; session.slotDirty = true;
         try {
-          const p = vPos(v);
-          const specV = v.spec || {};
-          const len = specV.len || 4, wid = specV.wid || 1.8;
-          const va = v.angle || 0;
-          const fx = Math.sin(va), fz = Math.cos(va), rx = Math.cos(va), rz = -Math.sin(va);
-          if (bestHit.point.y - groundH(p.x, p.z) < 0.45) {
-            for (const s1 of [1, -1]) for (const s2 of [1, -1]) {
-              const wx = p.x + fx * len * 0.32 * s1 + rx * (wid / 2) * s2;
-              const wz = p.z + fz * len * 0.32 * s1 + rz * (wid / 2) * s2;
-              if (Math.hypot(bestHit.point.x - wx, bestHit.point.z - wz) < 0.45) { v.tireFlat = 5; S.flatVehicles.add(v); break; }
-            }
-          }
-        } catch (e) {}
-        const isCop = (v.driver === 'cop') || (G.cops || []).includes(v);
-        if (isCop) { addWanted(0.8); hitPedOrCop = true; }
-      } else if (groundPoint && (!bestHit || bestT >= spec.range)) {
-        try { spawnSmokeAt(G, groundPoint, 2, false); } catch (e) {}
-      }
-      // Witnessed gunfire escalates even on a miss.
-      if (!hitPedOrCop) {
-        S.autoShots++;
-        if (S.autoShots >= 5 || !spec.auto) {
-          S.autoShots = 0;
-          if (anyWitness(70, 30, sp.x, sp.z)) addWanted(0.25);
-        }
-      }
-      // Recoil kick on the held model.
-      try { const grp = S.held[id]; if (grp) grp.position.z = -0.03; } catch (e) {}
-    }
-
+          const vehCoords = coordsOfVehicle(vehHit);
+          const vehSpec = vehHit.spec || {};
+          const lenNow = vehSpec.len || 4, widNow = vehSpec.wid || 1.8;
+          const vehHeading = vehHit.angle || 0;
+          const fwdX = Math.sin(vehHeading), fwdZ = Math.cos(vehHeading), sideX = Math.cos(vehHeading), sideZ = -Math.sin(vehHeading);
+          if (nearestHit.point.y - groundH(vehCoords.x, vehCoords.z) < 0.45) {
+            for (const signA of [1, -1]) for (const signB of [1, -1]) {
+              const wheelX = vehCoords.x + 0.32 * lenNow * signA * fwdX + (widNow / 2) * signB * sideX;
+              const wheelZ = vehCoords.z + forwardComponent(fwdZ, lenNow, signA) + (widNow / 2) * signB * sideZ;
+              if (Math.hypot(nearestHit.point.x - wheelX, nearestHit.point.z - wheelZ) < 0.45) { vehHit.tireFlat = 5; session.flatVehicles.add(vehHit); break; } } }
+        } catch (err) {}
+        const copVehicleHit = vehHit.driver === 'cop' || (G.cops || []).includes(vehHit);
+        if (copVehicleHit) { escalateWanted(0.8); crimeFlagged = true; }
+      } else if (groundHitVec && (!nearestHit || !(nearestT < specNow.range))) {
+        try { spawnSmokeAt(G, groundHitVec, 2, false); } catch (err) {} }
+      if (!crimeFlagged) {
+        session.autoShots++;
+        if (session.autoShots >= 5 || !specNow.auto) {
+          session.autoShots = 0;
+          if (anyWitnessNear(70, 30, srcPos.x, srcPos.z)) escalateWanted(0.25); } }
+      try { const heldGroup = session.held[slotName]; if (heldGroup) heldGroup.position.z = -0.03; } catch (err) {} }
     function tryFire() {
       if (G.mode !== 'play' || G.paused) return;
-      if (W.reloading > 0 || S.cooldown > 0) return;
-      const spec = WEAPON_TABLE[W.current];
-      S.cooldown = spec.interval;
-      if (spec.melee) fireBat(); else fireGun();
-    }
-
-    // ------------------------------------------------------------ input
-    const canvas = G.canvas || (G.renderer && G.renderer.domElement) || null;
-    function onDown(e) {
-      if (e.button !== 0) return;
+      if (weaponState.reloading > 0 || session.cooldown > 0) return;
+      const specNow = WEAPON_TABLE[weaponState.current];
+      session.cooldown = specNow.interval;
+      if (specNow.melee) swingBatNow(); else fireGunNow(); }
+    // Pointer and keyboard input
+    const canvasTarget = G.canvas || (G.renderer && G.renderer.domElement) || null;
+    function onPointerDown(evIn) {
+      if (evIn.button !== 0) return;
       if (G.mode !== 'play' || G.paused) return;
-      S.firing = true;
-      if (!WEAPON_TABLE[W.current].auto) {
-        if (!S.semiLatch) { S.semiLatch = true; tryFire(); }
-      } else tryFire();
-    }
-    function onUp(e) { if (e.button === 0) { S.firing = false; S.semiLatch = false; } }
+      session.firing = true;
+      if (!WEAPON_TABLE[weaponState.current].auto) {
+        if (!session.semiLatch) { session.semiLatch = true; tryFire(); }
+      } else tryFire(); }
+    function onPointerUp(evIn) { if (evIn.button === 0) { session.firing = false; session.semiLatch = false; } }
     try {
-      if (canvas && canvas.addEventListener) canvas.addEventListener('pointerdown', onDown);
-      else if (typeof window !== 'undefined') window.addEventListener('pointerdown', onDown);
+      if (canvasTarget && canvasTarget.addEventListener) canvasTarget.addEventListener('pointerdown', onPointerDown);
+      else if (typeof window !== 'undefined') window.addEventListener('pointerdown', onPointerDown);
       if (typeof window !== 'undefined') {
-        window.addEventListener('pointerup', onUp);
-        window.addEventListener('blur', onUp);
-      }
-    } catch (e) {}
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('blur', onPointerUp); }
+    } catch (err) {}
     try {
-      window.addEventListener('keydown', (e) => {
+      window.addEventListener('keydown', (evIn) => {
         if (G.mode !== 'play' || G.paused) return;
-        if (e.code === 'Digit1') equip('pistol');
-        else if (e.code === 'Digit2') equip('smg');
-        else if (e.code === 'Digit3') equip('bat');
-        else if (e.code === 'KeyQ') {
-          const i = ORDER.indexOf(W.current);
-          equip(ORDER[(i + 1) % ORDER.length]);
-        } else if (e.code === 'KeyR') startReload();
-      });
-    } catch (e) {}
-
+        const codeIn = evIn.code;
+        if (codeIn === 'Digit1') equip('pistol');
+        else if (codeIn === 'Digit2') equip('smg');
+        else if (codeIn === 'Digit3') equip('bat');
+        else if (codeIn === 'KeyQ') {
+          const currentIdx = SLOT_SEQUENCE.indexOf(weaponState.current);
+          equip(SLOT_SEQUENCE[(currentIdx + 1) % SLOT_SEQUENCE.length]);
+        } else if (codeIn === 'KeyR') startReload(); });
+    } catch (err) {}
     equip('pistol');
-
-    // ------------------------------------------------------------ updater
-    G.updaters.push((G2, dt) => {
-      try {
-        if (S.cooldown > 0) S.cooldown -= dt;
-        if (W.reloading > 0) {
-          W.reloading -= dt;
-          if (W.reloading <= 0) {
-            W.reloading = 0;
-            const spec = WEAPON_TABLE[W.current];
-            const a = W.ammo[W.current];
-            const need = spec.mag - a.mag;
-            const take = a.reserve === Infinity ? need : Math.min(need, a.reserve);
-            a.mag += take;
-            if (a.reserve !== Infinity) a.reserve -= take;
-            S.slotDirty = true;
-          }
-        }
-        if (S.firing && WEAPON_TABLE[W.current].auto) tryFire();
-        if (S.hitMarkT > 0) { S.hitMarkT -= dt; if (S.hitMarkT <= 0) S.slotDirty = true; }
-
-        // Held weapon visibility: on foot only.
-        const onFoot = !G.car && G.mode === 'play';
-        if (heldRoot.parent !== (G.player && G.player.fig)) {
-          try { if (G.player && G.player.fig) G.player.fig.add(heldRoot); } catch (e) {}
-        }
-        heldRoot.visible = !!onFoot;
-        // Recoil decay + bat swing animation.
-        const grp = S.held[W.current];
-        if (grp) {
-          grp.position.z += (0 - grp.position.z) * Math.min(1, dt * 14);
-          if (W.current === 'bat') {
-            if (S.swingT > 0) {
-              S.swingT -= dt;
-              const ph = 1 - Math.max(0, S.swingT) / 0.22; // 0..1
-              grp.rotation.x = ph < 0.55 ? -0.4 - (ph / 0.55) * 1.5 : -1.9 + ((ph - 0.55) / 0.45) * 1.5;
-            } else grp.rotation.x = -0.4;
-          }
-        }
-
-        // Muzzle flash decay / screenshot hold.
-        const ff = G.flags && G.flags.forceFlash;
-        if (ff) {
+    // Per frame updater for this layer
+    G.updaters.push((G2, dtStep) => { try {
+        if (session.cooldown > 0) session.cooldown -= dtStep;
+        if (weaponState.reloading > 0) {
+          weaponState.reloading -= dtStep;
+          if (!(weaponState.reloading > 0)) {
+            weaponState.reloading = 0;
+            const specNow = WEAPON_TABLE[weaponState.current];
+            const ammoNow = weaponState.ammo[weaponState.current];
+            const roundsNeeded = specNow.mag - ammoNow.mag;
+            const roundsTaken = ammoNow.reserve === Infinity ? roundsNeeded : Math.min(roundsNeeded, ammoNow.reserve);
+            ammoNow.mag += roundsTaken;
+            if (ammoNow.reserve !== Infinity) ammoNow.reserve -= roundsTaken;
+            session.slotDirty = true; } }
+        if (session.firing && WEAPON_TABLE[weaponState.current].auto) tryFire();
+        if (session.hitMarkT > 0) { session.hitMarkT -= dtStep; if (!(session.hitMarkT > 0)) session.slotDirty = true; }
+        const onFootActive = !G.car && G.mode === 'play';
+        if (heldRootGroup.parent !== (G.player && G.player.fig)) {
+          try { if (G.player && G.player.fig) G.player.fig.add(heldRootGroup); } catch (err) {} }
+        heldRootGroup.visible = !!onFootActive;
+        const heldGroupNow = session.held[weaponState.current];
+        if (heldGroupNow) {
+          heldGroupNow.position.z += (0 - heldGroupNow.position.z) * Math.min(1, 14 * dtStep);
+          if (weaponState.current === 'bat') {
+            if (session.swingT > 0) {
+              session.swingT -= dtStep;
+              const swingPhase = 1 - Math.max(0, session.swingT) / 0.22;
+              heldGroupNow.rotation.x = swingPhase < 0.55 ? -0.4 - 1.5 * (swingPhase / 0.55) : -1.9 + 1.5 * ((swingPhase - 0.55) / 0.45);
+            } else heldGroupNow.rotation.x = -0.4; } }
+        const forcedFlash = G.flags && G.flags.forceFlash;
+        if (forcedFlash) {
           try {
-            let pos = null;
-            if (ff === 'car' && G.flags.flashCar && G.flags.flashCar.mesh) {
-              pos = G.flags.flashCar.mesh.localToWorld(new THREE.Vector3(0.55, 0.8, 0.2));
-            } else pos = muzzlePos();
-            flash.position.copy(pos);
-            flash.visible = true;
-            flashLight.intensity = 26;
-          } catch (e) {}
-        } else if (S.flashLife > 0) {
-          S.flashLife -= dt;
-          flashLight.intensity = Math.max(0, S.flashLife / 0.05) * 26;
-          if (S.flashLife <= 0) { flash.visible = false; flashLight.intensity = 0; }
-        } else if (flash.visible) { flash.visible = false; flashLight.intensity = 0; }
-
-        // Tracers.
-        for (const tr of S.tracers) {
-          if (tr.life > 0) {
-            tr.life -= dt;
-            tr.mesh.material.opacity = Math.max(0, tr.life / 0.04) * 0.85;
-            if (tr.life <= 0) tr.mesh.visible = false;
-          }
-        }
-        // Flat tires: tilt while active, restore after.
-        if (S.flatVehicles.size) {
-          for (const v of [...S.flatVehicles]) {
+            let flashPos = null;
+            if (forcedFlash === 'car' && G.flags.flashCar && G.flags.flashCar.mesh) {
+              flashPos = G.flags.flashCar.mesh.localToWorld(new THREE.Vector3(0.55, 0.8, 0.2));
+            } else flashPos = muzzlePosition();
+            flashGroup.position.copy(flashPos); flashGroup.visible = true; flashLamp.intensity = 26;
+          } catch (err) {}
+        } else if (session.flashLife > 0) {
+          session.flashLife -= dtStep;
+          flashLamp.intensity = 26 * Math.max(0, session.flashLife / 0.05);
+          if (!(session.flashLife > 0)) { flashGroup.visible = false; flashLamp.intensity = 0; }
+        } else if (flashGroup.visible) { flashGroup.visible = false; flashLamp.intensity = 0; }
+        session.tracers.forEach((tracerSlot) => {
+          if (tracerSlot.life > 0) {
+            tracerSlot.life -= dtStep;
+            tracerSlot.mesh.material.opacity = 0.85 * Math.max(0, tracerSlot.life / 0.04);
+            if (!(tracerSlot.life > 0)) tracerSlot.mesh.visible = false; } });
+        if (session.flatVehicles.size) {
+          [...session.flatVehicles].forEach((vehIn) => {
             try {
-              if (v.tireFlat > 0) { v.tireFlat -= dt; if (v.mesh) v.mesh.rotation.z = 0.03; }
-              else { if (v.mesh) v.mesh.rotation.z = 0; S.flatVehicles.delete(v); }
-            } catch (e) { S.flatVehicles.delete(v); }
-          }
-        }
-        // Crosshair visibility.
+              if (vehIn.tireFlat > 0) { vehIn.tireFlat -= dtStep; if (vehIn.mesh) vehIn.mesh.rotation.z = 0.03; }
+              else { if (vehIn.mesh) vehIn.mesh.rotation.z = 0; session.flatVehicles.delete(vehIn); }
+            } catch (err) { session.flatVehicles.delete(vehIn); } }); }
         try {
-          if (crossEl) crossEl.style.display = (G.mode === 'play' && !G.paused) ? 'block' : 'none';
-          if (slotEl) slotEl.style.display = (G.mode === 'play') ? 'block' : 'none';
-        } catch (e) {}
-        refreshSlot();
-      } catch (e) { /* weapons must never break the loop */ }
-    });
-  } catch (e) {
-    // Separable layer: on any init failure the game continues unarmed.
-    try { if (G && !G.weapons) G.weapons = null; } catch (e2) {}
-  }
-}
+          if (crosshairEl) crosshairEl.style.display = (G.mode === 'play' && !G.paused) ? 'block' : 'none';
+          if (slotPanelEl) slotPanelEl.style.display = (G.mode === 'play') ? 'block' : 'none';
+        } catch (err) {}
+        syncHud();
+      } catch (err) { /* this layer must never break the loop */ } });
+  } catch (err) {
+    try { if (G && !G.weapons) G.weapons = null; } catch (err2) {} } }

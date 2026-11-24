@@ -1,352 +1,270 @@
-// sky.js — visible sun disc + drifting cloud layer (F2 fix round).
-// Vice round (V2): this module now ALSO owns the sunset grade. Diagnosis
-// of the flat orange-brown dusk wash: world.js' sky keyframes lerp from
-// the 17.8 key (mid #e8763a / fog #f2c99a) toward the 19.5 key (mid
-// #6a4a5a / horizon #c97a4a / fog #7a5a4e — brown-grey), so every tod in
-// 17.9–18.4 sits partway into that muddy lerp; and world.js scales the
-// hemisphere light by dayAmt, which is ~0.03 at 17.9, so ground and
-// facades sink to brown-black. main.js' loop runs updateWorld BEFORE
-// updateSky every frame, so the corrections below (sunset gradient dome
-// overlay, fog pull-back, dusk hemisphere fill) win every frame without
-// touching world.js. Everything else is positioned
-// from the SAME time-of-day state world.js uses:
-//   t = G.timeOfDay (hours 0..24)
-//   sun angle ang = ((t - 6) / 12) * PI  (world.js updateWorld positions
-//     G.sun at (cos(ang)*300, sin(ang)*300, 120) — we mirror that direction)
-//   dayAmt = clamp(sin(((t - 6) / 12) * PI), 0, 1)
-//   sunset = warm factor peaking at ~18.2 (and a weaker one at ~6.2)
-// Sun + clouds follow the camera in x/z so the sky reads correctly anywhere
-// in the 1320 m city; clouds additionally drift with the wind in world
-// space relative to that anchor and wrap at the bounds.
-import * as THREE from 'three';
-import { rr } from './random.js';
-
-function sunTexture() {
-  // Soft radial glow: hot white core -> warm halo -> transparent.
-  const c = document.createElement('canvas'); c.width = c.height = 256;
-  const g = c.getContext('2d');
-  const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
-  gr.addColorStop(0, 'rgba(255,255,255,1)');
-  gr.addColorStop(0.18, 'rgba(255,244,214,0.95)');
-  gr.addColorStop(0.34, 'rgba(255,214,140,0.55)');
-  gr.addColorStop(0.62, 'rgba(255,178,102,0.18)');
-  gr.addColorStop(1, 'rgba(255,170,90,0)');
-  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-
-function cloudTexture(seed) {
-  // One cloud cluster: several overlapping radial puffs on a wide canvas.
-  const c = document.createElement('canvas'); c.width = 256; c.height = 128;
-  const g = c.getContext('2d');
-  // Deterministic per-variant puff layout (seeded by variant index, not by
-  // the game RNG — textures must not consume gameplay random draws).
-  let s = 1234567 + seed * 7919;
-  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
-  const puffs = 7 + Math.floor(rnd() * 4);
-  for (let i = 0; i < puffs; i++) {
-    const px = 40 + rnd() * 176, py = 48 + rnd() * 36, pr = 22 + rnd() * 30;
-    const gr = g.createRadialGradient(px, py, 0, px, py, pr);
-    gr.addColorStop(0, 'rgba(255,255,255,0.55)');
-    gr.addColorStop(0.6, 'rgba(255,255,255,0.28)');
-    gr.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = gr;
-    g.beginPath(); g.arc(px, py, pr, 0, Math.PI * 2); g.fill();
-  }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-
-const DAY_CLOUD = new THREE.Color(0xffffff);
-// Neon-coastal sunset palette (Bosku, 23 Nov): saturated pink-orange
-// clouds with a purple variant, and a hot pink-orange low sun.
-const SUNSET_CLOUD = new THREE.Color(0xff9e7a);
-const SUNSET_CLOUD_PURPLE = new THREE.Color(0xc08bd8);
-const NIGHT_CLOUD = new THREE.Color(0x3d4a63);
-const DAY_SUN = new THREE.Color(0xfff3d0);
-const LOW_SUN = new THREE.Color(0xff5f2e);
-const LOW_GLOW = new THREE.Color(0xff7a4d);
-const _c = new THREE.Color();
-// Vice dusk grade targets: fog pulled to the horizon's pink-orange, and a
-// warm pink hemisphere fill so pastel facades keep their colour at dusk.
-const DUSK_FOG = new THREE.Color(0xff9e66);
-const DUSK_HEMI = new THREE.Color(0xffb3c6);
-const DUSK_GROUND = new THREE.Color(0x74506b);
-// Sunset gradient dome bands (vertex colours, bottom -> zenith).
-const DOME_BOT = new THREE.Color(0x2b1233); // below-horizon dusk purple
-const DOME_HOR = new THREE.Color(0xff8b3d); // orange horizon
-const DOME_MID = new THREE.Color(0xe0457b); // magenta-pink mid band
-const DOME_TOP = new THREE.Color(0x2a1458); // deep violet zenith
-// Vice V3 second pass: the sunset section's named palette in one place —
-// the three above-horizon gradient stops (horizon -> mid -> zenith) and
-// the dusk fog colour, referenced by sunsetDome() / updateSky() below
-// instead of reaching for the individual constants at each use site.
-const SUNSET_GRADIENT_STOPS = [DOME_HOR, DOME_MID, DOME_TOP];
-const DUSK_FOG_COLOR = DUSK_FOG;
-// V5 bright-day targets: pale airy haze and a warm-white high sun. The
-// fog near/far bases mirror world.js' scene creation (Fog 220..1500) —
-// world.js rewrites fog colour from its keyframes every frame but never
-// touches near/far after creation, so sky.js can assign them absolutely.
-const DAY_FOG = new THREE.Color(0xdfeef2);
-const DAY_SUN_TINT = new THREE.Color(0xfff6e8);
-const FOG_NEAR_BASE = 220;
-const FOG_FAR_BASE = 1500;
-
-function smoothstep(a, b, x) {
-  const f = Math.max(0, Math.min(1, (x - a) / (b - a)));
-  return f * f * (3 - 2 * f);
-}
-
-function sunsetDome() {
-  // Large BackSide sphere with per-vertex colours forming the vertical
-  // sunset gradient: violet zenith -> magenta/pink mid -> orange
-  // horizon -> dusk purple below. Radius 1420 sits INSIDE world.js'
-  // 1500 dome and OUTSIDE the sun sprites (dist 1150); renderOrder -1
-  // (within the sky group) draws it before the additive sun glow so the
-  // disc stays hot on top of the gradient. Opacity is driven per-frame
-  // by the sunset factor in updateSky — invisible outside dusk.
-  const geo = new THREE.SphereGeometry(1420, 32, 24);
-  const pos = geo.attributes.position;
-  const cols = [];
-  const cc = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const h = pos.getY(i) / 1420; // -1..1, 0 = horizon
-    cc.lerpColors(DOME_BOT, SUNSET_GRADIENT_STOPS[0], smoothstep(-0.08, 0.015, h));
-    cc.lerp(SUNSET_GRADIENT_STOPS[1], smoothstep(0.03, 0.30, h));
-    cc.lerp(SUNSET_GRADIENT_STOPS[2], smoothstep(0.26, 0.62, h));
-    cols.push(cc.r, cc.g, cc.b);
-  }
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, transparent: true, opacity: 0, depthWrite: false, fog: false });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = -1;
-  mesh.visible = false;
-  return mesh;
-}
-
-// V5 B4 second pass: DAY-AIR gradient stops — near-white pale blue at
-// the zenith melting into a warm cream horizon. This is the approved
-// concept's bright, airy noon air (soft daylight, not the saturated
-// dusk bands above).
-const DAY_DOME_TOP = new THREE.Color(0xcfe8f7);
-const DAY_DOME_HOR = new THREE.Color(0xfdf3e0);
-const DAY_DOME_OPACITY = 0.16; // peak, scaled by dayFactor per-frame
-
-function dayAirDome() {
-  // Second gradient dome in the same overlay system as sunsetDome():
-  // BackSide sphere with per-vertex colours, horizon cream -> pale-blue
-  // zenith (below the horizon it just holds the horizon tone, since the
-  // ground hides it anyway). Radius 1440 sits INSIDE world.js' 1500
-  // world dome and OUTSIDE the sunset dome's 1420, and renderOrder -2
-  // draws it before the sunset dome (-1): layered just above the world
-  // dome, just below the sunset grade — so at dusk the sunset dome
-  // paints over it, and this dome's own opacity is 0 there anyway
-  // (dayFactor and the sunset window never overlap).
-  const geo = new THREE.SphereGeometry(1440, 32, 24);
-  const pos = geo.attributes.position;
-  const cols = [];
-  const cc = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const h = pos.getY(i) / 1440; // -1..1, 0 = horizon
-    cc.lerpColors(DAY_DOME_HOR, DAY_DOME_TOP, smoothstep(0.0, 0.55, h));
-    cols.push(cc.r, cc.g, cc.b);
-  }
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, transparent: true, opacity: 0, depthWrite: false, fog: false });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = -2;
-  mesh.visible = false;
-  return mesh;
-}
-
-let sky = null; // { group, sunGlow, sunCore, clouds: [{spr, speed}], mats, dome, dayDome }
-
-export function initSky(G) {
-  try {
-    const group = new THREE.Group();
-    group.renderOrder = 1;
-
-    // --- sunset gradient dome (Vice round) -------------------------------
-    const dome = sunsetDome();
-    group.add(dome);
-
-    // --- day-air gradient dome (V5 B4) ------------------------------------
-    const dayDome = dayAirDome();
-    group.add(dayDome);
-
-    // --- sun: one glow sprite + one smaller hot core sprite -------------
-    const sunTex = sunTexture();
-    const glowMat = new THREE.SpriteMaterial({ map: sunTex, color: 0xffe9b8, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
-    const sunGlow = new THREE.Sprite(glowMat); sunGlow.scale.set(340, 340, 1);
-    const coreMat = new THREE.SpriteMaterial({ map: sunTex, color: 0xffffff, transparent: true, opacity: 1, depthWrite: false, fog: false });
-    const sunCore = new THREE.Sprite(coreMat); sunCore.scale.set(95, 95, 1);
-    group.add(sunGlow); group.add(sunCore);
-
-    // --- clouds: ~16 cluster sprites across 3 shared texture variants ---
-    // Materials are shared per variant so the per-frame time-of-day tint
-    // touches 3 materials, not every sprite.
-    const variants = [];
-    for (let v = 0; v < 3; v++) {
-      variants.push(new THREE.SpriteMaterial({ map: cloudTexture(v), color: 0xffffff, transparent: true, opacity: 0.82, depthWrite: false, fog: false }));
-    }
-    const clouds = [];
-    for (let i = 0; i < 16; i++) {
-      const spr = new THREE.Sprite(variants[i % 3]);
-      const w = rr(150, 300);
-      spr.scale.set(w, w * 0.42, 1);
-      spr.position.set(rr(-820, 820), rr(150, 265), rr(-820, 820));
-      group.add(spr);
-      clouds.push({ spr, speed: rr(0.8, 1.9) });
-    }
-
-    G.scene.add(group);
-    sky = { group, sunGlow, sunCore, glowMat, coreMat, clouds, variants, dome, dayDome };
-    G.sky = sky;
-  } catch (e) { /* sky dressing is best-effort — the dome still renders */ }
-}
-
-export function updateSky(G, dt) {
-  if (!sky) return;
-  try {
-    const t = G.timeOfDay || 10.5;
-    const dayAmt = Math.max(0, Math.min(1, Math.sin(((t - 6) / 12) * Math.PI)));
-    const sunset = Math.max(0, Math.min(1,
-      Math.max(0, 1 - Math.abs(t - 18.2) / 1.6) * (t > 12 ? 1 : 0) +
-      Math.max(0, 1 - Math.abs(t - 6.2) / 1.2) * 0.6));
-    const ang = ((t - 6) / 12) * Math.PI;
-    const elev = Math.sin(ang); // -1..1, <0 = below horizon
-
-    // Anchor the sky group to the camera so sun direction / cloud cover
-    // are consistent anywhere in the city.
-    const cam = G.camera;
-    const ax = cam ? cam.position.x : 0, az = cam ? cam.position.z : 0;
-    sky.group.position.set(ax, 0, az);
-
-    // --- sun disc ---------------------------------------------------------
-    // Same azimuth/elevation family as world.js' G.sun light (z tilted
-    // toward +120/300 so the disc sits over the city, not on the axis).
-    // The beach/ocean edge is the +Z side of the world (beach plane at
-    // z +610 in world.js), so as the sun gets low the z bias grows: the
-    // rising/setting sun hangs out over the water, not over the city.
-    const dist = 1150;
-    const lowAmt0 = Math.max(0, Math.min(1, 1 - Math.abs(elev) / 0.55));
-    const sx = Math.cos(ang) * dist;
-    const sy = elev * dist;
-    const sz = (0.38 + lowAmt0 * 0.30) * dist;
-    sky.sunGlow.position.set(sx, sy, sz);
-    sky.sunCore.position.set(sx, sy, sz);
-    const above = elev > -0.04;
-    sky.sunGlow.visible = above; sky.sunCore.visible = above;
-    if (above) {
-      // Fade in/out right at the horizon line; warm as it gets low.
-      const horizonFade = Math.max(0, Math.min(1, (elev + 0.04) / 0.22));
-      const lowAmt = Math.max(0, Math.min(1, 1 - elev / 0.55));
-      _c.lerpColors(DAY_SUN, LOW_SUN, lowAmt);
-      sky.glowMat.color.copy(_c).lerp(LOW_GLOW, lowAmt * 0.55);
-      sky.coreMat.color.copy(_c).lerp(new THREE.Color(0xffffff), 0.45 - lowAmt * 0.25);
-      sky.glowMat.opacity = 0.9 * horizonFade;
-      sky.coreMat.opacity = 1.0 * horizonFade;
-      const grow = 1 + lowAmt * 0.5; // sun swells a little at sunset
-      sky.sunGlow.scale.set(340 * grow, 340 * grow, 1);
-    }
-
-    // --- vice dusk grade ---------------------------------------------------
-    // Runs AFTER world.js' updateWorld in main.js' loop, so these win
-    // every frame (world.js re-writes fog/hemi/sun from its keyframes
-    // first, then we correct them — no accumulation).
-    if (sky.dome) {
-      // Sunset gradient overlay: decisive by ~18.1, gone by day/night.
-      const domeOp = Math.min(1, sunset * 1.15) * 0.92;
-      sky.dome.material.opacity = domeOp;
-      sky.dome.visible = domeOp > 0.02;
-    }
-    if (sunset > 0) {
-      // Fog: pull world.js' brown-grey-bound lerp back to the horizon's
-      // pink-orange so distance haze matches the gradient's horizon band.
-      if (G.scene && G.scene.fog) G.scene.fog.color.lerp(DUSK_FOG_COLOR, sunset * 0.85);
-      // Hemisphere fill: world.js scales hemi by dayAmt (~0.03 at 17.9,
-      // intensity ~0.27) — add a warm pink dusk fill and a mauve ground
-      // bounce (replacing the brown-grey 0x8a7a66) so ground and pastel
-      // facades keep their colour instead of sinking to brown-black.
-      if (G.hemi) {
-        G.hemi.intensity += sunset * 0.5;
-        if (G.hemi.color) G.hemi.color.lerp(DUSK_HEMI, sunset * 0.45);
-        if (G.hemi.groundColor) G.hemi.groundColor.lerp(DUSK_GROUND, sunset * 0.55);
-      }
-      // Key light: a little extra warm sun so the low disc's side of the
-      // boulevard still models the cars/facades at dusk.
-      if (G.sun) { G.sun.intensity += sunset * 0.3; G.sun.color.lerp(LOW_SUN, sunset * 0.45); }
-    }
-
-    // --- V5 bright airy day -------------------------------------------------
-    // Smooth day window over tod [10.5, 15]: dayFactor is 0 outside, ramps
-    // in by 11.0, sits at 1 across [11, 14.5] and is gone by 15.0. The
-    // sunset factor above is only nonzero from ~16.6 (peak 18.2, width
-    // 1.6) and the morning one ends ~7.4, so the two windows never overlap
-    // and never fight over the same levers.
-    const dayFactor = smoothstep(10.5, 11.0, t) * (1 - smoothstep(14.5, 15.0, t));
-    if (dayFactor > 0) {
-      // Hemisphere fill: world.js' noon value is 0.25 + 0.65 = 0.90; the
-      // +0.5 lift is what makes pastel facades and the pale road read
-      // bright and airy instead of midday-flat.
-      if (G.hemi) G.hemi.intensity += 0.5 * dayFactor;
-      // High sun: stronger, tinted warm-white (never orange at noon).
-      if (G.sun) {
-        G.sun.intensity += 0.35 * dayFactor;
-        if (G.sun.color) G.sun.color.lerp(DAY_SUN_TINT, dayFactor * 0.6);
-      }
-      if (G.scene && G.scene.fog) {
-        // Airy pale haze, pushed far out so the boulevard stays crisp.
-        G.scene.fog.color.lerp(DAY_FOG, dayFactor * 0.85);
-        G.scene.fog.near = FOG_NEAR_BASE + dayFactor * 160;
-        G.scene.fog.far = FOG_FAR_BASE + dayFactor * 700;
-      }
-      // The sunset gradient dome must never pink-wash a bright day.
-      if (sky.dome) {
-        sky.dome.material.opacity *= (1 - dayFactor);
-        sky.dome.visible = sky.dome.material.opacity > 0.02;
-      }
-    } else if (G.scene && G.scene.fog && (G.scene.fog.near !== FOG_NEAR_BASE || G.scene.fog.far !== FOG_FAR_BASE)) {
-      // Outside the day window, hand fog distance back to the base values
-      // (the dusk grade only ever touches fog colour, so nothing fights).
-      G.scene.fog.near = FOG_NEAR_BASE;
-      G.scene.fog.far = FOG_FAR_BASE;
-    }
-
-    // --- day-air overlay (V5 B4) -------------------------------------------
-    // Opacity tracks B2's dayFactor exactly: 0.16 at full day, and at
-    // dayFactor 0 the dome is fully invisible (visible=false), so night
-    // and the sunset path are byte-for-byte untouched.
-    if (sky.dayDome) {
-      const dayOp = DAY_DOME_OPACITY * dayFactor;
-      sky.dayDome.material.opacity = dayOp;
-      sky.dayDome.visible = dayOp > 0.01;
-    }
-
-    // --- clouds ------------------------------------------------------------
-    // Tint: white by day -> pink/orange at sunset -> dim blue-grey at night.
-    _c.copy(NIGHT_CLOUD).lerp(DAY_CLOUD, dayAmt);
-    for (let vi = 0; vi < sky.variants.length; vi++) {
-      const m = sky.variants[vi];
-      m.color.copy(_c);
-      if (sunset > 0) {
-        // Middle variant leans purple; the others go saturated
-        // pink-orange — together they read as a neon-coastal sunset.
-        m.color.lerp(vi === 1 ? SUNSET_CLOUD_PURPLE : SUNSET_CLOUD, sunset * 0.9 * Math.max(dayAmt, 0.45));
-      }
-      // V5 B4: at full day, pull the tint the rest of the way to pure
-      // white and lift opacity a touch, so the cloud sprites read
-      // bright white against the pale day-air dome instead of the
-      // slightly grey dayAmt-only mix.
-      if (dayFactor > 0) m.color.lerp(DAY_CLOUD, dayFactor * 0.5);
-      // Faint at night, full by day, with a sunset lift so the pink
-      // clouds stay readable against the warm grade.
-      m.opacity = Math.min(1, 0.28 + dayAmt * 0.54 + sunset * 0.18 + dayFactor * 0.10);
-    }
-    // Slow wind drift (+x), wrapping around the camera-anchored bounds.
-    const step = (dt || 0) * 1.4;
-    for (const cl of sky.clouds) {
-      cl.spr.position.x += cl.speed * step;
-      if (cl.spr.position.x > 860) cl.spr.position.x = -860;
-    }
-  } catch (e) { /* never break the frame on sky dressing */ }
-}
+// sky.js — billboard matahari, billboard awan yang melayang, dan
+// satu pass grading senja ekstra berlapis di atas milik dunia
+// sendiri. Grade itu menempel semata karena urutan panggil: loop
+// utama membiarkan dunia menyegarkan diri lebih dulu dan menjalankan
+// file ini sesudahnya, jadi nilai tarik kabut, angkat hemisphere,
+// dan cangkang gradien apa pun yang ditulis di sinilah yang dipakai
+// frame saat render. Semuanya menggantung pada jam bersama,
+// tod = G.timeOfDay dalam jam: sudut matahari = ((tod - 6) / 12) * PI,
+// daylight = clamp(sin(sudut), 0, 1), dan bobot senja hangat memuncak
+// dekat 18.2 dengan gema lebih lemah dekat 6.2. Lapisan matahari dan
+// awan mengikuti kamera di x/z; awan juga menumpang angin dan
+// membungkus pada batas jangkar.
+import * as THREE from 'three'; import { rr } from './random.js';
+// Membangun tekstur jatuhan sprite matahari: bagian tengah putih
+// membara, cincin hangat di sekelilingnya, dan pinggiran yang
+// memudar sampai benar-benar bening.
+function buildSunSpriteTexture() {
+  const lembar = document.createElement('canvas'); lembar.width = lembar.height = 256;
+  const sapu = lembar.getContext('2d');
+  const gradasi = sapu.createRadialGradient(128, 128, 0, 128, 128, 128);
+  const pasanganStop = [
+    [0, 'rgba(255,255,255,1)'], [0.18, 'rgba(255,244,214,0.95)'], [0.34, 'rgba(255,214,140,0.55)'],
+    [0.62, 'rgba(255,178,102,0.18)'], [1, 'rgba(255,170,90,0)'],
+  ];
+  for (const [posisiStop, warnaStop] of pasanganStop) gradasi.addColorStop(posisiStop, warnaStop);
+  sapu.fillStyle = gradasi; sapu.fillRect(0, 0, 256, 256);
+  const texJadi = new THREE.CanvasTexture(lembar); texJadi.colorSpace = THREE.SRGBColorSpace; return texJadi; }
+// Membangun satu tekstur gugus awan: gumpalan radial lembut yang
+// bertumpuk pada ubin lebar. Penempatan berjalan pada LCG privat
+// yang disemai per varian, tak pernah pada RNG game bersama, supaya
+// pembuatan tekstur tidak dapat mengganggu keacakan gameplay.
+function buildCloudTexture(variantIdx) {
+  const lembar = document.createElement('canvas'); lembar.height = 128; lembar.width = 256;
+  const sapu = lembar.getContext('2d');
+  let keadaanLcg = 1234567 + (variantIdx * 7919);
+  const acakLanjut = () => { keadaanLcg = ((keadaanLcg * 1103515245) + 12345) & 0x7fffffff; return keadaanLcg / 0x7fffffff; };
+  const banyakGumpal = 7 + Math.floor(acakLanjut() * 4);
+  let urutGumpal = 0;
+  while (urutGumpal < banyakGumpal) {
+    const gxPos = 40 + (acakLanjut() * 176), gyPos = 48 + (acakLanjut() * 36), grRad = 22 + (acakLanjut() * 30);
+    const gradGumpal = sapu.createRadialGradient(gxPos, gyPos, 0, gxPos, gyPos, grRad);
+    gradGumpal.addColorStop(0, 'rgba(255,255,255,0.55)'); gradGumpal.addColorStop(0.6, 'rgba(255,255,255,0.28)');
+    gradGumpal.addColorStop(1, 'rgba(255,255,255,0)');
+    sapu.fillStyle = gradGumpal; sapu.beginPath(); sapu.arc(gxPos, gyPos, grRad, 0, 2 * Math.PI); sapu.fill(); ++urutGumpal; }
+  const texJadi = new THREE.CanvasTexture(lembar); texJadi.colorSpace = THREE.SRGBColorSpace; return texJadi; }
+const SUN_TINT_DAY = new THREE.Color(0xfff6e8), FOG_DAY = new THREE.Color(0xdfeef2), NEAR_BASE = 220, FAR_BASE = 1500;
+const COL_SUN_HIGH = new THREE.Color(0xfff3d0), COL_SUN_LOW = new THREE.Color(0xff5f2e);
+const COL_GLOW_LOW = new THREE.Color(0xff7a4d), COL_CLOUD_DAY = new THREE.Color(0xffffff);
+// Palet senja pesisir neon: awan pink-oranye, satu varian ungu, dan
+// matahari panas yang rendah dekat horizon.
+const COL_CLOUD_DUSK = new THREE.Color(0xff9e7a), COL_CLOUD_DUSK_VIOLET = new THREE.Color(0xc08bd8);
+const COL_CLOUD_NIGHT = new THREE.Color(0x3d4a63), scratchCol = new THREE.Color();
+// Ke mana grade senja membidik: kabut menuju pink-oranye, isi
+// hemisphere pink hangat, supaya dinding pastel mempertahankan
+// warnanya saat cahaya memudar.
+const COL_FOG_DUSK = new THREE.Color(0xff9e66), COL_HEMI_DUSK = new THREE.Color(0xffb3c6), COL_GROUND_DUSK = new THREE.Color(0x74506b);
+// Pita vertex cangkang senja, dari bawah horizon ke atas.
+const COL_SHELL_BELOW = new THREE.Color(0x2b1233), COL_SHELL_HOR = new THREE.Color(0xff8b3d);
+const COL_SHELL_MID = new THREE.Color(0xe0457b), COL_SHELL_TOP = new THREE.Color(0x2a1458);
+// Trio gradien ke atas plus nada kabut senja, dipakai bersama antara
+// pembangun cangkang dan pembaruan per frame.
+const GRADIENT_STOPS = [COL_SHELL_HOR, COL_SHELL_MID, COL_SHELL_TOP], FOG_DUSK_REF = COL_FOG_DUSK;
+// Bidik hari cerah: kabut pucat lapang dan matahari tinggi putih
+// hangat. Basis near/far kabut mencerminkan nilai pembuatan scene
+// (Fog 220..1500); pass dunia mewarnai ulang kabut per frame tapi
+// tak pernah menyentuh near/far sesudah pembuatan, jadi file ini
+// boleh menetapkan dua nilai itu secara langsung.
+const clamp01 = (masukan) => Math.min(1, Math.max(0, masukan));
+function smoothstepFn(loEdge, hiEdge, val) { const pecahan = clamp01((val - loEdge) / (hiEdge - loEdge)); return (pecahan * pecahan) * (3 - (2 * pecahan)); }
+// Cangkang senja: bola BackSide yang dicat vertex sebagai gradien
+// senja vertikal — ungu di atas kepala, magenta, oranye, lalu ungu
+// senja di bawah horizon. Radius 1420 bersarang di dalam cangkang
+// dunia 1500 namun di luar sprite matahari pada 1150, dan
+// renderOrder -1 di dalam grup langit menggambarnya mendahului
+// pijar aditif matahari supaya cakram tetap panas di atasnya.
+// Opacity mengikuti bobot senja tiap frame, yang menyembunyikan
+// cangkang di luar jendela matahari terbenam.
+function buildSunsetShell() {
+  const geoBola = new THREE.SphereGeometry(1420, 32, 24), titikPos = geoBola.attributes.position;
+  const daftarWarna = [], colSementara = new THREE.Color();
+  for (let idxTitik = 0; idxTitik < titikPos.count; ++idxTitik) {
+    const fraksiTinggi = titikPos.getY(idxTitik) / 1420;
+    colSementara.lerpColors(COL_SHELL_BELOW, GRADIENT_STOPS[0], smoothstepFn(-0.08, 0.015, fraksiTinggi));
+    colSementara.lerp(GRADIENT_STOPS[1], smoothstepFn(0.03, 0.30, fraksiTinggi)); colSementara.lerp(GRADIENT_STOPS[2], smoothstepFn(0.26, 0.62, fraksiTinggi));
+    daftarWarna.push(colSementara.r, colSementara.g, colSementara.b); }
+  geoBola.setAttribute('color', new THREE.Float32BufferAttribute(daftarWarna, 3));
+  const matBola = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  const meshBola = new THREE.Mesh(geoBola, matBola); meshBola.renderOrder = -1; meshBola.visible = false; return meshBola; }
+// Stop cangkang udara siang: biru pucat hampir putih di puncak
+// melarut menjadi krem hangat di horizon — udara siang yang terang.
+const COL_SHELL_DAY_TOP = new THREE.Color(0xcfe8f7), COL_SHELL_DAY_HOR = new THREE.Color(0xfdf3e0), SHELL_DAY_OPACITY = 0.16;
+// Cangkang gradien pendamping dalam tumpukan overlay yang sama:
+// bola BackSide, krem di horizon yang naik menjadi biru pucat di
+// zenit (di bawah horizon ia sekadar mempertahankan nada horizon,
+// yang toh disembunyikan tanah). Radius 1440 duduk di dalam
+// cangkang dunia 1500 dan di luar cangkang senja pada 1420;
+// renderOrder -2 menggambarnya paling dulu, tepat di atas kubah
+// dunia dan di bawah grade senja, jadi saat senja cangkang senja
+// menutupinya — dan opacity-nya nol di sana, karena jendela siang
+// dan senja tak pernah tumpang tindih.
+function buildDayAirShell() {
+  const geoBola = new THREE.SphereGeometry(1440, 32, 24), titikPos = geoBola.attributes.position;
+  const daftarWarna = [], colSementara = new THREE.Color();
+  let idxTitik = 0;
+  while (idxTitik < titikPos.count) {
+    const fraksiTinggi = titikPos.getY(idxTitik) / 1440;
+    colSementara.lerpColors(COL_SHELL_DAY_HOR, COL_SHELL_DAY_TOP, smoothstepFn(0.0, 0.55, fraksiTinggi));
+    daftarWarna.push(colSementara.r, colSementara.g, colSementara.b); ++idxTitik; }
+  geoBola.setAttribute('color', new THREE.Float32BufferAttribute(daftarWarna, 3));
+  const matBola = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  const meshBola = new THREE.Mesh(geoBola, matBola); meshBola.renderOrder = -2; meshBola.visible = false; return meshBola; }
+let skyState = null;
+export function initSky(G) { try {
+    const grupLangit = new THREE.Group(); grupLangit.renderOrder = 1;
+    const kubahSenja = buildSunsetShell(); grupLangit.add(kubahSenja);
+    const kubahSiang = buildDayAirShell(); grupLangit.add(kubahSiang);
+    // Matahari adalah dua billboard: satu pijar lebar, satu inti panas yang rapat.
+    const texMatahari = buildSunSpriteTexture();
+    const matPijarMth = new THREE.SpriteMaterial({ map: texMatahari, color: 0xffe9b8, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    const sprPijarMth = new THREE.Sprite(matPijarMth); sprPijarMth.scale.set(340, 340, 1);
+    const matIntiMth = new THREE.SpriteMaterial({ map: texMatahari, color: 0xffffff, transparent: true, opacity: 1, depthWrite: false, fog: false });
+    const sprIntiMth = new THREE.Sprite(matIntiMth); sprIntiMth.scale.set(95, 95, 1);
+    grupLangit.add(sprPijarMth); grupLangit.add(sprIntiMth);
+    // Sekitar enam belas billboard awan berbagi tiga varian tekstur,
+    // jadi penulisan nada per frame menyentuh tiga material, bukan sprite.
+    const matVarianList = [];
+    for (let idxVarian = 0; idxVarian < 3; ++idxVarian)
+      matVarianList.push(new THREE.SpriteMaterial({ map: buildCloudTexture(idxVarian), color: 0xffffff, transparent: true, opacity: 0.82, depthWrite: false, fog: false }));
+    const awanList = [];
+    for (let idxAwan = 0; idxAwan < 16; ++idxAwan) {
+      const sprAwan = new THREE.Sprite(matVarianList[idxAwan % 3]);
+      const lebarAwan = rr(150, 300);
+      sprAwan.scale.set(lebarAwan, lebarAwan * 0.42, 1);
+      sprAwan.position.set(rr(-820, 820), rr(150, 265),
+        rr(-820, 820));
+      grupLangit.add(sprAwan);
+      const rekAwan = {}; rekAwan.spr = sprAwan; rekAwan.speed = rr(0.8, 1.9); awanList.push(rekAwan); }
+    G.scene.add(grupLangit);
+    const rakitanLangit = {};
+    rakitanLangit.group = grupLangit; rakitanLangit.sunGlow = sprPijarMth; rakitanLangit.sunCore = sprIntiMth;
+    rakitanLangit.glowMat = matPijarMth; rakitanLangit.coreMat = matIntiMth; rakitanLangit.clouds = awanList;
+    rakitanLangit.variants = matVarianList; rakitanLangit.dome = kubahSenja; rakitanLangit.dayDome = kubahSiang;
+    skyState = rakitanLangit; G.sky = skyState;
+  } catch (e) { /* hiasan langit boleh gagal dalam diam; kubah dasar tetap muncul */ } }
+function duskWeightFor(jamTod) {
+  const bagianPetang = Math.max(0, 1 - (Math.abs(jamTod - 18.2) / 1.6)) * (jamTod > 12 ? 1 : 0);
+  const bagianFajar = Math.max(0, 1 - (Math.abs(jamTod - 6.2) / 1.2)) * 0.6;
+  return Math.min(1, Math.max(0, (bagianPetang + bagianFajar))); }
+function sunPositionFor(sudutMth, elevasiMth, jarakMth) {
+  const kedekatanRendah = Math.min(1, Math.max(0, 1 - (Math.abs(elevasiMth) / 0.55)));
+  const hasilPosisi = {};
+  hasilPosisi.x = Math.cos(sudutMth) * jarakMth; hasilPosisi.y = elevasiMth * jarakMth;
+  hasilPosisi.z = (0.38 + (kedekatanRendah * 0.30)) * jarakMth; hasilPosisi.lowNear = kedekatanRendah;
+  return hasilPosisi; }
+function applyDuskGrade(G, bobotSenja) {
+  if (!bobotSenja) return;
+  // Kabut: tarik campuran yang sedang menuju cokelat-abu itu kembali
+  // ke pink-oranye horizon, supaya kabut kejauhan cocok dengan pita
+  // horizon gradien.
+  if (G.scene && G.scene.fog) G.scene.fog.color.lerp(FOG_DUSK_REF,
+    bobotSenja * 0.85);
+  // Isi hemisphere: pass dunia menskalakan hemi menurut daylight
+  // (sekitar 0.03 pada 17.9, intensitas dekat 0.27) — gantikan isi
+  // senja pink hangat dan pantulan tanah mauve untuk cokelat-abu
+  // itu, supaya tanah dan dinding pastel memegang warna alih-alih menggelap.
+  if (G.hemi) { G.hemi.intensity += bobotSenja * 0.5;
+    if (G.hemi.color) G.hemi.color.lerp(COL_HEMI_DUSK, bobotSenja * 0.45);
+    if (G.hemi.groundColor) G.hemi.groundColor.lerp(COL_GROUND_DUSK, bobotSenja * 0.55); }
+  // Cahaya kunci: sentuhan lagi matahari hangat, supaya sisi
+  // bulevar pada sisi cakram rendah tetap memodelkan mobil dan dinding saat senja.
+  if (G.sun) { G.sun.intensity += bobotSenja * 0.3;
+    G.sun.color.lerp(COL_SUN_LOW, bobotSenja * 0.45); } }
+function applyDayAir(G, bobotSiang) {
+  // Isi hemisphere: nilai tengah hari dunia adalah 0.25 + 0.65 =
+  // 0.90; angkat +0.5 itulah yang membuat dinding pastel dan jalan
+  // pucat terbaca terang dan lapang ketimbang datar tengah hari.
+  if (G.hemi) G.hemi.intensity += 0.5 * bobotSiang;
+  // Matahari tinggi: lebih kuat, dinadakan putih hangat (tak pernah oranye pada tengah hari).
+  if (G.sun) { G.sun.intensity += 0.35 * bobotSiang;
+    if (G.sun.color) G.sun.color.lerp(SUN_TINT_DAY, bobotSiang * 0.6); }
+  if (G.scene && G.scene.fog) {
+    // Kabut pucat lapang, didorong jauh ke luar supaya bulevar tetap tajam.
+    G.scene.fog.color.lerp(FOG_DAY, bobotSiang * 0.85);
+    G.scene.fog.near = NEAR_BASE + (bobotSiang * 160); G.scene.fog.far = FAR_BASE + (bobotSiang * 700); }
+  // Hari yang terang tak boleh sekali-kali tercuci pink oleh cangkang senja.
+  if (skyState.dome) { skyState.dome.material.opacity *= (1 - bobotSiang);
+    skyState.dome.visible = skyState.dome.material.opacity > 0.02; } }
+export function updateSky(G, dt) { if (!skyState) return; try {
+    const jamTod = G.timeOfDay || 10.5;
+    const terangHari = Math.min(1, Math.max(0, Math.sin(((jamTod - 6) / 12) * Math.PI)));
+    const bobotSenja = duskWeightFor(jamTod);
+    const sudutMth = ((jamTod - 6) / 12) * Math.PI, elevasiMth = Math.sin(sudutMth);
+    // Pasang seluruh grup langit pada kamera, supaya arah matahari
+    // dan tutupan awan terbaca sama dari mana pun di dalam kota.
+    const kameraRef = G.camera, titikJangkarX = kameraRef ? kameraRef.position.x : 0, titikJangkarZ = kameraRef ? kameraRef.position.z : 0, titikJangkarY = 0;
+    skyState.group.position.set(titikJangkarX, titikJangkarY, titikJangkarZ);
+    // Cakram matahari meminjam keluarga azimut/elevasi cahaya
+    // matahari dunia sendiri (z dimiringkan menuju +120/300, jadi
+    // cakram menggantung di atas atap ketimbang duduk pada sumbu).
+    // Laut terletak pada sisi +Z dunia (bidang pantai pada z +610),
+    // jadi bias z membesar saat matahari tenggelam: matahari yang
+    // rendah berakhir di atas perairan ketimbang di belakang skyline.
+    const jarakMth = 1150, posisiMth = sunPositionFor(sudutMth, elevasiMth, jarakMth);
+    skyState.sunGlow.position.set(posisiMth.x, posisiMth.y, posisiMth.z); skyState.sunCore.position.set(posisiMth.x, posisiMth.y, posisiMth.z);
+    const masihDiAtas = elevasiMth > -0.04; skyState.sunGlow.visible = masihDiAtas; skyState.sunCore.visible = masihDiAtas;
+    if (masihDiAtas) {
+      // Cakram memudar tepat pada horizon dan menghangat saat ia tenggelam.
+      const pudarHorizon = Math.min(1, Math.max(0, (elevasiMth + 0.04) / 0.22));
+      const bobotRendah = Math.min(1, Math.max(0, 1 - (elevasiMth / 0.55)));
+      scratchCol.lerpColors(COL_SUN_HIGH, COL_SUN_LOW, bobotRendah);
+      skyState.glowMat.color.copy(scratchCol).lerp(COL_GLOW_LOW, bobotRendah * 0.55);
+      skyState.coreMat.color.copy(scratchCol).lerp(new THREE.Color(0xffffff), 0.45 - (bobotRendah * 0.25));
+      skyState.glowMat.opacity = 0.9 * pudarHorizon; skyState.coreMat.opacity = 1.0 * pudarHorizon;
+      const faktorMembesar = 0 + 1 + (bobotRendah * 0.5);
+      skyState.sunGlow.scale.set(340 * faktorMembesar, 340 * faktorMembesar, 1); }
+    // Grade senja berjalan sesudah pass dunia sendiri dalam loop
+    // utama, jadi koreksi inilah yang bertahan sampai render: dunia
+    // menulis kabut/hemi/matahari dari keyframe-nya lebih dulu, pass
+    // ini menyesuaikannya, dan tidak ada yang terakumulasi.
+    if (skyState.dome) {
+      // Overlay matahari terbenam: menentukan dekat 18.1, lenyap pada siang dan pada malam.
+      const opasitasKubah = Math.min(1, bobotSenja * 1.15) * 0.92;
+      skyState.dome.material.opacity = opasitasKubah; skyState.dome.visible = opasitasKubah > 0.02; }
+    applyDuskGrade(G, bobotSenja);
+    // Udara siang yang terang dan lapang. Jendela halus di atas
+    // tod [10.5, 15]: nol di luar, merangkak masuk pada 11.0, ditahan
+    // pada satu melintasi [11, 14.5] dan lenyap pada 15.0. Bobot
+    // senja hanya bukan nol dari sekitar 16.6 (puncak 18.2, lebar
+    // 1.6) dan yang pagi berakhir dekat 7.4, jadi dua jendela itu tak
+    // pernah tumpang tindih atau bertarung memperebutkan kontrol yang sama.
+    const bobotSiang = smoothstepFn(10.5, 11.0, jamTod) * (1 - smoothstepFn(14.5, 15.0, jamTod));
+    if (bobotSiang > 0) applyDayAir(G, bobotSiang);
+    else if (G.scene && G.scene.fog &&
+        (G.scene.fog.near !== NEAR_BASE || G.scene.fog.far !== FAR_BASE)) {
+      // Di luar jendela siang, kembalikan jarak kabut kepada nilai
+      // basis (grade senja hanya pernah menyentuh warna kabut, jadi
+      // tidak ada di sini yang berkonflik dengannya).
+      G.scene.fog.near = NEAR_BASE; G.scene.fog.far = FAR_BASE; }
+    // Overlay udara siang: opacity mengikuti jendela siang dengan
+    // tepat — 0.16 pada siang penuh; pada bobot nol cangkang
+    // tersembunyi sepenuhnya, yang membiarkan jalur malam dan senja tak tersentuh.
+    if (skyState.dayDome) {
+      const opasitasUdara = SHELL_DAY_OPACITY * bobotSiang;
+      skyState.dayDome.material.opacity = opasitasUdara; skyState.dayDome.visible = opasitasUdara > 0.01; }
+    // Nada awan: putih dalam cahaya siang, pink/oranye pada senja,
+    // dan biru-abu redup begitu malam jatuh.
+    scratchCol.copy(COL_CLOUD_NIGHT).lerp(COL_CLOUD_DAY, terangHari);
+    for (let idxVarian = 0; idxVarian < skyState.variants.length; ++idxVarian) {
+      const matVarian = skyState.variants[idxVarian];
+      matVarian.color.copy(scratchCol);
+      if (bobotSenja > 0) {
+        // Varian tengah condong ke ungu sementara sisanya pergi ke
+        // pink-oranye jenuh; bersama-sama mereka terbaca sebagai
+        // matahari terbenam pesisir neon.
+        matVarian.color.lerp(idxVarian === 1 ? COL_CLOUD_DUSK_VIOLET : COL_CLOUD_DUSK, (bobotSenja * 0.9) * Math.max(terangHari, 0.45)); }
+      // Pada siang penuh, tarik nada sisa perjalanan menuju putih
+      // murni dan angkat opacity sedikit, supaya sprite terbaca
+      // putih terang melawan cangkang udara siang yang pucat
+      // ketimbang campuran lebih abu yang akan ditinggalkan bobot siang sendirian.
+      if (bobotSiang > 0) matVarian.color.lerp(COL_CLOUD_DAY, bobotSiang * 0.5);
+      // Samar pada malam, penuh pada siang, dengan angkat senja
+      // supaya awan pink tetap terbaca melawan grade hangat.
+      matVarian.opacity = Math.min(1,
+        0.28 + (terangHari * 0.54) + (bobotSenja * 0.18) + (bobotSiang * 0.10)); }
+    // Awan hanyut perlahan searah angin (+x) dan membungkus pada
+    // batas yang berjangkar kepada kamera.
+    const langkahHanyut = (dt || 0) * 1.4;
+    for (const rekAwan of skyState.clouds) { rekAwan.spr.position.x += rekAwan.speed * langkahHanyut;
+      if (rekAwan.spr.position.x > 860) rekAwan.spr.position.x = -860; }
+  } catch (e) { /* kegagalan langit tak boleh sekali-kali mematahkan frame */ } }

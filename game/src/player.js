@@ -1,469 +1,363 @@
-// player.js — high-quality textured figure factory + on-foot player
-// HARD GATE 2: ~7.5-head proportions, capsule/lathe parts, procedural clothing canvas textures.
-import * as THREE from 'three';
-import { CAST } from './config.js';
-import { groundH } from './world.js';
-import { loadHeroAsset } from './assets.js';
-
-// --- Tripo GLB Ren (hero asset 'mc') as the player's on-foot visual --------
-// player.fig is the OUTER group (positioned/rotated by updatePlayer); its
-// visual child is the procedural figure, or — once the GLB resolves — a
-// clone of the loaded wrapper inside an inner group we bob/rock/lean.
-// The procedural figure is the exact fallback: if the asset fails to load
-// (loadHeroAsset resolves null) nothing is ever swapped. Flip this one
-// constant if a screenshot shows Ren facing away from his heading.
-const MC_ROT_Y = 0; // Vice round V3 sweep: MC GLB facing offset — 0 = verified correct in shots
-let _mcTemplate = null; // resolved loadHeroAsset('mc') wrapper (template)
-let _mcLoadStarted = false;
-const _mcWaiters = new Set(); // players created procedurally before load
-function applyGlbVisual(player) {
+// On foot player plus the textured figure factory
+// Proportions run near seven and a half heads, with capsule and
+// lathe parts and clothing from procedural canvas textures
+import * as THREE from 'three'; import { CAST } from './config.js';
+import { groundH } from './world.js'; import { loadHeroAsset } from './assets.js';
+// The hero visual may become the loaded model, while the outer group
+// stays the one the updater positions and rotates
+// Inside sits either the procedural figure or a clone of the loaded
+// wrapper, held by an inner group that bobs, rocks and leans
+// A failed load resolves null and nothing swaps, so the procedural
+// figure remains the exact fallback, and one constant flips facing
+const MC_YAW_CORRECTION = 0;
+let mcTemplate = null; let mcLoadStarted = false;
+const mcWaiters = new Set();
+function groundShadowDisc(radiusIn) {
+  const discMesh = new THREE.Mesh(new THREE.CircleGeometry(radiusIn, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
+  discMesh.rotation.x = -Math.PI / 2; discMesh.position.y = 0.02;
+  return discMesh; }
+function swapHeroToModel(plIn) {
   try {
-    if (!player || !_mcTemplate || player.figIsGlb) return false;
-    const inner = new THREE.Group();
-    inner.name = 'mc-glb-inner';
-    inner.rotation.y = MC_ROT_Y;
-    inner.add(_mcTemplate.clone(true));
-    if (player.procFig) player.fig.remove(player.procFig);
-    player.fig.add(inner);
-    // The procedural figure carries a blob shadow (see makeFigure); give
-    // the GLB visual the same treatment, on the outer group so the shadow
-    // stays grounded while the inner wrapper bobs.
-    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
-    shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02;
-    player.fig.add(shadow);
-    player.glbInner = inner;
-    player.glbShadow = shadow;
-    player.visual = inner;
-    player.figIsGlb = true;
+    if (!plIn || !mcTemplate || plIn.figIsGlb) return false;
+    const innerGroup = new THREE.Group();
+    innerGroup.name = 'mc-glb-inner'; innerGroup.rotation.y = MC_YAW_CORRECTION;
+    innerGroup.add(mcTemplate.clone(true));
+    if (plIn.procFig) plIn.fig.remove(plIn.procFig);
+    plIn.fig.add(innerGroup);
+    const discMesh = groundShadowDisc(0.42);
+    plIn.fig.add(discMesh);
+    plIn.glbInner = innerGroup; plIn.glbShadow = discMesh; plIn.visual = innerGroup; plIn.figIsGlb = true;
     return true;
-  } catch (e) {
-    return false; // never throw: procedural visual stays in place
-  }
-}
-function startMcLoad() {
-  if (_mcLoadStarted) return;
-  _mcLoadStarted = true;
-  // S35: a null resolution is retried, not terminal. Root cause of the
-  // Ren GLB regression: since S34's eager registry loading, all 19 GLBs
-  // race at module init and 'mc' (10th in registry order) could lose
-  // loadGLBModel's 8 s fetch-abort race; assets.js cached that null
-  // forever and this handler simply returned, leaving every waiter on
-  // the procedural figure for the whole session — while earlier-queue
-  // assets (heroCar, gtr35, svj, helicopter) swapped fine. assets.js
-  // now retries internally and evicts nulls from its cache, so this
-  // second request refetches; waiters are only cleared on success.
-  const attempt = (triesLeft) => {
+  } catch (err) { return false; } }
+function startHeroLoad() {
+  if (mcLoadStarted) return;
+  mcLoadStarted = true;
+  // A null result gets retried rather than treated as final, because
+  // racing loads at module init can lose the fetch race, and a cached
+  // null would strand every waiter on the procedural figure for the
+  // whole session, while the asset module evicts nulls on retry
+  const tryLoad = (attemptsLeft) => {
     try {
-      loadHeroAsset('mc').then((wrapper) => {
+      loadHeroAsset('mc').then((wrapIn) => {
         try {
-          if (!wrapper) {
-            if (triesLeft > 0) setTimeout(() => attempt(triesLeft - 1), 1500);
-            return; // load failed -> procedural fallback stays for now
-          }
-          _mcTemplate = wrapper;
-          for (const player of _mcWaiters) applyGlbVisual(player);
-          _mcWaiters.clear();
-        } catch (e) { /* keep procedural fallback */ }
-      }).catch(() => { if (triesLeft > 0) setTimeout(() => attempt(triesLeft - 1), 1500); });
-    } catch (e) { /* keep procedural fallback */ }
-  };
-  attempt(3);
-}
-startMcLoad();
-
-// --- Tripo GLB cast overrides ------------------------------------------------
-// Named cast members whose procedural figure is replaced by a GLB visual.
-// SHUN ARAKAWA (CAST.shun, the GT-R R35 rival driver) renders as the
-// textured 'rivalDriver' GLB (black leather jacket + sunglasses, faces +Z,
-// so rotation 0 matches the procedural figure's facing). Same pattern as
-// the MC swap above: the figure group returned by makeFigure stays the
-// outer group (position/rotation/animation untouched); only its inner
-// visual is swapped once the asset resolves. If the GLB fails to load
-// (loadHeroAsset resolves null) the procedural CAST figure stays — the
-// exact fallback, untouched.
-// S30: CAST.cop (RBPD Officer) likewise renders as the textured
-// 'policeOfficer' GLB (dark blue uniform + gold badge, faces +Z); its
-// procedural fallback is the navy 'uniform' figure with cap+badge.
-const CAST_GLB_ROT_Y = 0;
-const CAST_GLB_OVERRIDE = { shun: 'rivalDriver', cop: 'policeOfficer' };
-const _castGlbTemplates = new Map(); // assetName -> resolved wrapper
-const _castGlbStarted = new Set(); // assetName loads already kicked off
-const _castGlbWaiters = new Map(); // assetName -> Set of figs awaiting swap
-function applyCastGlbVisual(fig, assetName) {
+          if (!wrapIn) { if (attemptsLeft > 0) setTimeout(() => tryLoad(attemptsLeft - 1), 1500); return; }
+          mcTemplate = wrapIn;
+          mcWaiters.forEach((waitingPl) => swapHeroToModel(waitingPl));
+          mcWaiters.clear();
+        } catch (err) { /* procedural fallback stays */ }
+      }).catch(() => { if (attemptsLeft > 0) setTimeout(() => tryLoad(attemptsLeft - 1), 1500); });
+    } catch (err) { /* procedural fallback stays */ } };
+  tryLoad(3); }
+startHeroLoad();
+// Cast figures replaced by loaded visuals follow the same pattern
+// The rival driver and the officer each map to their own asset, and
+// both face forward, so zero rotation matches the procedural facing
+// The group the factory returns stays outer, with transform and
+// animation untouched, and only the inner visual changes on arrival
+const CAST_YAW_CORRECTION = 0;
+const CAST_ASSET_MAP = { shun: 'rivalDriver', cop: 'policeOfficer' };
+const castTemplateMap = new Map(); const castStartedSet = new Set(); const castWaiterMap = new Map();
+function swapCastFigure(figIn, assetName) {
   try {
-    const template = _castGlbTemplates.get(assetName);
-    if (!fig || !template || fig.userData.figIsGlb) return false;
-    const inner = new THREE.Group();
-    inner.name = 'cast-glb-inner';
-    inner.rotation.y = CAST_GLB_ROT_Y;
-    inner.add(template.clone(true));
-    // Detach the procedural visual into a held group: fig.userData part
-    // refs (legs/arms/head) stay valid on it, and it is simply no longer
-    // rendered. The outer fig group keeps its transform.
-    const proc = new THREE.Group();
-    proc.name = 'cast-proc-visual';
-    while (fig.children.length) proc.add(fig.children[0]);
-    fig.add(inner);
-    // Same blob shadow treatment as the MC swap, on the outer group.
-    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
-    shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02;
-    fig.add(shadow);
-    fig.userData.procFig = proc;
-    fig.userData.glbInner = inner;
-    fig.userData.glbShadow = shadow;
-    fig.userData.figIsGlb = true;
-    // Figure was already posed seated before the GLB resolved (in-car
-    // driver): the GLB cannot articulate into a seat, so sink the inner
-    // wrapper to seat height instead of standing through the roof.
-    if (fig.userData.seated) inner.position.y = -0.55;
-    fig.figIsGlb = true;
+    const template = castTemplateMap.get(assetName);
+    if (!figIn || !template || figIn.userData.figIsGlb) return false;
+    const innerGroup = new THREE.Group();
+    innerGroup.name = 'cast-glb-inner'; innerGroup.rotation.y = CAST_YAW_CORRECTION;
+    innerGroup.add(template.clone(true));
+    const heldProcedural = new THREE.Group();
+    heldProcedural.name = 'cast-proc-visual';
+    while (figIn.children.length) heldProcedural.add(figIn.children[0]);
+    figIn.add(innerGroup);
+    const discMesh = groundShadowDisc(0.42);
+    figIn.add(discMesh);
+    figIn.userData.procFig = heldProcedural; figIn.userData.glbInner = innerGroup; figIn.userData.glbShadow = discMesh; figIn.userData.figIsGlb = true;
+    if (figIn.userData.seated) innerGroup.position.y = -0.55;
+    figIn.figIsGlb = true;
     return true;
-  } catch (e) {
-    return false; // never throw: procedural visual stays in place
-  }
-}
-function startCastGlbLoad(assetName) {
-  if (_castGlbStarted.has(assetName)) return;
-  _castGlbStarted.add(assetName);
+  } catch (err) { return false; } }
+function startCastLoad(assetName) {
+  if (castStartedSet.has(assetName)) return;
+  castStartedSet.add(assetName);
   try {
-    loadHeroAsset(assetName).then((wrapper) => {
+    loadHeroAsset(assetName).then((wrapIn) => {
       try {
-        if (!wrapper) return; // load failed -> procedural fallback stays
-        _castGlbTemplates.set(assetName, wrapper);
-        const waiters = _castGlbWaiters.get(assetName);
-        if (waiters) { for (const fig of waiters) applyCastGlbVisual(fig, assetName); waiters.clear(); }
-      } catch (e) { /* keep procedural fallback */ }
-    }).catch(() => { /* keep procedural fallback */ });
-  } catch (e) { /* keep procedural fallback */ }
-}
-// Kick off (or immediately apply) the GLB override for a cast figure.
-// Idempotent. Called by makeFigure when the CAST entry matches an override
-// key, and by shots.js placeFig, which carries the cast key explicitly.
-export function applyCastFigureOverride(fig, castKey) {
+        if (!wrapIn) return;
+        castTemplateMap.set(assetName, wrapIn);
+        const waitingSet = castWaiterMap.get(assetName);
+        if (waitingSet) { waitingSet.forEach((figIn) => swapCastFigure(figIn, assetName)); waitingSet.clear(); }
+      } catch (err) { /* procedural fallback stays */ }
+    }).catch(() => { /* procedural fallback stays */ });
+  } catch (err) { /* procedural fallback stays */ } }
+export function applyCastFigureOverride(figIn, castName) {
   try {
-    if (!fig || !castKey) return false;
-    const assetName = CAST_GLB_OVERRIDE[castKey];
+    if (!figIn || !castName) return false;
+    const assetName = CAST_ASSET_MAP[castName];
     if (!assetName) return false;
-    fig.userData.castKey = castKey;
-    if (fig.userData.figIsGlb) return true;
-    startCastGlbLoad(assetName);
-    if (applyCastGlbVisual(fig, assetName)) return true;
-    if (!_castGlbWaiters.has(assetName)) _castGlbWaiters.set(assetName, new Set());
-    _castGlbWaiters.get(assetName).add(fig);
+    figIn.userData.castKey = castName;
+    if (figIn.userData.figIsGlb) return true;
+    startCastLoad(assetName);
+    if (swapCastFigure(figIn, assetName)) return true;
+    if (!castWaiterMap.has(assetName)) castWaiterMap.set(assetName, new Set());
+    castWaiterMap.get(assetName).add(figIn);
     return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// Deterministic texture noise (no Math.random — simple LCG local to texture gen)
-function texRng(seed) { let s = seed * 7919 + 13; return () => { s = (s * 16807) % 2147483647; return (s & 0xffff) / 0xffff; }; }
-function hexCss(hex) { return '#' + hex.toString(16).padStart(6, '0'); }
-function shade(hex, f) { const c = new THREE.Color(hex); c.multiplyScalar(f); return '#' + c.getHexString(); }
-
-// Clothing canvas texture. FRONT design centered at u=0.25, plain back at u=0.75.
-// Lathe/cylinder UV: u wraps around circumference; with default geometry the seam is at back,
-// so rotating the mesh Y by PI puts u=0.25 (front design) facing +Z. Parts below apply rotation.y = Math.PI where needed.
-export function makeClothTexture(kind, topColor, trim, pantsColor) {
-  const c = document.createElement('canvas'); c.width = c.height = 256;
-  const g = c.getContext('2d'); const R = texRng(topColor % 10000 + kind.length * 131);
-  const base = hexCss(topColor);
-  g.fillStyle = base; g.fillRect(0, 0, 256, 256);
-  // fabric noise
-  for (let i = 0; i < 1400; i++) { g.fillStyle = `rgba(0,0,0,${0.03 + R() * 0.05})`; g.fillRect(R() * 256, R() * 256, 2, 1); }
-  for (let i = 0; i < 700; i++) { g.fillStyle = `rgba(255,255,255,${0.02 + R() * 0.04})`; g.fillRect(R() * 256, R() * 256, 2, 1); }
-  // vertical shading gradient (front panel x ~ 0..128 is u 0..0.5)
-  const grad = g.createLinearGradient(0, 0, 256, 0);
-  grad.addColorStop(0, 'rgba(0,0,0,.28)'); grad.addColorStop(0.25, 'rgba(255,255,255,.10)'); grad.addColorStop(0.5, 'rgba(0,0,0,.28)'); grad.addColorStop(0.75, 'rgba(255,255,255,.05)'); grad.addColorStop(1, 'rgba(0,0,0,.28)');
-  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
-  const FX = 64; // front center x (u=0.25)
-  if (kind === 'jeans' || kind === 'uniform-pants') {
-    g.fillStyle = shade(topColor, 0.75); g.fillRect(0, 0, 256, 256);
-    for (let i = 0; i < 1400; i++) { g.fillStyle = `rgba(255,255,255,${0.03 + R() * 0.04})`; g.fillRect(R() * 256, R() * 256, 1, 3); }
-    g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
-    g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 2;
-    g.beginPath(); g.arc(FX - 26, 44, 16, 0.2, 2.4); g.stroke();
-    g.beginPath(); g.arc(FX + 26, 44, 16, 0.7, 2.9); g.stroke();
-    g.strokeStyle = 'rgba(255,200,120,.5)'; g.beginPath(); g.moveTo(FX, 30); g.lineTo(FX, 120); g.stroke();
-    // belt band
-    g.fillStyle = '#3a2a1a'; g.fillRect(0, 0, 256, 22);
-    g.fillStyle = '#c0c4c8'; g.fillRect(FX - 10, 4, 20, 14); g.fillStyle = '#3a2a1a'; g.fillRect(FX - 5, 7, 10, 8);
-  } else if (kind === 'jacket' || kind === 'leather') {
-    if (kind === 'leather') { const sg = g.createLinearGradient(0, 0, 256, 256); sg.addColorStop(0, 'rgba(255,255,255,.16)'); sg.addColorStop(0.5, 'rgba(255,255,255,0)'); g.fillStyle = sg; g.fillRect(0, 0, 256, 256); }
-    // collar
-    g.fillStyle = shade(topColor, 0.7); g.fillRect(0, 0, 256, 26);
-    if (trim) { g.fillStyle = hexCss(trim); g.fillRect(0, 22, 256, 5); }
-    // zipper (center front, or diagonal for leather)
-    g.strokeStyle = '#14161a'; g.lineWidth = 4;
-    g.beginPath();
-    if (kind === 'leather') { g.moveTo(FX - 30, 26); g.lineTo(FX + 22, 200); } else { g.moveTo(FX, 26); g.lineTo(FX, 240); }
-    g.stroke();
-    g.strokeStyle = '#9aa0a6'; g.lineWidth = 1;
-    for (let y = 30; y < 235; y += 7) { const t = (y - 26) / 210; const zx = kind === 'leather' ? FX - 30 + 52 * t : FX; g.beginPath(); g.moveTo(zx - 4, y); g.lineTo(zx + 4, y); g.stroke(); }
-    // chest pocket flaps
-    g.fillStyle = shade(topColor, 0.82); g.fillRect(FX - 52, 84, 34, 16); g.fillRect(FX + 18, 84, 34, 16);
-    g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(FX - 52, 98, 34, 3); g.fillRect(FX + 18, 98, 34, 3);
-    if (trim) { g.fillStyle = hexCss(trim); g.fillRect(0, 218, 256, 8); }
-  } else if (kind === 'hoodie') {
-    g.fillStyle = shade(topColor, 0.78); g.fillRect(0, 0, 256, 34); // hood shading
-    g.fillStyle = shade(topColor, 0.85); g.fillRect(FX - 38, 176, 76, 52); // kangaroo pocket
-    g.strokeStyle = 'rgba(0,0,0,.3)'; g.strokeRect(FX - 38, 176, 76, 52);
-    g.strokeStyle = '#f2f2f2'; g.lineWidth = 3;
-    g.beginPath(); g.moveTo(FX - 8, 36); g.lineTo(FX - 12, 66); g.stroke();
-    g.beginPath(); g.moveTo(FX + 8, 36); g.lineTo(FX + 12, 66); g.stroke();
-  } else if (kind === 'tank') {
-    g.fillStyle = 'rgba(0,0,0,.10)';
-    g.beginPath(); g.ellipse(20, 128, 26, 90, 0, 0, 6.3); g.fill();
-    g.beginPath(); g.ellipse(108, 128, 26, 90, 0, 0, 6.3); g.fill();
-  } else if (kind === 'overalls') {
-    g.fillStyle = shade(topColor, 0.88); g.fillRect(FX - 34, 60, 68, 90); // bib
-    g.fillStyle = shade(topColor, 0.8); g.fillRect(FX - 40, 0, 14, 70); g.fillRect(FX + 26, 0, 14, 70); // straps
-    g.fillStyle = '#d8b13c'; g.beginPath(); g.arc(FX - 30, 66, 5, 0, 6.3); g.fill(); g.beginPath(); g.arc(FX + 30, 66, 5, 0, 6.3); g.fill();
-    g.strokeStyle = 'rgba(0,0,0,.3)'; g.strokeRect(FX - 34, 60, 68, 90);
-  } else if (kind === 'uniform') {
-    g.strokeStyle = '#c8ccd2'; g.lineWidth = 2; g.beginPath(); g.moveTo(FX, 30); g.lineTo(FX, 240); g.stroke();
-    g.fillStyle = '#e8e8e8'; for (let y = 44; y < 230; y += 26) { g.beginPath(); g.arc(FX, y, 3.4, 0, 6.3); g.fill(); }
-    // gold badge left chest (figure's left = front-right in texture? badge at FX-30)
-    g.fillStyle = hexCss(trim || 0xc8a028); g.beginPath(); g.arc(FX - 32, 66, 10, 0, 6.3); g.fill();
-    g.fillStyle = '#7a5c10'; g.beginPath(); g.arc(FX - 32, 66, 5, 0, 6.3); g.fill();
-    if (trim) { g.fillStyle = hexCss(trim); g.fillRect(0, 4, 256, 7); } // epaulette band hint at shoulders
-  } else if (kind === 'cargo') {
-    g.fillStyle = shade(topColor, 0.85); g.fillRect(8, 130, 44, 52); g.fillRect(76, 130, 44, 52);
-    g.strokeStyle = 'rgba(0,0,0,.4)'; g.strokeRect(8, 130, 44, 52); g.strokeRect(76, 130, 44, 52);
-    g.fillStyle = '#3a2a1a'; g.fillRect(0, 0, 256, 20);
-  } else if (kind === 'skirt') {
-    g.fillStyle = shade(topColor, 0.9); g.fillRect(0, 0, 256, 256);
-    g.fillStyle = 'rgba(0,0,0,.2)'; for (let x = 0; x < 256; x += 32) g.fillRect(x, 0, 3, 256);
-  }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-function shoeTexture(color, stripes) {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const g = c.getContext('2d'); g.fillStyle = hexCss(color); g.fillRect(0, 0, 128, 128);
-  g.fillStyle = 'rgba(0,0,0,.18)'; g.fillRect(0, 88, 128, 40);
-  if (stripes) { g.fillStyle = '#ffffff'; g.save(); g.translate(64, 54); g.rotate(-0.5); for (let i = -1; i <= 1; i++) g.fillRect(i * 22 - 5, -40, 10, 80); g.restore(); }
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
-}
-function mat(color, rough) { return new THREE.MeshStandardMaterial({ color, roughness: rough == null ? 0.85 : rough }); }
-function capsule(r, len, m) { const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, 10), m); mesh.castShadow = false; return mesh; }
-
-export function makeFigure(o) {
-  const H = 1.78 * (o.h || 1);
-  const build = o.build || 0.55;
-  const outfit = o.outfit;
-  const skinMat = mat(o.skin, 0.65);
-  const hairMat = mat(o.hairColor || 0x1a1a1a, 0.9);
-  const longSleeve = ['jacket', 'leather', 'hoodie', 'uniform', 'overalls'].includes(outfit.top);
-  const topTex = makeClothTexture(outfit.top === 'uniform' ? 'uniform' : outfit.top, outfit.topColor, outfit.trim, outfit.pantsColor);
-  const topMat = new THREE.MeshStandardMaterial({ map: topTex, roughness: 0.9 });
-  const pantsKind = outfit.pants === 'jeans' ? 'jeans' : outfit.pants === 'uniform' ? 'jeans' : outfit.pants;
-  const pantsTex = makeClothTexture(pantsKind === 'skirt+leggings' ? 'skirt' : pantsKind, outfit.pantsColor, outfit.trim, outfit.pantsColor);
-  const pantsMat = new THREE.MeshStandardMaterial({ map: pantsTex, roughness: 0.95 });
-  const shoeMat = new THREE.MeshStandardMaterial({ map: shoeTexture(outfit.shoes, outfit.shoeStripes), roughness: 0.8 });
-
-  const fig = new THREE.Group();
-  const legLen = H * 0.48, torsoH = H * 0.30, headR = H * 0.065;
-  const hipY = legLen;
-  // pelvis
-  const pelvis = new THREE.Mesh(new THREE.SphereGeometry(0.145 * (0.8 + build * 0.5), 14, 10), pantsMat);
-  pelvis.scale.set(1, 0.7, 0.85); pelvis.position.y = hipY; fig.add(pelvis);
-  if (outfit.pants === 'skirt+leggings') {
-    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), pantsMat);
-    skirt.position.y = hipY - 0.08; fig.add(skirt);
-  }
-  // torso lathe: waist -> chest -> shoulder
-  const torsoG = new THREE.Group(); torsoG.position.y = hipY; fig.add(torsoG);
-  const cw = 0.13 + build * 0.055;
-  const pts = [];
-  pts.push(new THREE.Vector2(0.115, 0));
-  pts.push(new THREE.Vector2(0.135, torsoH * 0.25));
-  pts.push(new THREE.Vector2(cw, torsoH * 0.62));
-  pts.push(new THREE.Vector2(cw * 0.92, torsoH * 0.88));
-  pts.push(new THREE.Vector2(0.075, torsoH));
-  const torso = new THREE.Mesh(new THREE.LatheGeometry(pts, 16), topMat);
-  torso.scale.z = 0.78; torso.rotation.y = Math.PI; // front design (u .25) faces +Z
-  torsoG.add(torso);
-  // neck + head
-  const headG = new THREE.Group(); headG.position.y = torsoH + 0.03; torsoG.add(headG);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), skinMat); neck.position.y = 0.01; headG.add(neck);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(headR, 18, 14), skinMat);
-  head.scale.y = 1.12; head.position.y = 0.05 + headR; headG.add(head);
-  const hy = 0.05 + headR;
-  // face (+Z front)
-  const eyeMat = mat(0x1a1210, 0.4);
-  for (const s of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), eyeMat); eye.position.set(s * 0.04 * (H / 1.78), hy + 0.012, headR * 0.92); headG.add(eye);
-    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), hairMat); brow.position.set(s * 0.04 * (H / 1.78), hy + 0.038, headR * 0.94); brow.rotation.z = -s * 0.18; headG.add(brow);
-    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), skinMat); ear.position.set(s * headR * 0.98, hy, 0); headG.add(ear);
-  }
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), skinMat); nose.rotation.x = Math.PI / 2; nose.position.set(0, hy - 0.012, headR * 1.0); headG.add(nose);
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), mat(0x7a4038, 0.7)); mouth.position.set(0, hy - 0.052, headR * 0.93); headG.add(mouth);
-  // hair
-  const hairStyle = o.hair || 'buzz';
-  const capGeo = new THREE.SphereGeometry(headR * 1.07, 16, 10, 0, Math.PI * 2, 0, 1.9);
-  if (hairStyle === 'cap' || o.accessory === 'cap' || o.accessory === 'cap+badge') {
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(headR * 1.08, 14, 8, 0, Math.PI * 2, 0, 1.4), mat(o.hairColor || 0x24304a, 0.8)); dome.position.y = hy + 0.012; headG.add(dome);
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(headR * 1.25, headR * 1.3, 0.012, 14, 1, false, -0.7, 1.4), mat(o.hairColor || 0x24304a, 0.8)); brim.position.set(0, hy + 0.045, headR * 0.55); headG.add(brim);
+  } catch (err) { return false; } }
+// Texture noise stays deterministic through a small local generator
+function seededNoiseFrom(seedIn) { let stateWord = seedIn * 7919 + 13; return () => { stateWord = (stateWord * 16807) % 2147483647; return (stateWord & 0xffff) / 0xffff; }; }
+function hexCssOf(hexIn) { return '#' + hexIn.toString(16).padStart(6, '0'); }
+function hexCssScaledOf(hexIn, scaleIn) { const colour = new THREE.Color(hexIn); colour.multiplyScalar(scaleIn); return '#' + colour.getHexString(); }
+// Clothing canvas texture
+// The front design centres on one quarter of the wrap, and the plain
+// back sits at three quarters, while lathe and cylinder mapping wrap
+// around the circumference with the seam at the back by default, so
+// rotating a part by half a turn brings the front to face forward
+export function makeClothTexture(kindIn, topColour, trimColour, pantsColour) {
+  const canvasEl = document.createElement('canvas'); canvasEl.width = canvasEl.height = 256;
+  const ctx = canvasEl.getContext('2d'); const noiseNext = seededNoiseFrom(kindIn.length * 131 + topColour % 10000);
+  ctx.fillStyle = hexCssOf(topColour); ctx.fillRect(0, 0, 256, 256);
+  for (let n = 0; n < 1400; n++) { ctx.fillStyle = `rgba(0,0,0,${0.03 + 0.05 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 2, 1); }
+  for (let n = 0; n < 700; n++) { ctx.fillStyle = `rgba(255,255,255,${0.02 + 0.04 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 2, 1); }
+  const shading = ctx.createLinearGradient(0, 0, 256, 0);
+  shading.addColorStop(0, 'rgba(0,0,0,.28)'); shading.addColorStop(0.25, 'rgba(255,255,255,.10)'); shading.addColorStop(0.5, 'rgba(0,0,0,.28)'); shading.addColorStop(0.75, 'rgba(255,255,255,.05)'); shading.addColorStop(1, 'rgba(0,0,0,.28)');
+  ctx.fillStyle = shading; ctx.fillRect(0, 0, 256, 256);
+  const FRONT_CENTRE = 64;
+  if (kindIn === 'jeans' || kindIn === 'uniform-pants') {
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.75); ctx.fillRect(0, 0, 256, 256);
+    for (let n = 0; n < 1400; n++) { ctx.fillStyle = `rgba(255,255,255,${0.03 + 0.04 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 1, 3); }
+    ctx.fillStyle = shading; ctx.fillRect(0, 0, 256, 256);
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,.45)';
+    ctx.beginPath(); ctx.arc(FRONT_CENTRE - 26, 44, 16, 0.2, 2.4); ctx.stroke();
+    ctx.beginPath(); ctx.arc(FRONT_CENTRE + 26, 44, 16, 0.7, 2.9); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,200,120,.5)'; ctx.beginPath(); ctx.moveTo(FRONT_CENTRE, 30); ctx.lineTo(FRONT_CENTRE, 120); ctx.stroke();
+    ctx.fillStyle = '#3a2a1a'; ctx.fillRect(0, 0, 256, 22);
+    ctx.fillStyle = '#c0c4c8'; ctx.fillRect(FRONT_CENTRE - 10, 4, 20, 14); ctx.fillStyle = '#3a2a1a'; ctx.fillRect(FRONT_CENTRE - 5, 7, 10, 8);
+  } else if (kindIn === 'jacket' || kindIn === 'leather') {
+    if (kindIn === 'leather') { const leatherSheen = ctx.createLinearGradient(0, 0, 256, 256); leatherSheen.addColorStop(0, 'rgba(255,255,255,.16)'); leatherSheen.addColorStop(0.5, 'rgba(255,255,255,0)'); ctx.fillStyle = leatherSheen; ctx.fillRect(0, 0, 256, 256); }
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.7); ctx.fillRect(0, 0, 256, 26);
+    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 22, 256, 5); }
+    ctx.lineWidth = 4; ctx.strokeStyle = '#14161a'; ctx.beginPath();
+    if (kindIn === 'leather') { ctx.moveTo(FRONT_CENTRE - 30, 26); ctx.lineTo(FRONT_CENTRE + 22, 200); } else { ctx.moveTo(FRONT_CENTRE, 26); ctx.lineTo(FRONT_CENTRE, 240); }
+    ctx.stroke();
+    ctx.lineWidth = 1; ctx.strokeStyle = '#9aa0a6';
+    for (let yPos = 30; yPos < 235; yPos += 7) { const zipFrac = (yPos - 26) / 210; const zipXPos = kindIn === 'leather' ? FRONT_CENTRE - 30 + 52 * zipFrac : FRONT_CENTRE; ctx.beginPath(); ctx.moveTo(zipXPos - 4, yPos); ctx.lineTo(zipXPos + 4, yPos); ctx.stroke(); }
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.82); ctx.fillRect(FRONT_CENTRE - 52, 84, 34, 16); ctx.fillRect(FRONT_CENTRE + 18, 84, 34, 16);
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(FRONT_CENTRE - 52, 98, 34, 3); ctx.fillRect(FRONT_CENTRE + 18, 98, 34, 3);
+    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 218, 256, 8); }
+  } else if (kindIn === 'hoodie') {
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.78); ctx.fillRect(0, 0, 256, 34);
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.85); ctx.fillRect(FRONT_CENTRE - 38, 176, 76, 52);
+    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.strokeRect(FRONT_CENTRE - 38, 176, 76, 52);
+    ctx.lineWidth = 3; ctx.strokeStyle = '#f2f2f2';
+    ctx.beginPath(); ctx.moveTo(FRONT_CENTRE - 8, 36); ctx.lineTo(FRONT_CENTRE - 12, 66); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(FRONT_CENTRE + 8, 36); ctx.lineTo(FRONT_CENTRE + 12, 66); ctx.stroke();
+  } else if (kindIn === 'tank') {
+    ctx.fillStyle = 'rgba(0,0,0,.10)'; ctx.beginPath(); ctx.ellipse(20, 128, 26, 90, 0, 0, 6.3); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(108, 128, 26, 90, 0, 0, 6.3); ctx.fill();
+  } else if (kindIn === 'overalls') {
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.88); ctx.fillRect(FRONT_CENTRE - 34, 60, 68, 90);
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.8); ctx.fillRect(FRONT_CENTRE - 40, 0, 14, 70); ctx.fillRect(FRONT_CENTRE + 26, 0, 14, 70);
+    ctx.fillStyle = '#d8b13c'; ctx.beginPath(); ctx.arc(FRONT_CENTRE - 30, 66, 5, 0, 6.3); ctx.fill(); ctx.beginPath(); ctx.arc(FRONT_CENTRE + 30, 66, 5, 0, 6.3); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.strokeRect(FRONT_CENTRE - 34, 60, 68, 90);
+  } else if (kindIn === 'uniform') {
+    ctx.strokeStyle = '#c8ccd2'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(FRONT_CENTRE, 30); ctx.lineTo(FRONT_CENTRE, 240); ctx.stroke();
+    ctx.fillStyle = '#e8e8e8'; for (let yPos = 44; yPos < 230; yPos += 26) { ctx.beginPath(); ctx.arc(FRONT_CENTRE, yPos, 3.4, 0, 6.3); ctx.fill(); }
+    ctx.fillStyle = hexCssOf(trimColour || 0xc8a028); ctx.beginPath(); ctx.arc(FRONT_CENTRE - 32, 66, 10, 0, 6.3); ctx.fill();
+    ctx.fillStyle = '#7a5c10'; ctx.beginPath(); ctx.arc(FRONT_CENTRE - 32, 66, 5, 0, 6.3); ctx.fill();
+    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 4, 256, 7); }
+  } else if (kindIn === 'cargo') {
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.85); ctx.fillRect(8, 130, 44, 52); ctx.fillRect(76, 130, 44, 52);
+    ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.strokeRect(8, 130, 44, 52); ctx.strokeRect(76, 130, 44, 52); ctx.fillStyle = '#3a2a1a'; ctx.fillRect(0, 0, 256, 20);
+  } else if (kindIn === 'skirt') {
+    ctx.fillStyle = hexCssScaledOf(topColour, 0.9); ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; for (let xPos = 0; xPos < 256; xPos += 32) ctx.fillRect(xPos, 0, 3, 256); }
+  const textureOut = new THREE.CanvasTexture(canvasEl); textureOut.colorSpace = THREE.SRGBColorSpace; return textureOut; }
+function makeShoeTexture(colourHex, stripedIn) {
+  const canvasEl = document.createElement('canvas'); canvasEl.width = canvasEl.height = 128;
+  const ctx = canvasEl.getContext('2d'); ctx.fillStyle = hexCssOf(colourHex); ctx.fillRect(0, 0, 128, 128);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(0, 88, 128, 40);
+  if (stripedIn) { ctx.fillStyle = '#ffffff'; ctx.save(); ctx.translate(64, 54); ctx.rotate(-0.5); for (let n = -1; n <= 1; n++) ctx.fillRect(n * 22 - 5, -40, 10, 80); ctx.restore(); }
+  const textureOut = new THREE.CanvasTexture(canvasEl); textureOut.colorSpace = THREE.SRGBColorSpace; return textureOut; }
+const flatMaterialOf = (colourHex, roughnessIn) => new THREE.MeshStandardMaterial({ color: colourHex, roughness: roughnessIn == null ? 0.85 : roughnessIn });
+function capsuleLimbOf(radiusIn, lengthIn, materialIn) { const limbMesh = new THREE.Mesh(new THREE.CapsuleGeometry(radiusIn, lengthIn, 4, 10), materialIn); limbMesh.castShadow = false; return limbMesh; }
+export function makeFigure(optsIn) {
+  const heightTotal = (optsIn.h || 1) * 1.78;
+  const buildFactor = optsIn.build || 0.55;
+  const outfitDef = optsIn.outfit;
+  const skinMat = flatMaterialOf(optsIn.skin, 0.65);
+  const hairMat = flatMaterialOf(optsIn.hairColor || 0x1a1a1a, 0.9);
+  const longSleeves = ['jacket', 'leather', 'hoodie', 'uniform', 'overalls'].includes(outfitDef.top);
+  const topTexture = makeClothTexture(outfitDef.top === 'uniform' ? 'uniform' : outfitDef.top, outfitDef.topColor, outfitDef.trim, outfitDef.pantsColor);
+  const topMat = new THREE.MeshStandardMaterial({ map: topTexture, roughness: 0.9 });
+  const pantsKindName = outfitDef.pants === 'jeans' ? 'jeans' : outfitDef.pants === 'uniform' ? 'jeans' : outfitDef.pants;
+  const pantsTexture = makeClothTexture(pantsKindName === 'skirt+leggings' ? 'skirt' : pantsKindName, outfitDef.pantsColor, outfitDef.trim, outfitDef.pantsColor);
+  const pantsMat = new THREE.MeshStandardMaterial({ map: pantsTexture, roughness: 0.95 });
+  const shoeMat = new THREE.MeshStandardMaterial({ map: makeShoeTexture(outfitDef.shoes, outfitDef.shoeStripes), roughness: 0.8 });
+  const figureRoot = new THREE.Group();
+  const legLength = heightTotal * 0.48, torsoLength = heightTotal * 0.30, headRadius = heightTotal * 0.065;
+  const hipHeight = legLength;
+  const pelvisMesh = new THREE.Mesh(new THREE.SphereGeometry(0.145 * (buildFactor * 0.5 + 0.8), 14, 10), pantsMat);
+  pelvisMesh.scale.set(1, 0.7, 0.85); pelvisMesh.position.y = hipHeight; figureRoot.add(pelvisMesh);
+  if (outfitDef.pants === 'skirt+leggings') {
+    const skirtMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), pantsMat);
+    skirtMesh.position.y = hipHeight - 0.08; figureRoot.add(skirtMesh); }
+  const torsoGroup = new THREE.Group(); torsoGroup.position.y = hipHeight; figureRoot.add(torsoGroup);
+  const chestHalfWidth = buildFactor * 0.055 + 0.13;
+  const latheProfile = [];
+  latheProfile.push(new THREE.Vector2(0.115, 0));
+  latheProfile.push(new THREE.Vector2(0.135, torsoLength * 0.25));
+  latheProfile.push(new THREE.Vector2(chestHalfWidth, torsoLength * 0.62));
+  latheProfile.push(new THREE.Vector2(chestHalfWidth * 0.92, torsoLength * 0.88));
+  latheProfile.push(new THREE.Vector2(0.075, torsoLength));
+  const torsoMesh = new THREE.Mesh(new THREE.LatheGeometry(latheProfile, 16), topMat);
+  torsoMesh.rotation.y = Math.PI; torsoMesh.scale.z = 0.78;
+  torsoGroup.add(torsoMesh);
+  const headGroup = new THREE.Group(); headGroup.position.y = torsoLength + 0.03; torsoGroup.add(headGroup);
+  const neckMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), skinMat); neckMesh.position.y = 0.01; headGroup.add(neckMesh);
+  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 18, 14), skinMat);
+  headMesh.scale.y = 1.12; headMesh.position.y = headRadius + 0.05; headGroup.add(headMesh);
+  const faceHeight = headRadius + 0.05;
+  const eyeMat = flatMaterialOf(0x1a1210, 0.4);
+  [-1, 1].forEach((sideSign) => {
+    const eyeMesh = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), eyeMat); eyeMesh.position.set(sideSign * 0.04 * (heightTotal / 1.78), faceHeight + 0.012, headRadius * 0.92); headGroup.add(eyeMesh);
+    const browMesh = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), hairMat); browMesh.position.set(sideSign * 0.04 * (heightTotal / 1.78), faceHeight + 0.038, headRadius * 0.94); browMesh.rotation.z = sideSign * -0.18; headGroup.add(browMesh);
+    const earMesh = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), skinMat); earMesh.position.set(sideSign * headRadius * 0.98, faceHeight, 0); headGroup.add(earMesh); });
+  const noseMesh = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), skinMat); noseMesh.rotation.x = Math.PI / 2; noseMesh.position.set(0, faceHeight - 0.012, headRadius * 1.0); headGroup.add(noseMesh);
+  const mouthMesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), flatMaterialOf(0x7a4038, 0.7)); mouthMesh.position.set(0, faceHeight - 0.052, headRadius * 0.93); headGroup.add(mouthMesh);
+  const hairStyleName = optsIn.hair || 'buzz';
+  const capGeometry = new THREE.SphereGeometry(headRadius * 1.07, 16, 10, 0, 2 * Math.PI, 0, 1.9);
+  if (hairStyleName === 'cap' || optsIn.accessory === 'cap' || optsIn.accessory === 'cap+badge') {
+    const domeMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius * 1.08, 14, 8, 0, 2 * Math.PI, 0, 1.4), flatMaterialOf(optsIn.hairColor || 0x24304a, 0.8)); domeMesh.position.y = faceHeight + 0.012; headGroup.add(domeMesh);
+    const brimMesh = new THREE.Mesh(new THREE.CylinderGeometry(headRadius * 1.25, headRadius * 1.3, 0.012, 14, 1, false, -0.7, 1.4), flatMaterialOf(optsIn.hairColor || 0x24304a, 0.8)); brimMesh.position.set(0, faceHeight + 0.045, headRadius * 0.55); headGroup.add(brimMesh);
   } else {
-    const cap = new THREE.Mesh(capGeo, hairMat); cap.scale.y = 1.12; cap.position.set(0, hy + 0.012, -0.008); headG.add(cap);
-    if (hairStyle.includes('topknot')) { const knot = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), hairMat); knot.position.set(0, hy + headR * 1.05, -0.02); headG.add(knot); }
-    if (hairStyle.includes('ponytail')) { const tail = capsule(0.032, 0.2, hairMat); tail.position.set(0, hy - 0.08, -headR - 0.03); tail.rotation.x = 0.25; headG.add(tail); }
-    if (hairStyle.includes('bob')) { const bob = new THREE.Mesh(new THREE.SphereGeometry(headR * 1.14, 14, 10, 0, Math.PI * 2, 0, 2.4), hairMat); bob.scale.y = 1.25; bob.position.set(0, hy + 0.005, -0.006); headG.add(bob); }
-  }
-  // arms
-  function makeArm(side) {
-    const shoulder = new THREE.Group(); shoulder.position.set(side * (cw + 0.03), torsoH - 0.05, 0); torsoG.add(shoulder);
-    const upperMat = outfit.top === 'tank' ? skinMat : topMat;
-    const upper = capsule(0.045, 0.17, upperMat); upper.position.y = -0.13; shoulder.add(upper);
-    shoulder.rotation.z = side * 0.14;
-    const elbow = new THREE.Group(); elbow.position.y = -0.27; shoulder.add(elbow);
-    const foreMat = longSleeve ? topMat : skinMat;
-    const fore = capsule(0.037, 0.16, foreMat); fore.position.y = -0.115; elbow.add(fore);
-    const handMat = o.accessory === 'gloves' ? mat(outfit.topColor, 0.8) : skinMat;
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), handMat); hand.scale.set(0.8, 1.15, 0.9); hand.position.y = -0.26; elbow.add(hand);
-    elbow.rotation.x = -0.25;
-    return { shoulder, elbow };
-  }
-  const aL = makeArm(-1), aR = makeArm(1);
-  // legs
-  function makeLeg(side) {
-    const hip = new THREE.Group(); hip.position.set(side * 0.085, hipY - 0.02, 0); fig.add(hip);
-    const thighMat = outfit.pants === 'skirt+leggings' ? pantsMat : pantsMat;
-    const thigh = capsule(0.068, 0.26, thighMat); thigh.position.y = -legLen * 0.25; hip.add(thigh);
-    const knee = new THREE.Group(); knee.position.y = -legLen * 0.5; hip.add(knee);
-    const shinMat = outfit.pants === 'skirt+leggings' ? mat(outfit.pantsColor, 0.9) : pantsMat;
-    const shin = capsule(0.052, 0.26, shinMat); shin.position.y = -legLen * 0.24; knee.add(shin);
-    const shoe = new THREE.Group(); shoe.position.y = -legLen * 0.5 + 0.03; knee.add(shoe);
-    const shoeMesh = capsule(0.05, 0.1, shoeMat); shoeMesh.rotation.x = Math.PI / 2; shoeMesh.scale.set(0.85, 1, 0.6); shoeMesh.position.set(0, -0.02, 0.045); shoe.add(shoeMesh);
-    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), mat(0xf5f5f5, 0.7)); sole.position.set(0, -0.055, 0.04); shoe.add(sole);
-    return { hip, knee };
-  }
-  const lL = makeLeg(-1), lR = makeLeg(1);
-  // accessories
-  if (o.accessory === 'glasses') {
-    const frameMat = mat(0x14161a, 0.3);
-    for (const s of [-1, 1]) { const lens = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04), new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.1, metalness: 0.6 })); lens.position.set(s * 0.04, hy + 0.012, headR + 0.012); headG.add(lens); const fr = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), frameMat); fr.position.copy(lens.position); fr.position.y += 0.023; headG.add(fr); }
-  }
-  if (o.accessory === 'chain') { const chain = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20), new THREE.MeshStandardMaterial({ color: 0xd8b13c, metalness: 0.9, roughness: 0.3 })); chain.position.set(0, torsoH - 0.02, 0.1); chain.rotation.x = 0.5; torsoG.add(chain); }
-  if (o.accessory === 'phone') { const ph = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), mat(0x14161c, 0.3)); ph.position.set(0, -0.27, 0.03); aR.elbow.add(ph); }
-  if (o.accessory === 'cap+badge') { const badge = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12), new THREE.MeshStandardMaterial({ color: 0xc8a028, metalness: 0.9, roughness: 0.3 })); badge.rotation.x = Math.PI / 2; badge.position.set(-0.07, torsoH * 0.72, cw * 0.8); torsoG.add(badge); }
-  // blob shadow
-  const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
-  shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.02; fig.add(shadow);
-  fig.userData = { legL: lL.hip, legR: lR.hip, kneeL: lL.knee, kneeR: lR.knee, armL: aL.shoulder, armR: aR.shoulder, foreL: aL.elbow, foreR: aR.elbow, headG, torsoG, H };
-  // Cast GLB override: callers pass the CAST entry object itself
-  // (makeFigure(CAST.shun)), so identity against CAST entries recovers
-  // the cast key even where the call site never threads it through. This
-  // one hook therefore covers every figure built from CAST — mission
-  // rivals, cutscene/dialogue figures, meet/chars staging, and seated
-  // in-car drivers (poseSeated users), which all share this factory.
-  for (const castKey of Object.keys(CAST_GLB_OVERRIDE)) {
-    if (o === CAST[castKey]) { applyCastFigureOverride(fig, castKey); break; }
-  }
-  return fig;
-}
-export function animateFigure(fig, phase, amt) {
-  const u = fig.userData; if (!u) return;
-  if (u.figIsGlb && u.glbInner) {
-    // GLB cast visual has no articulated parts: bob/rock the inner
-    // wrapper instead, mirroring the MC GLB branch in updatePlayer
-    // (outer fig transform untouched).
-    const inner = u.glbInner;
-    if (amt > 0.05) {
-      inner.position.y = Math.abs(Math.sin(phase)) * 0.045;
-      inner.rotation.z = Math.sin(phase) * 0.035;
-      inner.rotation.x = 0.05 * Math.min(1, amt);
+    const capMesh = new THREE.Mesh(capGeometry, hairMat); capMesh.scale.y = 1.12; capMesh.position.set(0, faceHeight + 0.012, -0.008); headGroup.add(capMesh);
+    if (hairStyleName.includes('topknot')) { const knotMesh = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), hairMat); knotMesh.position.set(0, faceHeight + headRadius * 1.05, -0.02); headGroup.add(knotMesh); }
+    if (hairStyleName.includes('ponytail')) { const tailMesh = capsuleLimbOf(0.032, 0.2, hairMat); tailMesh.position.set(0, faceHeight - 0.08, -headRadius - 0.03); tailMesh.rotation.x = 0.25; headGroup.add(tailMesh); }
+    if (hairStyleName.includes('bob')) { const bobMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius * 1.14, 14, 10, 0, 2 * Math.PI, 0, 2.4), hairMat); bobMesh.scale.y = 1.25; bobMesh.position.set(0, faceHeight + 0.005, -0.006); headGroup.add(bobMesh); } }
+  function buildArm(sideSign) {
+    const shoulderGroup = new THREE.Group(); shoulderGroup.position.set(sideSign * (chestHalfWidth + 0.03), torsoLength - 0.05, 0); torsoGroup.add(shoulderGroup);
+    const upperMat = outfitDef.top === 'tank' ? skinMat : topMat;
+    const upperMesh = capsuleLimbOf(0.045, 0.17, upperMat); upperMesh.position.y = -0.13; shoulderGroup.add(upperMesh);
+    shoulderGroup.rotation.z = sideSign * 0.14;
+    const elbowGroup = new THREE.Group(); elbowGroup.position.y = -0.27; shoulderGroup.add(elbowGroup);
+    const forearmMat = longSleeves ? topMat : skinMat;
+    const forearmMesh = capsuleLimbOf(0.037, 0.16, forearmMat); forearmMesh.position.y = -0.115; elbowGroup.add(forearmMesh);
+    const handMat = optsIn.accessory === 'gloves' ? flatMaterialOf(outfitDef.topColor, 0.8) : skinMat;
+    const handMesh = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), handMat); handMesh.scale.set(0.8, 1.15, 0.9); handMesh.position.y = -0.26; elbowGroup.add(handMesh);
+    elbowGroup.rotation.x = -0.25;
+    return { shoulder: shoulderGroup, elbow: elbowGroup }; }
+  const armLeft = buildArm(-1), armRight = buildArm(1);
+  function buildLeg(sideSign) {
+    const hipGroup = new THREE.Group(); hipGroup.position.set(sideSign * 0.085, hipHeight - 0.02, 0); figureRoot.add(hipGroup);
+    const thighMat = outfitDef.pants === 'skirt+leggings' ? pantsMat : pantsMat;
+    const thighMesh = capsuleLimbOf(0.068, 0.26, thighMat); thighMesh.position.y = legLength * -0.25; hipGroup.add(thighMesh);
+    const kneeGroup = new THREE.Group(); kneeGroup.position.y = legLength * -0.5; hipGroup.add(kneeGroup);
+    const shinMat = outfitDef.pants === 'skirt+leggings' ? flatMaterialOf(outfitDef.pantsColor, 0.9) : pantsMat;
+    const shinMesh = capsuleLimbOf(0.052, 0.26, shinMat); shinMesh.position.y = legLength * -0.24; kneeGroup.add(shinMesh);
+    const shoeGroup = new THREE.Group(); shoeGroup.position.y = 0.03 - legLength * 0.5; kneeGroup.add(shoeGroup);
+    const shoeMesh = capsuleLimbOf(0.05, 0.1, shoeMat); shoeMesh.rotation.x = Math.PI / 2; shoeMesh.scale.set(0.85, 1, 0.6); shoeMesh.position.set(0, -0.02, 0.045); shoeGroup.add(shoeMesh);
+    const soleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), flatMaterialOf(0xf5f5f5, 0.7)); soleMesh.position.set(0, -0.055, 0.04); shoeGroup.add(soleMesh);
+    return { hip: hipGroup, knee: kneeGroup }; }
+  const legLeft = buildLeg(-1), legRight = buildLeg(1);
+  if (optsIn.accessory === 'glasses') {
+    const frameMat = flatMaterialOf(0x14161a, 0.3);
+    [-1, 1].forEach((sideSign) => { const lensMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04), new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.1, metalness: 0.6 })); lensMesh.position.set(sideSign * 0.04, faceHeight + 0.012, headRadius + 0.012); headGroup.add(lensMesh); const barMesh = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), frameMat); barMesh.position.copy(lensMesh.position); barMesh.position.y += 0.023; headGroup.add(barMesh); }); }
+  if (optsIn.accessory === 'chain') { const chainMesh = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20), new THREE.MeshStandardMaterial({ color: 0xd8b13c, metalness: 0.9, roughness: 0.3 })); chainMesh.position.set(0, torsoLength - 0.02, 0.1); chainMesh.rotation.x = 0.5; torsoGroup.add(chainMesh); }
+  if (optsIn.accessory === 'phone') { const phoneMesh = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), flatMaterialOf(0x14161c, 0.3)); phoneMesh.position.set(0, -0.27, 0.03); armRight.elbow.add(phoneMesh); }
+  if (optsIn.accessory === 'cap+badge') { const badgeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12), new THREE.MeshStandardMaterial({ color: 0xc8a028, metalness: 0.9, roughness: 0.3 })); badgeMesh.rotation.x = Math.PI / 2; badgeMesh.position.set(-0.07, torsoLength * 0.72, chestHalfWidth * 0.8); torsoGroup.add(badgeMesh); }
+  const shadowDisc = groundShadowDisc(0.42);
+  figureRoot.add(shadowDisc);
+  figureRoot.userData = { legL: legLeft.hip, legR: legRight.hip, kneeL: legLeft.knee, kneeR: legRight.knee,
+    armL: armLeft.shoulder, armR: armRight.shoulder, foreL: armLeft.elbow, foreR: armRight.elbow,
+    headG: headGroup, torsoG: torsoGroup, H: heightTotal };
+  // Callers pass the cast entry itself, so identity checks recover
+  // the cast key even where call sites never thread it through, and
+  // one hook covers rivals, dialogue staging and seated drivers alike
+  Object.keys(CAST_ASSET_MAP).forEach((castName) => {
+    if (optsIn === CAST[castName]) applyCastFigureOverride(figureRoot, castName); });
+  return figureRoot; }
+export function animateFigure(figIn, phaseIn, amountIn) {
+  const rig = figIn.userData; if (!rig) return;
+  if (rig.figIsGlb && rig.glbInner) {
+    const innerGroup = rig.glbInner;
+    if (amountIn > 0.05) {
+      innerGroup.position.y = Math.abs(Math.sin(phaseIn)) * 0.045;
+      innerGroup.rotation.z = Math.sin(phaseIn) * 0.035;
+      innerGroup.rotation.x = Math.min(1, amountIn) * 0.05;
     } else {
-      inner.position.y = 0.008 * Math.sin(phase * 0.35);
-      inner.rotation.z = 0;
-      inner.rotation.x = 0;
-    }
-    inner.rotation.y = CAST_GLB_ROT_Y;
-    return;
-  }
-  if (!u.legL) return;
-  const s = Math.sin(phase), c = Math.sin(phase + Math.PI);
-  u.legL.rotation.x = s * 0.55 * amt; u.legR.rotation.x = c * 0.55 * amt;
-  u.kneeL.rotation.x = Math.max(0, -c) * 0.6 * amt; u.kneeR.rotation.x = Math.max(0, -s) * 0.6 * amt;
-  u.armL.rotation.x = c * 0.4 * amt; u.armR.rotation.x = s * 0.4 * amt;
-  u.foreL.rotation.x = -0.25 - Math.max(0, s) * 0.3 * amt; u.foreR.rotation.x = -0.25 - Math.max(0, c) * 0.3 * amt;
-  u.torsoG.position.y = (u.H * 0.48) + Math.abs(Math.sin(phase)) * 0.03 * amt + (amt < 0.05 ? Math.sin(phase * 0.35) * 0.006 : 0);
-  u.headG.rotation.x = Math.sin(phase * 0.5) * 0.03;
-}
-export function poseSeated(fig) {
-  const u = fig.userData; if (!u) return;
-  u.seated = true;
-  if (u.figIsGlb && u.glbInner) { u.glbInner.position.y = -0.55; return; }
-  if (!u.legL) return;
-  u.legL.rotation.x = -Math.PI / 2 + 0.12; u.legR.rotation.x = -Math.PI / 2 + 0.12;
-  u.kneeL.rotation.x = Math.PI / 2 - 0.15; u.kneeR.rotation.x = Math.PI / 2 - 0.15;
-  u.armL.rotation.x = -0.85; u.armR.rotation.x = -0.85;
-  u.armL.rotation.z = 0.3; u.armR.rotation.z = -0.3;
-  u.foreL.rotation.x = -0.35; u.foreR.rotation.x = -0.35;
-  u.torsoG.position.y = u.H * 0.48;
-}
+      innerGroup.position.y = Math.sin(phaseIn * 0.35) * 0.008;
+      innerGroup.rotation.z = 0; innerGroup.rotation.x = 0; }
+    innerGroup.rotation.y = CAST_YAW_CORRECTION;
+    return; }
+  if (!rig.legL) return;
+  const swingFirst = Math.sin(phaseIn), swingSecond = Math.sin(phaseIn + Math.PI);
+  rig.legL.rotation.x = swingFirst * 0.55 * amountIn; rig.legR.rotation.x = swingSecond * 0.55 * amountIn;
+  rig.kneeL.rotation.x = Math.max(0, -swingSecond) * 0.6 * amountIn; rig.kneeR.rotation.x = Math.max(0, -swingFirst) * 0.6 * amountIn;
+  rig.armL.rotation.x = swingSecond * 0.4 * amountIn; rig.armR.rotation.x = swingFirst * 0.4 * amountIn;
+  rig.foreL.rotation.x = -0.25 - Math.max(0, swingFirst) * 0.3 * amountIn; rig.foreR.rotation.x = -0.25 - Math.max(0, swingSecond) * 0.3 * amountIn;
+  rig.torsoG.position.y = (rig.H * 0.48) + Math.abs(Math.sin(phaseIn)) * 0.03 * amountIn + (amountIn < 0.05 ? Math.sin(phaseIn * 0.35) * 0.006 : 0);
+  rig.headG.rotation.x = Math.sin(phaseIn * 0.5) * 0.03; }
+export function poseSeated(figIn) {
+  const rig = figIn.userData; if (!rig) return;
+  rig.seated = true;
+  if (rig.figIsGlb && rig.glbInner) { rig.glbInner.position.y = -0.55; return; }
+  if (!rig.legL) return;
+  const seatedHipAngle = 0.12 - Math.PI / 2;
+  const seatedKneeAngle = Math.PI / 2 - 0.15;
+  [rig.legL, rig.legR].forEach((jointIn) => { jointIn.rotation.x = seatedHipAngle; });
+  [rig.kneeL, rig.kneeR].forEach((jointIn) => { jointIn.rotation.x = seatedKneeAngle; });
+  [rig.armL, rig.armR].forEach((jointIn) => { jointIn.rotation.x = -0.85; });
+  rig.armL.rotation.z = 0.3; rig.armR.rotation.z = -0.3;
+  [rig.foreL, rig.foreR].forEach((jointIn) => { jointIn.rotation.x = -0.35; });
+  rig.torsoG.position.y = rig.H * 0.48; }
 export function createPlayer(G) {
-  startMcLoad();
-  const fig = new THREE.Group(); // outer group: positioned/rotated by updatePlayer
-  const procFig = makeFigure(CAST.ren); // procedural visual (fallback)
-  fig.add(procFig);
-  const x = -412.5, z = 470;
-  fig.position.set(x, groundH(x, z), z);
-  fig.rotation.y = Math.PI;
-  G.scene.add(fig);
-  const player = { fig, procFig, visual: procFig, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x, z, angle: Math.PI, speed: 0, phase: 0, health: 100 };
-  G.player = player;
-  // GLB already resolved -> use a clone of it now; otherwise swap in
-  // place when it resolves (applyGlbVisual, driven by startMcLoad).
-  if (!applyGlbVisual(player)) _mcWaiters.add(player);
-  return player;
-}
+  startHeroLoad();
+  const outerGroup = new THREE.Group();
+  const proceduralVisual = makeFigure(CAST.ren);
+  outerGroup.add(proceduralVisual);
+  const spawnPosX = -412.5, spawnPosZ = 470;
+  outerGroup.position.set(spawnPosX, groundH(spawnPosX, spawnPosZ), spawnPosZ);
+  outerGroup.rotation.y = Math.PI;
+  G.scene.add(outerGroup);
+  const playerObj = { fig: outerGroup, procFig: proceduralVisual, visual: proceduralVisual, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x: spawnPosX, z: spawnPosZ, angle: Math.PI, phase: 0, speed: 0, health: 100 };
+  G.player = playerObj;
+  if (!swapHeroToModel(playerObj)) mcWaiters.add(playerObj);
+  return playerObj; }
 export function updatePlayer(G, dt) {
-  const p = G.player; if (!p || !p.fig.visible) return;
-  const k = G.keys;
-  let mx = 0, mz = 0;
-  if (k['KeyW'] || k['ArrowUp']) mz += 1;
-  if (k['KeyS'] || k['ArrowDown']) mz -= 1;
-  if (k['KeyA'] || k['ArrowLeft']) mx -= 1;
-  if (k['KeyD'] || k['ArrowRight']) mx += 1;
-  const moving = (mx !== 0 || mz !== 0);
-  const run = (k['ShiftLeft'] || k['ShiftRight']) ? 9 : 6;
-  if (moving) {
-    const yaw = G.camYaw || 0;
-    const wx = Math.sin(yaw) * mz + Math.cos(yaw) * mx;
-    const wz = Math.cos(yaw) * mz - Math.sin(yaw) * mx;
-    const len = Math.hypot(wx, wz) || 1;
-    p.x += (wx / len) * run * dt; p.z += (wz / len) * run * dt;
-    p.angle = Math.atan2(wx / len, wz / len);
-    p.phase += dt * run * 1.9;
-    p.speed = run;
-  } else p.speed = 0;
-  // collisions push-out
-  for (const col of G.colliders) {
-    const dx = p.x - col.x, dz = p.z - col.z;
-    const px = col.hw + 0.45 - Math.abs(dx), pz = col.hd + 0.45 - Math.abs(dz);
-    if (px > 0 && pz > 0) { if (px < pz) p.x += (dx >= 0 ? px : -px); else p.z += (dz >= 0 ? pz : -pz); }
-  }
-  p.x = Math.max(-655, Math.min(655, p.x)); p.z = Math.max(-655, Math.min(655, p.z));
-  p.fig.position.set(p.x, groundH(p.x, p.z), p.z);
-  p.fig.rotation.y = p.angle;
-  p.elapsed = (p.elapsed || 0) + dt;
-  if (p.figIsGlb && p.glbInner) {
-    // GLB Ren has no articulated parts for animateFigure: bob/rock/lean
-    // the inner wrapper instead (outer fig transform untouched above).
-    const inner = p.glbInner;
-    const speedNorm = Math.min(1, Math.abs(p.speed || 0) / 9);
-    if (moving) {
-      inner.position.y = Math.abs(Math.sin(p.phase)) * 0.045;
-      inner.rotation.z = Math.sin(p.phase) * 0.035;
-      inner.rotation.x = 0.05 * speedNorm;
+  const pl = G.player; if (!pl || !pl.fig.visible) return;
+  const keyMap = G.keys;
+  let moveX = 0, moveZ = 0;
+  if (keyMap['KeyW'] || keyMap['ArrowUp']) moveZ += 1;
+  if (keyMap['KeyS'] || keyMap['ArrowDown']) moveZ -= 1;
+  if (keyMap['KeyA'] || keyMap['ArrowLeft']) moveX -= 1;
+  if (keyMap['KeyD'] || keyMap['ArrowRight']) moveX += 1;
+  const movingNow = !(moveX === 0 && moveZ === 0);
+  const paceRate = (keyMap['ShiftLeft'] || keyMap['ShiftRight']) ? 9 : 6;
+  if (movingNow) {
+    const cameraYaw = G.camYaw || 0;
+    const worldMoveX = Math.cos(cameraYaw) * moveX + Math.sin(cameraYaw) * moveZ;
+    const worldMoveZ = Math.cos(cameraYaw) * moveZ - Math.sin(cameraYaw) * moveX;
+    const moveLen = Math.hypot(worldMoveX, worldMoveZ) || 1;
+    pl.x += (worldMoveX / moveLen) * paceRate * dt; pl.z += (worldMoveZ / moveLen) * paceRate * dt;
+    pl.angle = Math.atan2(worldMoveX / moveLen, worldMoveZ / moveLen);
+    pl.phase += dt * paceRate * 1.9;
+    pl.speed = paceRate;
+  } else pl.speed = 0;
+  G.colliders.forEach((collider) => {
+    const deltaX = pl.x - collider.x, deltaZ = pl.z - collider.z;
+    const penAlongX = collider.hw + 0.45 - Math.abs(deltaX), penAlongZ = collider.hd + 0.45 - Math.abs(deltaZ);
+    if (penAlongX > 0 && penAlongZ > 0) { if (penAlongZ > penAlongX) pl.x += (deltaX >= 0 ? penAlongX : -penAlongX); else pl.z += (deltaZ >= 0 ? penAlongZ : -penAlongZ); } });
+  pl.x = Math.max(-655, Math.min(655, pl.x)); pl.z = Math.max(-655, Math.min(655, pl.z));
+  pl.fig.position.set(pl.x, groundH(pl.x, pl.z), pl.z);
+  pl.fig.rotation.y = pl.angle;
+  pl.elapsed = (pl.elapsed || 0) + dt;
+  if (pl.figIsGlb && pl.glbInner) {
+    const innerGroup = pl.glbInner;
+    const paceFraction = Math.min(1, Math.abs(pl.speed || 0) / 9);
+    if (movingNow) {
+      innerGroup.position.y = Math.abs(Math.sin(pl.phase)) * 0.045;
+      innerGroup.rotation.z = Math.sin(pl.phase) * 0.035;
+      innerGroup.rotation.x = paceFraction * 0.05;
     } else {
-      inner.position.y = 0.008 * Math.sin(p.elapsed * 1.6);
-      inner.rotation.z = 0;
-      inner.rotation.x = 0;
-    }
-    inner.rotation.y = MC_ROT_Y;
-  } else {
-    animateFigure(p.procFig || p.fig, p.phase, moving ? 1 : 0.04);
-  }
-}
+      innerGroup.position.y = Math.sin(pl.elapsed * 1.6) * 0.008;
+      innerGroup.rotation.z = 0; innerGroup.rotation.x = 0; }
+    innerGroup.rotation.y = MC_YAW_CORRECTION;
+  } else animateFigure(pl.procFig || pl.fig, pl.phase, movingNow ? 1 : 0.04); }
