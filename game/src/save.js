@@ -1,35 +1,51 @@
-// Browser storage persistence for this build
-// Each storage access is guarded, so a blocked store
-// degrades to a fresh start instead of an exception
-const STORAGE_LABEL = 'roninbay-r4-save-v1';
+// Saved progress lives in browser storage for this build
+// Every storage touch sits behind a guard so a blocked store
+// falls back to a fresh start rather than breaking the boot
+const STORAGE_KEY = 'roninbay-r4-save-v1';
 const STARTER_CAR = 'hachi';
-function recordShaped(valueIn) { return typeof valueIn === 'object' && valueIn !== null; }
-function numberShaped(valueIn) { return typeof valueIn === 'number'; }
-function applyNumericFields(G, savedObj) {
-  if (numberShaped(savedObj.money)) G.money = savedObj.money;
-  if (numberShaped(savedObj.rep)) G.rep = savedObj.rep;
-  if (numberShaped(savedObj.rankIdx)) G.rankIdx = savedObj.rankIdx;
-  if (numberShaped(savedObj.missionIndex)) G.missionIndex = savedObj.missionIndex; }
-export function initSave(G) {
+function looksLikeRecord(candidateGiven) {
+  const presentGiven = (candidateGiven !== null);
+  const objectGiven = (typeof candidateGiven === 'object');
+  return (objectGiven && presentGiven); }
+function looksLikeNumber(candidateGiven) {
+  const numberGiven = (typeof candidateGiven === 'number');
+  return numberGiven; }
+function copySavedNumbers(stateGiven, recordGiven) {
+  const appliersNow = [
+    () => { if (looksLikeNumber(recordGiven.money)) stateGiven.money = recordGiven.money; },
+    () => { if (looksLikeNumber(recordGiven.rep)) stateGiven.rep = recordGiven.rep; },
+    () => { if (looksLikeNumber(recordGiven.rankIdx)) stateGiven.rankIdx = recordGiven.rankIdx; },
+    () => { if (looksLikeNumber(recordGiven.missionIndex)) stateGiven.missionIndex = recordGiven.missionIndex; }];
+  appliersNow.forEach((applyNow) => applyNow()); }
+function copySavedGarage(stateGiven, recordGiven) {
+  const garageGiven = recordGiven.garage;
+  const garageUsable = garageGiven && Array.isArray(garageGiven) && garageGiven.length;
+  if (!garageUsable) return;
+  stateGiven.garage = garageGiven.slice(); }
+function copySavedDistricts(stateGiven, recordGiven) {
+  const { districtState: districtsGiven } = recordGiven;
+  if (looksLikeRecord(districtsGiven)) stateGiven.districtState = districtsGiven; }
+export function initSave(stateGiven) {
   try {
-    const storedText = localStorage.getItem(STORAGE_LABEL);
-    if (storedText) {
-      const parsedObj = JSON.parse(storedText);
-      if (recordShaped(parsedObj)) {
-        applyNumericFields(G, parsedObj);
-        const savedGarage = parsedObj.garage;
-        if (savedGarage && Array.isArray(savedGarage) && savedGarage.length) G.garage = savedGarage.slice();
-        if (recordShaped(parsedObj.districtState)) G.districtState = parsedObj.districtState; } }
-  } catch (err) { /* an unreadable save simply means starting over */ }
-  // Owned cars mirror the garage, both seeded from the same list
-  const garageUsable = Array.isArray(G.garage) && !(G.garage.length === 0);
-  G.garage = garageUsable ? G.garage : [STARTER_CAR];
-  G.ownedCars = G.garage.slice();
-  G.saveGame = () => { try {
-      if (Array.isArray(G.garage)) G.ownedCars = G.garage.slice();
-      const snapshotObj = {};
-      snapshotObj.money = G.money; snapshotObj.rep = G.rep;
-      snapshotObj.rankIdx = G.rankIdx; snapshotObj.missionIndex = G.missionIndex;
-      snapshotObj.garage = G.garage; snapshotObj.districtState = G.districtState;
-      localStorage.setItem(STORAGE_LABEL, JSON.stringify(snapshotObj));
-    } catch (err) { /* full or blocked storage must stay survivable */ } }; }
+    const storedRaw = localStorage.getItem(STORAGE_KEY);
+    if (storedRaw) {
+      const decodedNow = JSON.parse(storedRaw);
+      if (looksLikeRecord(decodedNow)) {
+        copySavedNumbers(stateGiven, decodedNow);
+        copySavedGarage(stateGiven, decodedNow);
+        copySavedDistricts(stateGiven, decodedNow); } }
+  } catch (ignoredFault) { /* an unreadable save simply means starting over */ }
+  const garageIsList = Array.isArray(stateGiven.garage);
+  const garageEmpty = garageIsList && (stateGiven.garage.length === 0);
+  const garageMissing = !garageIsList;
+  if (garageMissing || garageEmpty) stateGiven.garage = [STARTER_CAR];
+  stateGiven.ownedCars = stateGiven.garage.slice();
+  stateGiven.saveGame = () => { try {
+      if (Array.isArray(stateGiven.garage)) stateGiven.ownedCars = stateGiven.garage.slice();
+      const recordOut = {};
+      recordOut.money = stateGiven.money; recordOut.rep = stateGiven.rep;
+      recordOut.rankIdx = stateGiven.rankIdx; recordOut.missionIndex = stateGiven.missionIndex;
+      recordOut.garage = stateGiven.garage; recordOut.districtState = stateGiven.districtState;
+      const encodedNow = JSON.stringify(recordOut);
+      localStorage.setItem(STORAGE_KEY, encodedNow);
+    } catch (ignoredFault) { /* full or blocked storage must stay survivable */ } }; }

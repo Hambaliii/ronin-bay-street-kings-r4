@@ -1,363 +1,415 @@
-// On foot player plus the textured figure factory
-// Proportions run near seven and a half heads, with capsule and
-// lathe parts and clothing from procedural canvas textures
+// The player on foot, plus the factory that builds textured figures
+// Proportions sit near seven and a half heads tall, built from
+// capsule and lathe parts with clothing from procedural canvases
 import * as THREE from 'three'; import { CAST } from './config.js';
 import { groundH } from './world.js'; import { loadHeroAsset } from './assets.js';
-// The hero visual may become the loaded model, while the outer group
-// stays the one the updater positions and rotates
-// Inside sits either the procedural figure or a clone of the loaded
-// wrapper, held by an inner group that bobs, rocks and leans
-// A failed load resolves null and nothing swaps, so the procedural
-// figure remains the exact fallback, and one constant flips facing
-const MC_YAW_CORRECTION = 0;
-let mcTemplate = null; let mcLoadStarted = false;
-const mcWaiters = new Set();
-function groundShadowDisc(radiusIn) {
-  const discMesh = new THREE.Mesh(new THREE.CircleGeometry(radiusIn, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
-  discMesh.rotation.x = -Math.PI / 2; discMesh.position.y = 0.02;
+// The loaded model may take over as the hero visual, while the
+// outer group remains the one the updater positions and rotates
+// Inside sits either the procedural figure or a clone of the
+// loaded wrapper, held by an inner group that bobs, rocks and
+// leans as it moves
+// A failed load resolves null and nothing swaps, so the
+// procedural figure stays as the exact fallback, and a single
+// constant flips facing
+const MC_YAW_OFFSET = 0;
+let templateMc = null; let loadMcStarted = false;
+const waitersMc = new Set();
+function shadowDiscMesh(radiusGiven) {
+  const discMesh = new THREE.Mesh(new THREE.CircleGeometry(radiusGiven, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
+  discMesh.rotation.x = (-Math.PI / 2); discMesh.position.y = 0.02;
   return discMesh; }
-function swapHeroToModel(plIn) {
+function tryMcSwap(playerGiven) {
   try {
-    if (!plIn || !mcTemplate || plIn.figIsGlb) return false;
-    const innerGroup = new THREE.Group();
-    innerGroup.name = 'mc-glb-inner'; innerGroup.rotation.y = MC_YAW_CORRECTION;
-    innerGroup.add(mcTemplate.clone(true));
-    if (plIn.procFig) plIn.fig.remove(plIn.procFig);
-    plIn.fig.add(innerGroup);
-    const discMesh = groundShadowDisc(0.42);
-    plIn.fig.add(discMesh);
-    plIn.glbInner = innerGroup; plIn.glbShadow = discMesh; plIn.visual = innerGroup; plIn.figIsGlb = true;
+    const swapBlocked = !playerGiven || !templateMc || playerGiven.figIsGlb;
+    if (swapBlocked) return false;
+    const holderBuilt = new THREE.Group();
+    holderBuilt.name = 'mc-glb-inner'; holderBuilt.rotation.y = MC_YAW_OFFSET;
+    holderBuilt.add(templateMc.clone(true));
+    if (playerGiven.procFig) playerGiven.fig.remove(playerGiven.procFig);
+    playerGiven.fig.add(holderBuilt);
+    const shadowBuilt = shadowDiscMesh(0.42);
+    playerGiven.fig.add(shadowBuilt);
+    playerGiven.glbInner = holderBuilt; playerGiven.glbShadow = shadowBuilt; playerGiven.visual = holderBuilt; playerGiven.figIsGlb = true;
     return true;
-  } catch (err) { return false; } }
-function startHeroLoad() {
-  if (mcLoadStarted) return;
-  mcLoadStarted = true;
-  // A null result gets retried rather than treated as final, because
-  // racing loads at module init can lose the fetch race, and a cached
-  // null would strand every waiter on the procedural figure for the
-  // whole session, while the asset module evicts nulls on retry
-  const tryLoad = (attemptsLeft) => {
-    try {
-      loadHeroAsset('mc').then((wrapIn) => {
-        try {
-          if (!wrapIn) { if (attemptsLeft > 0) setTimeout(() => tryLoad(attemptsLeft - 1), 1500); return; }
-          mcTemplate = wrapIn;
-          mcWaiters.forEach((waitingPl) => swapHeroToModel(waitingPl));
-          mcWaiters.clear();
-        } catch (err) { /* procedural fallback stays */ }
-      }).catch(() => { if (attemptsLeft > 0) setTimeout(() => tryLoad(attemptsLeft - 1), 1500); });
-    } catch (err) { /* procedural fallback stays */ } };
-  tryLoad(3); }
-startHeroLoad();
-// Cast figures replaced by loaded visuals follow the same pattern
-// The rival driver and the officer each map to their own asset, and
-// both face forward, so zero rotation matches the procedural facing
-// The group the factory returns stays outer, with transform and
-// animation untouched, and only the inner visual changes on arrival
-const CAST_YAW_CORRECTION = 0;
-const CAST_ASSET_MAP = { shun: 'rivalDriver', cop: 'policeOfficer' };
-const castTemplateMap = new Map(); const castStartedSet = new Set(); const castWaiterMap = new Map();
-function swapCastFigure(figIn, assetName) {
+  } catch (ignoredFault) { return false; } }
+function loadMcRound(roundsLeft) {
   try {
-    const template = castTemplateMap.get(assetName);
-    if (!figIn || !template || figIn.userData.figIsGlb) return false;
-    const innerGroup = new THREE.Group();
-    innerGroup.name = 'cast-glb-inner'; innerGroup.rotation.y = CAST_YAW_CORRECTION;
-    innerGroup.add(template.clone(true));
-    const heldProcedural = new THREE.Group();
-    heldProcedural.name = 'cast-proc-visual';
-    while (figIn.children.length) heldProcedural.add(figIn.children[0]);
-    figIn.add(innerGroup);
-    const discMesh = groundShadowDisc(0.42);
-    figIn.add(discMesh);
-    figIn.userData.procFig = heldProcedural; figIn.userData.glbInner = innerGroup; figIn.userData.glbShadow = discMesh; figIn.userData.figIsGlb = true;
-    if (figIn.userData.seated) innerGroup.position.y = -0.55;
-    figIn.figIsGlb = true;
-    return true;
-  } catch (err) { return false; } }
-function startCastLoad(assetName) {
-  if (castStartedSet.has(assetName)) return;
-  castStartedSet.add(assetName);
-  try {
-    loadHeroAsset(assetName).then((wrapIn) => {
+    loadHeroAsset('mc').then((wrapGiven) => {
       try {
-        if (!wrapIn) return;
-        castTemplateMap.set(assetName, wrapIn);
-        const waitingSet = castWaiterMap.get(assetName);
-        if (waitingSet) { waitingSet.forEach((figIn) => swapCastFigure(figIn, assetName)); waitingSet.clear(); }
-      } catch (err) { /* procedural fallback stays */ }
-    }).catch(() => { /* procedural fallback stays */ });
-  } catch (err) { /* procedural fallback stays */ } }
-export function applyCastFigureOverride(figIn, castName) {
+        if (!wrapGiven) { if (roundsLeft > 0) setTimeout(() => loadMcRound(roundsLeft - 1), 1500); return; }
+        templateMc = wrapGiven;
+        waitersMc.forEach((waitingOne) => tryMcSwap(waitingOne));
+        waitersMc.clear();
+      } catch (ignoredFault) { /* procedural fallback stays */ }
+    }).catch(() => { if (roundsLeft > 0) setTimeout(() => loadMcRound(roundsLeft - 1), 1500); });
+  } catch (ignoredFault) { /* procedural fallback stays */ } }
+function startMcLoad() {
+  if (loadMcStarted) return;
+  loadMcStarted = true;
+  // A null result is retried rather than treated as final,
+  // because racing loads at module init can lose the fetch race
+  // and a cached null would strand every waiter on the
+  // procedural figure for the whole session, while the asset
+  // module evicts nulls when a retry comes
+  loadMcRound(3); }
+startMcLoad();
+// Loaded visuals replacing cast figures follow the same pattern
+// The rival driver and the officer each map to their own asset
+// and both face forward, so zero rotation matches the procedural
+// facing exactly
+// The group the factory returns stays outer, its transform and
+// animation untouched, and only the inner visual changes when
+// the model arrives
+const CAST_YAW_OFFSET = 0;
+const CAST_TO_ASSET = { shun: 'rivalDriver', cop: 'policeOfficer' };
+const templatesCast = new Map(); const startedCast = new Set(); const waitersCast = new Map();
+function tryCastSwap(figureGiven, assetGiven) {
   try {
-    if (!figIn || !castName) return false;
-    const assetName = CAST_ASSET_MAP[castName];
-    if (!assetName) return false;
-    figIn.userData.castKey = castName;
-    if (figIn.userData.figIsGlb) return true;
-    startCastLoad(assetName);
-    if (swapCastFigure(figIn, assetName)) return true;
-    if (!castWaiterMap.has(assetName)) castWaiterMap.set(assetName, new Set());
-    castWaiterMap.get(assetName).add(figIn);
+    const templateNow = templatesCast.get(assetGiven);
+    const swapBlocked = !figureGiven || !templateNow || figureGiven.userData.figIsGlb;
+    if (swapBlocked) return false;
+    const holderBuilt = new THREE.Group();
+    holderBuilt.name = 'cast-glb-inner'; holderBuilt.rotation.y = CAST_YAW_OFFSET;
+    holderBuilt.add(templateNow.clone(true));
+    const parkedProcedural = new THREE.Group();
+    parkedProcedural.name = 'cast-proc-visual';
+    while (figureGiven.children.length) parkedProcedural.add(figureGiven.children[0]);
+    figureGiven.add(holderBuilt);
+    const shadowBuilt = shadowDiscMesh(0.42);
+    figureGiven.add(shadowBuilt);
+    figureGiven.userData.procFig = parkedProcedural; figureGiven.userData.glbInner = holderBuilt; figureGiven.userData.glbShadow = shadowBuilt; figureGiven.userData.figIsGlb = true;
+    if (figureGiven.userData.seated) holderBuilt.position.y = -0.55;
+    figureGiven.figIsGlb = true;
     return true;
-  } catch (err) { return false; } }
-// Texture noise stays deterministic through a small local generator
-function seededNoiseFrom(seedIn) { let stateWord = seedIn * 7919 + 13; return () => { stateWord = (stateWord * 16807) % 2147483647; return (stateWord & 0xffff) / 0xffff; }; }
-function hexCssOf(hexIn) { return '#' + hexIn.toString(16).padStart(6, '0'); }
-function hexCssScaledOf(hexIn, scaleIn) { const colour = new THREE.Color(hexIn); colour.multiplyScalar(scaleIn); return '#' + colour.getHexString(); }
-// Clothing canvas texture
-// The front design centres on one quarter of the wrap, and the plain
-// back sits at three quarters, while lathe and cylinder mapping wrap
-// around the circumference with the seam at the back by default, so
-// rotating a part by half a turn brings the front to face forward
-export function makeClothTexture(kindIn, topColour, trimColour, pantsColour) {
-  const canvasEl = document.createElement('canvas'); canvasEl.width = canvasEl.height = 256;
-  const ctx = canvasEl.getContext('2d'); const noiseNext = seededNoiseFrom(kindIn.length * 131 + topColour % 10000);
-  ctx.fillStyle = hexCssOf(topColour); ctx.fillRect(0, 0, 256, 256);
-  for (let n = 0; n < 1400; n++) { ctx.fillStyle = `rgba(0,0,0,${0.03 + 0.05 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 2, 1); }
-  for (let n = 0; n < 700; n++) { ctx.fillStyle = `rgba(255,255,255,${0.02 + 0.04 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 2, 1); }
-  const shading = ctx.createLinearGradient(0, 0, 256, 0);
-  shading.addColorStop(0, 'rgba(0,0,0,.28)'); shading.addColorStop(0.25, 'rgba(255,255,255,.10)'); shading.addColorStop(0.5, 'rgba(0,0,0,.28)'); shading.addColorStop(0.75, 'rgba(255,255,255,.05)'); shading.addColorStop(1, 'rgba(0,0,0,.28)');
-  ctx.fillStyle = shading; ctx.fillRect(0, 0, 256, 256);
-  const FRONT_CENTRE = 64;
-  if (kindIn === 'jeans' || kindIn === 'uniform-pants') {
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.75); ctx.fillRect(0, 0, 256, 256);
-    for (let n = 0; n < 1400; n++) { ctx.fillStyle = `rgba(255,255,255,${0.03 + 0.04 * noiseNext()})`; ctx.fillRect(256 * noiseNext(), 256 * noiseNext(), 1, 3); }
-    ctx.fillStyle = shading; ctx.fillRect(0, 0, 256, 256);
-    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,.45)';
-    ctx.beginPath(); ctx.arc(FRONT_CENTRE - 26, 44, 16, 0.2, 2.4); ctx.stroke();
-    ctx.beginPath(); ctx.arc(FRONT_CENTRE + 26, 44, 16, 0.7, 2.9); ctx.stroke();
-    ctx.strokeStyle = 'rgba(255,200,120,.5)'; ctx.beginPath(); ctx.moveTo(FRONT_CENTRE, 30); ctx.lineTo(FRONT_CENTRE, 120); ctx.stroke();
-    ctx.fillStyle = '#3a2a1a'; ctx.fillRect(0, 0, 256, 22);
-    ctx.fillStyle = '#c0c4c8'; ctx.fillRect(FRONT_CENTRE - 10, 4, 20, 14); ctx.fillStyle = '#3a2a1a'; ctx.fillRect(FRONT_CENTRE - 5, 7, 10, 8);
-  } else if (kindIn === 'jacket' || kindIn === 'leather') {
-    if (kindIn === 'leather') { const leatherSheen = ctx.createLinearGradient(0, 0, 256, 256); leatherSheen.addColorStop(0, 'rgba(255,255,255,.16)'); leatherSheen.addColorStop(0.5, 'rgba(255,255,255,0)'); ctx.fillStyle = leatherSheen; ctx.fillRect(0, 0, 256, 256); }
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.7); ctx.fillRect(0, 0, 256, 26);
-    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 22, 256, 5); }
-    ctx.lineWidth = 4; ctx.strokeStyle = '#14161a'; ctx.beginPath();
-    if (kindIn === 'leather') { ctx.moveTo(FRONT_CENTRE - 30, 26); ctx.lineTo(FRONT_CENTRE + 22, 200); } else { ctx.moveTo(FRONT_CENTRE, 26); ctx.lineTo(FRONT_CENTRE, 240); }
-    ctx.stroke();
-    ctx.lineWidth = 1; ctx.strokeStyle = '#9aa0a6';
-    for (let yPos = 30; yPos < 235; yPos += 7) { const zipFrac = (yPos - 26) / 210; const zipXPos = kindIn === 'leather' ? FRONT_CENTRE - 30 + 52 * zipFrac : FRONT_CENTRE; ctx.beginPath(); ctx.moveTo(zipXPos - 4, yPos); ctx.lineTo(zipXPos + 4, yPos); ctx.stroke(); }
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.82); ctx.fillRect(FRONT_CENTRE - 52, 84, 34, 16); ctx.fillRect(FRONT_CENTRE + 18, 84, 34, 16);
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(FRONT_CENTRE - 52, 98, 34, 3); ctx.fillRect(FRONT_CENTRE + 18, 98, 34, 3);
-    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 218, 256, 8); }
-  } else if (kindIn === 'hoodie') {
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.78); ctx.fillRect(0, 0, 256, 34);
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.85); ctx.fillRect(FRONT_CENTRE - 38, 176, 76, 52);
-    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.strokeRect(FRONT_CENTRE - 38, 176, 76, 52);
-    ctx.lineWidth = 3; ctx.strokeStyle = '#f2f2f2';
-    ctx.beginPath(); ctx.moveTo(FRONT_CENTRE - 8, 36); ctx.lineTo(FRONT_CENTRE - 12, 66); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(FRONT_CENTRE + 8, 36); ctx.lineTo(FRONT_CENTRE + 12, 66); ctx.stroke();
-  } else if (kindIn === 'tank') {
-    ctx.fillStyle = 'rgba(0,0,0,.10)'; ctx.beginPath(); ctx.ellipse(20, 128, 26, 90, 0, 0, 6.3); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(108, 128, 26, 90, 0, 0, 6.3); ctx.fill();
-  } else if (kindIn === 'overalls') {
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.88); ctx.fillRect(FRONT_CENTRE - 34, 60, 68, 90);
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.8); ctx.fillRect(FRONT_CENTRE - 40, 0, 14, 70); ctx.fillRect(FRONT_CENTRE + 26, 0, 14, 70);
-    ctx.fillStyle = '#d8b13c'; ctx.beginPath(); ctx.arc(FRONT_CENTRE - 30, 66, 5, 0, 6.3); ctx.fill(); ctx.beginPath(); ctx.arc(FRONT_CENTRE + 30, 66, 5, 0, 6.3); ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.strokeRect(FRONT_CENTRE - 34, 60, 68, 90);
-  } else if (kindIn === 'uniform') {
-    ctx.strokeStyle = '#c8ccd2'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(FRONT_CENTRE, 30); ctx.lineTo(FRONT_CENTRE, 240); ctx.stroke();
-    ctx.fillStyle = '#e8e8e8'; for (let yPos = 44; yPos < 230; yPos += 26) { ctx.beginPath(); ctx.arc(FRONT_CENTRE, yPos, 3.4, 0, 6.3); ctx.fill(); }
-    ctx.fillStyle = hexCssOf(trimColour || 0xc8a028); ctx.beginPath(); ctx.arc(FRONT_CENTRE - 32, 66, 10, 0, 6.3); ctx.fill();
-    ctx.fillStyle = '#7a5c10'; ctx.beginPath(); ctx.arc(FRONT_CENTRE - 32, 66, 5, 0, 6.3); ctx.fill();
-    if (trimColour) { ctx.fillStyle = hexCssOf(trimColour); ctx.fillRect(0, 4, 256, 7); }
-  } else if (kindIn === 'cargo') {
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.85); ctx.fillRect(8, 130, 44, 52); ctx.fillRect(76, 130, 44, 52);
-    ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.strokeRect(8, 130, 44, 52); ctx.strokeRect(76, 130, 44, 52); ctx.fillStyle = '#3a2a1a'; ctx.fillRect(0, 0, 256, 20);
-  } else if (kindIn === 'skirt') {
-    ctx.fillStyle = hexCssScaledOf(topColour, 0.9); ctx.fillRect(0, 0, 256, 256);
-    ctx.fillStyle = 'rgba(0,0,0,.2)'; for (let xPos = 0; xPos < 256; xPos += 32) ctx.fillRect(xPos, 0, 3, 256); }
-  const textureOut = new THREE.CanvasTexture(canvasEl); textureOut.colorSpace = THREE.SRGBColorSpace; return textureOut; }
-function makeShoeTexture(colourHex, stripedIn) {
-  const canvasEl = document.createElement('canvas'); canvasEl.width = canvasEl.height = 128;
-  const ctx = canvasEl.getContext('2d'); ctx.fillStyle = hexCssOf(colourHex); ctx.fillRect(0, 0, 128, 128);
-  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(0, 88, 128, 40);
-  if (stripedIn) { ctx.fillStyle = '#ffffff'; ctx.save(); ctx.translate(64, 54); ctx.rotate(-0.5); for (let n = -1; n <= 1; n++) ctx.fillRect(n * 22 - 5, -40, 10, 80); ctx.restore(); }
-  const textureOut = new THREE.CanvasTexture(canvasEl); textureOut.colorSpace = THREE.SRGBColorSpace; return textureOut; }
-const flatMaterialOf = (colourHex, roughnessIn) => new THREE.MeshStandardMaterial({ color: colourHex, roughness: roughnessIn == null ? 0.85 : roughnessIn });
-function capsuleLimbOf(radiusIn, lengthIn, materialIn) { const limbMesh = new THREE.Mesh(new THREE.CapsuleGeometry(radiusIn, lengthIn, 4, 10), materialIn); limbMesh.castShadow = false; return limbMesh; }
-export function makeFigure(optsIn) {
-  const heightTotal = (optsIn.h || 1) * 1.78;
-  const buildFactor = optsIn.build || 0.55;
-  const outfitDef = optsIn.outfit;
-  const skinMat = flatMaterialOf(optsIn.skin, 0.65);
-  const hairMat = flatMaterialOf(optsIn.hairColor || 0x1a1a1a, 0.9);
-  const longSleeves = ['jacket', 'leather', 'hoodie', 'uniform', 'overalls'].includes(outfitDef.top);
-  const topTexture = makeClothTexture(outfitDef.top === 'uniform' ? 'uniform' : outfitDef.top, outfitDef.topColor, outfitDef.trim, outfitDef.pantsColor);
-  const topMat = new THREE.MeshStandardMaterial({ map: topTexture, roughness: 0.9 });
-  const pantsKindName = outfitDef.pants === 'jeans' ? 'jeans' : outfitDef.pants === 'uniform' ? 'jeans' : outfitDef.pants;
-  const pantsTexture = makeClothTexture(pantsKindName === 'skirt+leggings' ? 'skirt' : pantsKindName, outfitDef.pantsColor, outfitDef.trim, outfitDef.pantsColor);
-  const pantsMat = new THREE.MeshStandardMaterial({ map: pantsTexture, roughness: 0.95 });
-  const shoeMat = new THREE.MeshStandardMaterial({ map: makeShoeTexture(outfitDef.shoes, outfitDef.shoeStripes), roughness: 0.8 });
-  const figureRoot = new THREE.Group();
-  const legLength = heightTotal * 0.48, torsoLength = heightTotal * 0.30, headRadius = heightTotal * 0.065;
-  const hipHeight = legLength;
-  const pelvisMesh = new THREE.Mesh(new THREE.SphereGeometry(0.145 * (buildFactor * 0.5 + 0.8), 14, 10), pantsMat);
-  pelvisMesh.scale.set(1, 0.7, 0.85); pelvisMesh.position.y = hipHeight; figureRoot.add(pelvisMesh);
-  if (outfitDef.pants === 'skirt+leggings') {
-    const skirtMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), pantsMat);
-    skirtMesh.position.y = hipHeight - 0.08; figureRoot.add(skirtMesh); }
-  const torsoGroup = new THREE.Group(); torsoGroup.position.y = hipHeight; figureRoot.add(torsoGroup);
-  const chestHalfWidth = buildFactor * 0.055 + 0.13;
-  const latheProfile = [];
-  latheProfile.push(new THREE.Vector2(0.115, 0));
-  latheProfile.push(new THREE.Vector2(0.135, torsoLength * 0.25));
-  latheProfile.push(new THREE.Vector2(chestHalfWidth, torsoLength * 0.62));
-  latheProfile.push(new THREE.Vector2(chestHalfWidth * 0.92, torsoLength * 0.88));
-  latheProfile.push(new THREE.Vector2(0.075, torsoLength));
-  const torsoMesh = new THREE.Mesh(new THREE.LatheGeometry(latheProfile, 16), topMat);
-  torsoMesh.rotation.y = Math.PI; torsoMesh.scale.z = 0.78;
-  torsoGroup.add(torsoMesh);
-  const headGroup = new THREE.Group(); headGroup.position.y = torsoLength + 0.03; torsoGroup.add(headGroup);
-  const neckMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), skinMat); neckMesh.position.y = 0.01; headGroup.add(neckMesh);
-  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 18, 14), skinMat);
-  headMesh.scale.y = 1.12; headMesh.position.y = headRadius + 0.05; headGroup.add(headMesh);
-  const faceHeight = headRadius + 0.05;
-  const eyeMat = flatMaterialOf(0x1a1210, 0.4);
-  [-1, 1].forEach((sideSign) => {
-    const eyeMesh = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), eyeMat); eyeMesh.position.set(sideSign * 0.04 * (heightTotal / 1.78), faceHeight + 0.012, headRadius * 0.92); headGroup.add(eyeMesh);
-    const browMesh = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), hairMat); browMesh.position.set(sideSign * 0.04 * (heightTotal / 1.78), faceHeight + 0.038, headRadius * 0.94); browMesh.rotation.z = sideSign * -0.18; headGroup.add(browMesh);
-    const earMesh = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), skinMat); earMesh.position.set(sideSign * headRadius * 0.98, faceHeight, 0); headGroup.add(earMesh); });
-  const noseMesh = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), skinMat); noseMesh.rotation.x = Math.PI / 2; noseMesh.position.set(0, faceHeight - 0.012, headRadius * 1.0); headGroup.add(noseMesh);
-  const mouthMesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), flatMaterialOf(0x7a4038, 0.7)); mouthMesh.position.set(0, faceHeight - 0.052, headRadius * 0.93); headGroup.add(mouthMesh);
-  const hairStyleName = optsIn.hair || 'buzz';
-  const capGeometry = new THREE.SphereGeometry(headRadius * 1.07, 16, 10, 0, 2 * Math.PI, 0, 1.9);
-  if (hairStyleName === 'cap' || optsIn.accessory === 'cap' || optsIn.accessory === 'cap+badge') {
-    const domeMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius * 1.08, 14, 8, 0, 2 * Math.PI, 0, 1.4), flatMaterialOf(optsIn.hairColor || 0x24304a, 0.8)); domeMesh.position.y = faceHeight + 0.012; headGroup.add(domeMesh);
-    const brimMesh = new THREE.Mesh(new THREE.CylinderGeometry(headRadius * 1.25, headRadius * 1.3, 0.012, 14, 1, false, -0.7, 1.4), flatMaterialOf(optsIn.hairColor || 0x24304a, 0.8)); brimMesh.position.set(0, faceHeight + 0.045, headRadius * 0.55); headGroup.add(brimMesh);
+  } catch (ignoredFault) { return false; } }
+function startCastLoad(assetGiven) {
+  if (startedCast.has(assetGiven)) return;
+  startedCast.add(assetGiven);
+  try {
+    loadHeroAsset(assetGiven).then((wrapGiven) => {
+      try {
+        if (!wrapGiven) return;
+        templatesCast.set(assetGiven, wrapGiven);
+        const waiterSet = waitersCast.get(assetGiven);
+        if (waiterSet) { waiterSet.forEach((figureGiven) => tryCastSwap(figureGiven, assetGiven)); waiterSet.clear(); }
+      } catch (ignoredFault) { /* procedural fallback stays */ }
+    }).catch(() => { /* procedural fallback stays */ });
+  } catch (ignoredFault) { /* procedural fallback stays */ } }
+export function applyCastFigureOverride(figureGiven, castGiven) {
+  try {
+    if (!figureGiven || !castGiven) return false;
+    const assetGiven = CAST_TO_ASSET[castGiven];
+    if (!assetGiven) return false;
+    figureGiven.userData.castKey = castGiven;
+    if (figureGiven.userData.figIsGlb) return true;
+    startCastLoad(assetGiven);
+    if (tryCastSwap(figureGiven, assetGiven)) return true;
+    if (!waitersCast.has(assetGiven)) waitersCast.set(assetGiven, new Set());
+    waitersCast.get(assetGiven).add(figureGiven);
+    return true;
+  } catch (ignoredFault) { return false; } }
+// Texture noise stays deterministic via a small local generator
+function noiseFromSeed(seedGiven) {
+  let cellValue = ((seedGiven * 7919) + 13);
+  const nextUnit = () => { cellValue = ((cellValue * 16807) % 2147483647); return ((cellValue & 0xffff) / 0xffff); };
+  return nextUnit; }
+function cssHexOf(colourGiven) { const hexBody = colourGiven.toString(16).padStart(6, '0'); const cssOut = ('#' + hexBody); return cssOut; }
+function cssHexScaledOf(colourGiven, scaleGiven) { const colourTmp = new THREE.Color(colourGiven); colourTmp.multiplyScalar(scaleGiven); const cssOut = ('#' + colourTmp.getHexString()); return cssOut; }
+
+// The clothing canvas texture
+// Its front design centres on a quarter of the wrap and the
+// plain back sits at three quarters, while lathe and cylinder
+// mapping wrap around the circumference with the seam at the
+// back by default, so rotating a part by half a turn brings
+// the front around to face forward
+export function makeClothTexture(kindGiven, topGiven, trimGiven, pantsGiven) {
+  const canvasBuilt = document.createElement('canvas'); canvasBuilt.width = canvasBuilt.height = 256;
+  const penBuilt = canvasBuilt.getContext('2d');
+  const noiseSource = noiseFromSeed((kindGiven.length * 131) + (topGiven % 10000));
+  const nextNoise = noiseSource;
+  penBuilt.fillStyle = cssHexOf(topGiven); penBuilt.fillRect(0, 0, 256, 256);
+  for (let nIdx = 0; nIdx < 1400; nIdx++) { penBuilt.fillStyle = `rgba(0,0,0,${0.03 + 0.05 * nextNoise()})`; penBuilt.fillRect(256 * noiseSource(), 256 * noiseSource(), 2, 1); }
+  for (let nIdx = 0; nIdx < 700; nIdx++) { penBuilt.fillStyle = `rgba(255,255,255,${0.02 + 0.04 * nextNoise()})`; penBuilt.fillRect(256 * noiseSource(), 256 * noiseSource(), 2, 1); }
+  const shadeGrad = penBuilt.createLinearGradient(0, 0, 256, 0);
+  shadeGrad.addColorStop(0, 'rgba(0,0,0,.28)'); shadeGrad.addColorStop(0.25, 'rgba(255,255,255,.10)');
+  shadeGrad.addColorStop(0.5, 'rgba(0,0,0,.28)'); shadeGrad.addColorStop(0.75, 'rgba(255,255,255,.05)'); shadeGrad.addColorStop(1, 'rgba(0,0,0,.28)');
+  penBuilt.fillStyle = shadeGrad; penBuilt.fillRect(0, 0, 256, 256);
+  const FRONT_AT = 64;
+  const pantsKind = (kindGiven === 'jeans') || (kindGiven === 'uniform-pants');
+  const jacketKind = (kindGiven === 'jacket') || (kindGiven === 'leather');
+  if (pantsKind) {
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.75); penBuilt.fillRect(0, 0, 256, 256);
+    for (let nIdx = 0; nIdx < 1400; nIdx++) { penBuilt.fillStyle = `rgba(255,255,255,${0.03 + 0.04 * nextNoise()})`; penBuilt.fillRect(256 * noiseSource(), 256 * noiseSource(), 1, 3); }
+    penBuilt.fillStyle = shadeGrad; penBuilt.fillRect(0, 0, 256, 256);
+    penBuilt.lineWidth = 2; penBuilt.strokeStyle = 'rgba(0,0,0,.45)';
+    penBuilt.beginPath(); penBuilt.arc((FRONT_AT + (-26)), 44, 16, 0.2, 2.4); penBuilt.stroke();
+    penBuilt.beginPath(); penBuilt.arc((FRONT_AT + 26), 44, 16, 0.7, 2.9); penBuilt.stroke();
+    penBuilt.strokeStyle = 'rgba(255,200,120,.5)'; penBuilt.beginPath(); penBuilt.moveTo(FRONT_AT, 30); penBuilt.lineTo(FRONT_AT, 120); penBuilt.stroke();
+    penBuilt.fillStyle = '#3a2a1a'; penBuilt.fillRect(0, 0, 256, 22);
+    penBuilt.fillStyle = '#c0c4c8'; penBuilt.fillRect((FRONT_AT + (-10)), 4, 20, 14); penBuilt.fillStyle = '#3a2a1a'; penBuilt.fillRect((FRONT_AT + (-5)), 7, 10, 8);
+  } else if (jacketKind) {
+    if (kindGiven === 'leather') { const sheenGrad = penBuilt.createLinearGradient(0, 0, 256, 256); sheenGrad.addColorStop(0, 'rgba(255,255,255,.16)'); sheenGrad.addColorStop(0.5, 'rgba(255,255,255,0)'); penBuilt.fillStyle = sheenGrad; penBuilt.fillRect(0, 0, 256, 256); }
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.7); penBuilt.fillRect(0, 0, 256, 26);
+    if (trimGiven) { penBuilt.fillStyle = cssHexOf(trimGiven); penBuilt.fillRect(0, 22, 256, 5); }
+    penBuilt.lineWidth = 4; penBuilt.strokeStyle = '#14161a'; penBuilt.beginPath();
+    if (kindGiven === 'leather') { penBuilt.moveTo((FRONT_AT + (-30)), 26); penBuilt.lineTo((FRONT_AT + 22), 200); } else { penBuilt.moveTo(FRONT_AT, 26); penBuilt.lineTo(FRONT_AT, 240); }
+    penBuilt.stroke();
+    penBuilt.lineWidth = 1; penBuilt.strokeStyle = '#9aa0a6';
+    for (let yAt = 30; yAt < 235; yAt += 7) { const zipShare = ((yAt + (-26)) / 210); const zipAt = (kindGiven === 'leather') ? ((FRONT_AT + (-30)) + (52 * zipShare)) : FRONT_AT; penBuilt.beginPath(); penBuilt.moveTo((zipAt + (-4)), yAt); penBuilt.lineTo((zipAt + 4), yAt); penBuilt.stroke(); }
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.82); penBuilt.fillRect((FRONT_AT + (-52)), 84, 34, 16); penBuilt.fillRect((FRONT_AT + 18), 84, 34, 16);
+    penBuilt.fillStyle = 'rgba(0,0,0,.35)'; penBuilt.fillRect((FRONT_AT + (-52)), 98, 34, 3); penBuilt.fillRect((FRONT_AT + 18), 98, 34, 3);
+    if (trimGiven) { penBuilt.fillStyle = cssHexOf(trimGiven); penBuilt.fillRect(0, 218, 256, 8); }
+  } else if (kindGiven === 'hoodie') {
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.78); penBuilt.fillRect(0, 0, 256, 34);
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.85); penBuilt.fillRect((FRONT_AT + (-38)), 176, 76, 52);
+    penBuilt.strokeStyle = 'rgba(0,0,0,.3)'; penBuilt.strokeRect((FRONT_AT + (-38)), 176, 76, 52);
+    penBuilt.lineWidth = 3; penBuilt.strokeStyle = '#f2f2f2';
+    penBuilt.beginPath(); penBuilt.moveTo((FRONT_AT + (-8)), 36); penBuilt.lineTo((FRONT_AT + (-12)), 66); penBuilt.stroke();
+    penBuilt.beginPath(); penBuilt.moveTo((FRONT_AT + 8), 36); penBuilt.lineTo((FRONT_AT + 12), 66); penBuilt.stroke();
+  } else if (kindGiven === 'tank') {
+    penBuilt.fillStyle = 'rgba(0,0,0,.10)'; penBuilt.beginPath(); penBuilt.ellipse(20, 128, 26, 90, 0, 0, 6.3); penBuilt.fill();
+    penBuilt.beginPath(); penBuilt.ellipse(108, 128, 26, 90, 0, 0, 6.3); penBuilt.fill();
+  } else if (kindGiven === 'overalls') {
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.88); penBuilt.fillRect((FRONT_AT + (-34)), 60, 68, 90);
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.8); penBuilt.fillRect((FRONT_AT + (-40)), 0, 14, 70); penBuilt.fillRect((FRONT_AT + 26), 0, 14, 70);
+    penBuilt.fillStyle = '#d8b13c'; penBuilt.beginPath(); penBuilt.arc((FRONT_AT + (-30)), 66, 5, 0, 6.3); penBuilt.fill(); penBuilt.beginPath(); penBuilt.arc((FRONT_AT + 30), 66, 5, 0, 6.3); penBuilt.fill();
+    penBuilt.strokeStyle = 'rgba(0,0,0,.3)'; penBuilt.strokeRect((FRONT_AT + (-34)), 60, 68, 90);
+  } else if (kindGiven === 'uniform') {
+    penBuilt.strokeStyle = '#c8ccd2'; penBuilt.lineWidth = 2; penBuilt.beginPath(); penBuilt.moveTo(FRONT_AT, 30); penBuilt.lineTo(FRONT_AT, 240); penBuilt.stroke();
+    penBuilt.fillStyle = '#e8e8e8'; for (let yAt = 44; yAt < 230; yAt += 26) { penBuilt.beginPath(); penBuilt.arc(FRONT_AT, yAt, 3.4, 0, 6.3); penBuilt.fill(); }
+    penBuilt.fillStyle = cssHexOf(trimGiven || 0xc8a028); penBuilt.beginPath(); penBuilt.arc((FRONT_AT + (-32)), 66, 10, 0, 6.3); penBuilt.fill();
+    penBuilt.fillStyle = '#7a5c10'; penBuilt.beginPath(); penBuilt.arc((FRONT_AT + (-32)), 66, 5, 0, 6.3); penBuilt.fill();
+    if (trimGiven) { penBuilt.fillStyle = cssHexOf(trimGiven); penBuilt.fillRect(0, 4, 256, 7); }
+  } else if (kindGiven === 'cargo') {
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.85); penBuilt.fillRect(8, 130, 44, 52); penBuilt.fillRect(76, 130, 44, 52);
+    penBuilt.strokeStyle = 'rgba(0,0,0,.4)'; penBuilt.strokeRect(8, 130, 44, 52); penBuilt.strokeRect(76, 130, 44, 52); penBuilt.fillStyle = '#3a2a1a'; penBuilt.fillRect(0, 0, 256, 20);
+  } else if (kindGiven === 'skirt') {
+    penBuilt.fillStyle = cssHexScaledOf(topGiven, 0.9); penBuilt.fillRect(0, 0, 256, 256);
+    penBuilt.fillStyle = 'rgba(0,0,0,.2)'; for (let xAt = 0; xAt < 256; xAt += 32) penBuilt.fillRect(xAt, 0, 3, 256); }
+  const texOut = new THREE.CanvasTexture(canvasBuilt); texOut.colorSpace = THREE.SRGBColorSpace; return texOut; }
+function shoeTextureOf(colourGiven, stripedGiven) {
+  const canvasBuilt = document.createElement('canvas'); canvasBuilt.width = canvasBuilt.height = 128;
+  const penBuilt = canvasBuilt.getContext('2d'); penBuilt.fillStyle = cssHexOf(colourGiven); penBuilt.fillRect(0, 0, 128, 128);
+  penBuilt.fillStyle = 'rgba(0,0,0,.18)'; penBuilt.fillRect(0, 88, 128, 40);
+  if (stripedGiven) { penBuilt.fillStyle = '#ffffff'; penBuilt.save(); penBuilt.translate(64, 54); penBuilt.rotate(-0.5); for (let nIdx = -1; nIdx <= 1; nIdx++) penBuilt.fillRect(((nIdx * 22) + (-5)), -40, 10, 80); penBuilt.restore(); }
+  const texOut = new THREE.CanvasTexture(canvasBuilt); texOut.colorSpace = THREE.SRGBColorSpace; return texOut; }
+function materialPlain(colourGiven, roughGiven) { const roughValue = (roughGiven == null) ? 0.85 : roughGiven; const matOut = new THREE.MeshStandardMaterial({ color: colourGiven, roughness: roughValue }); return matOut; }
+function limbCapsuleOf(radiusGiven, lengthGiven, materialGiven) { const limbMesh = new THREE.Mesh(new THREE.CapsuleGeometry(radiusGiven, lengthGiven, 4, 10), materialGiven); limbMesh.castShadow = false; return limbMesh; }
+
+export function makeFigure(optsGiven) {
+  const totalHeight = ((optsGiven.h || 1) * 1.78);
+  const shareBuild = (optsGiven.build || 0.55);
+  const outfitGiven = optsGiven.outfit;
+  const matSkin = materialPlain(optsGiven.skin, 0.65);
+  const matHair = materialPlain((optsGiven.hairColor || 0x1a1a1a), 0.9);
+  const kindsLongSleeve = ['jacket', 'leather', 'hoodie', 'uniform', 'overalls'];
+  const sleevesLong = kindsLongSleeve.includes(outfitGiven.top);
+  const kindTopTex = (outfitGiven.top === 'uniform') ? 'uniform' : outfitGiven.top;
+  const texTop = makeClothTexture(kindTopTex, outfitGiven.topColor, outfitGiven.trim, outfitGiven.pantsColor);
+  const matTop = new THREE.MeshStandardMaterial({ map: texTop, roughness: 0.9 });
+  const kindPantsRaw = (outfitGiven.pants === 'jeans') ? 'jeans' : ((outfitGiven.pants === 'uniform') ? 'jeans' : outfitGiven.pants);
+  const kindPantsTex = (kindPantsRaw === 'skirt+leggings') ? 'skirt' : kindPantsRaw;
+  const texPants = makeClothTexture(kindPantsTex, outfitGiven.pantsColor, outfitGiven.trim, outfitGiven.pantsColor);
+  const matPants = new THREE.MeshStandardMaterial({ map: texPants, roughness: 0.95 });
+  const matShoe = new THREE.MeshStandardMaterial({ map: shoeTextureOf(outfitGiven.shoes, outfitGiven.shoeStripes), roughness: 0.8 });
+  const grpFigure = new THREE.Group();
+  const lenLeg = (totalHeight * 0.48), lenTorso = (totalHeight * 0.30), radiusHead = (totalHeight * 0.065);
+  const heightHip = lenLeg;
+  const meshPelvis = new THREE.Mesh(new THREE.SphereGeometry((0.145 * ((shareBuild * 0.5) + 0.8)), 14, 10), matPants);
+  meshPelvis.scale.set(1, 0.7, 0.85); meshPelvis.position.y = heightHip; grpFigure.add(meshPelvis);
+  if (outfitGiven.pants === 'skirt+leggings') {
+    const meshSkirt = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), matPants);
+    meshSkirt.position.y = (heightHip + (-0.08)); grpFigure.add(meshSkirt); }
+  const grpTorso = new THREE.Group(); grpTorso.position.y = heightHip; grpFigure.add(grpTorso);
+  const halfChestW = ((shareBuild * 0.055) + 0.13);
+  const ptsLathe = [];
+  ptsLathe.push(new THREE.Vector2(0.115, 0));
+  ptsLathe.push(new THREE.Vector2(0.135, (lenTorso * 0.25)));
+  ptsLathe.push(new THREE.Vector2(halfChestW, (lenTorso * 0.62)));
+  ptsLathe.push(new THREE.Vector2((halfChestW * 0.92), (lenTorso * 0.88)));
+  ptsLathe.push(new THREE.Vector2(0.075, lenTorso));
+  const meshTorso = new THREE.Mesh(new THREE.LatheGeometry(ptsLathe, 16), matTop);
+  meshTorso.rotation.y = Math.PI; meshTorso.scale.z = 0.78;
+  grpTorso.add(meshTorso);
+  const grpHead = new THREE.Group(); grpHead.position.y = (lenTorso + 0.03); grpTorso.add(grpHead);
+  const meshNeck = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), matSkin); meshNeck.position.y = 0.01; grpHead.add(meshNeck);
+  const meshHead = new THREE.Mesh(new THREE.SphereGeometry(radiusHead, 18, 14), matSkin);
+  meshHead.scale.y = 1.12; meshHead.position.y = (radiusHead + 0.05); grpHead.add(meshHead);
+  const heightFace = (radiusHead + 0.05);
+  const matEye = materialPlain(0x1a1210, 0.4);
+  const sidesList = [-1, 1];
+  sidesList.forEach((sideSign) => {
+    const meshEye = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), matEye); meshEye.position.set((sideSign * 0.04 * (totalHeight / 1.78)), (heightFace + 0.012), (radiusHead * 0.92)); grpHead.add(meshEye);
+    const meshBrow = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), matHair); meshBrow.position.set((sideSign * 0.04 * (totalHeight / 1.78)), (heightFace + 0.038), (radiusHead * 0.94)); meshBrow.rotation.z = (sideSign * -0.18); grpHead.add(meshBrow);
+    const meshEar = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), matSkin); meshEar.position.set((sideSign * radiusHead * 0.98), heightFace, 0); grpHead.add(meshEar); });
+  const meshNose = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), matSkin); meshNose.rotation.x = (Math.PI / 2); meshNose.position.set(0, (heightFace + (-0.012)), (radiusHead * 1.0)); grpHead.add(meshNose);
+  const meshMouth = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), materialPlain(0x7a4038, 0.7)); meshMouth.position.set(0, (heightFace + (-0.052)), (radiusHead * 0.93)); grpHead.add(meshMouth);
+  const kindHair = (optsGiven.hair || 'buzz');
+  const geoCap = new THREE.SphereGeometry((radiusHead * 1.07), 16, 10, 0, 2 * Math.PI, 0, 1.9);
+  const capWorn = (kindHair === 'cap') || (optsGiven.accessory === 'cap') || (optsGiven.accessory === 'cap+badge');
+  if (capWorn) {
+    const meshDome = new THREE.Mesh(new THREE.SphereGeometry((radiusHead * 1.08), 14, 8, 0, 2 * Math.PI, 0, 1.4), materialPlain((optsGiven.hairColor || 0x24304a), 0.8)); meshDome.position.y = (heightFace + 0.012); grpHead.add(meshDome);
+    const meshBrim = new THREE.Mesh(new THREE.CylinderGeometry((radiusHead * 1.25), (radiusHead * 1.3), 0.012, 14, 1, false, -0.7, 1.4), materialPlain((optsGiven.hairColor || 0x24304a), 0.8)); meshBrim.position.set(0, (heightFace + 0.045), (radiusHead * 0.55)); grpHead.add(meshBrim);
   } else {
-    const capMesh = new THREE.Mesh(capGeometry, hairMat); capMesh.scale.y = 1.12; capMesh.position.set(0, faceHeight + 0.012, -0.008); headGroup.add(capMesh);
-    if (hairStyleName.includes('topknot')) { const knotMesh = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), hairMat); knotMesh.position.set(0, faceHeight + headRadius * 1.05, -0.02); headGroup.add(knotMesh); }
-    if (hairStyleName.includes('ponytail')) { const tailMesh = capsuleLimbOf(0.032, 0.2, hairMat); tailMesh.position.set(0, faceHeight - 0.08, -headRadius - 0.03); tailMesh.rotation.x = 0.25; headGroup.add(tailMesh); }
-    if (hairStyleName.includes('bob')) { const bobMesh = new THREE.Mesh(new THREE.SphereGeometry(headRadius * 1.14, 14, 10, 0, 2 * Math.PI, 0, 2.4), hairMat); bobMesh.scale.y = 1.25; bobMesh.position.set(0, faceHeight + 0.005, -0.006); headGroup.add(bobMesh); } }
+    const meshCap = new THREE.Mesh(geoCap, matHair); meshCap.scale.y = 1.12; meshCap.position.set(0, (heightFace + 0.012), -0.008); grpHead.add(meshCap);
+    if (kindHair.includes('topknot')) { const meshKnot = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), matHair); meshKnot.position.set(0, (heightFace + (radiusHead * 1.05)), -0.02); grpHead.add(meshKnot); }
+    if (kindHair.includes('ponytail')) { const meshTail = limbCapsuleOf(0.032, 0.2, matHair); meshTail.position.set(0, (heightFace + (-0.08)), ((-radiusHead) + (-0.03))); meshTail.rotation.x = 0.25; grpHead.add(meshTail); }
+    if (kindHair.includes('bob')) { const meshBob = new THREE.Mesh(new THREE.SphereGeometry((radiusHead * 1.14), 14, 10, 0, 2 * Math.PI, 0, 2.4), matHair); meshBob.scale.y = 1.25; meshBob.position.set(0, (heightFace + 0.005), -0.006); grpHead.add(meshBob); } }
   function buildArm(sideSign) {
-    const shoulderGroup = new THREE.Group(); shoulderGroup.position.set(sideSign * (chestHalfWidth + 0.03), torsoLength - 0.05, 0); torsoGroup.add(shoulderGroup);
-    const upperMat = outfitDef.top === 'tank' ? skinMat : topMat;
-    const upperMesh = capsuleLimbOf(0.045, 0.17, upperMat); upperMesh.position.y = -0.13; shoulderGroup.add(upperMesh);
-    shoulderGroup.rotation.z = sideSign * 0.14;
-    const elbowGroup = new THREE.Group(); elbowGroup.position.y = -0.27; shoulderGroup.add(elbowGroup);
-    const forearmMat = longSleeves ? topMat : skinMat;
-    const forearmMesh = capsuleLimbOf(0.037, 0.16, forearmMat); forearmMesh.position.y = -0.115; elbowGroup.add(forearmMesh);
-    const handMat = optsIn.accessory === 'gloves' ? flatMaterialOf(outfitDef.topColor, 0.8) : skinMat;
-    const handMesh = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), handMat); handMesh.scale.set(0.8, 1.15, 0.9); handMesh.position.y = -0.26; elbowGroup.add(handMesh);
-    elbowGroup.rotation.x = -0.25;
-    return { shoulder: shoulderGroup, elbow: elbowGroup }; }
+    const grpShoulder = new THREE.Group(); grpShoulder.position.set((sideSign * (halfChestW + 0.03)), (lenTorso + (-0.05)), 0); grpTorso.add(grpShoulder);
+    const matUpper = (outfitGiven.top === 'tank') ? matSkin : matTop;
+    const meshUpper = limbCapsuleOf(0.045, 0.17, matUpper); meshUpper.position.y = -0.13; grpShoulder.add(meshUpper);
+    grpShoulder.rotation.z = (sideSign * 0.14);
+    const grpElbow = new THREE.Group(); grpElbow.position.y = -0.27; grpShoulder.add(grpElbow);
+    const matFore = sleevesLong ? matTop : matSkin;
+    const meshFore = limbCapsuleOf(0.037, 0.16, matFore); meshFore.position.y = -0.115; grpElbow.add(meshFore);
+    const matHand = (optsGiven.accessory === 'gloves') ? materialPlain(outfitGiven.topColor, 0.8) : matSkin;
+    const meshHand = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), matHand); meshHand.scale.set(0.8, 1.15, 0.9); meshHand.position.y = -0.26; grpElbow.add(meshHand);
+    grpElbow.rotation.x = -0.25;
+    const rigArm = { shoulder: grpShoulder, elbow: grpElbow };
+    return rigArm; }
   const armLeft = buildArm(-1), armRight = buildArm(1);
   function buildLeg(sideSign) {
-    const hipGroup = new THREE.Group(); hipGroup.position.set(sideSign * 0.085, hipHeight - 0.02, 0); figureRoot.add(hipGroup);
-    const thighMat = outfitDef.pants === 'skirt+leggings' ? pantsMat : pantsMat;
-    const thighMesh = capsuleLimbOf(0.068, 0.26, thighMat); thighMesh.position.y = legLength * -0.25; hipGroup.add(thighMesh);
-    const kneeGroup = new THREE.Group(); kneeGroup.position.y = legLength * -0.5; hipGroup.add(kneeGroup);
-    const shinMat = outfitDef.pants === 'skirt+leggings' ? flatMaterialOf(outfitDef.pantsColor, 0.9) : pantsMat;
-    const shinMesh = capsuleLimbOf(0.052, 0.26, shinMat); shinMesh.position.y = legLength * -0.24; kneeGroup.add(shinMesh);
-    const shoeGroup = new THREE.Group(); shoeGroup.position.y = 0.03 - legLength * 0.5; kneeGroup.add(shoeGroup);
-    const shoeMesh = capsuleLimbOf(0.05, 0.1, shoeMat); shoeMesh.rotation.x = Math.PI / 2; shoeMesh.scale.set(0.85, 1, 0.6); shoeMesh.position.set(0, -0.02, 0.045); shoeGroup.add(shoeMesh);
-    const soleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), flatMaterialOf(0xf5f5f5, 0.7)); soleMesh.position.set(0, -0.055, 0.04); shoeGroup.add(soleMesh);
-    return { hip: hipGroup, knee: kneeGroup }; }
+    const grpHip = new THREE.Group(); grpHip.position.set((sideSign * 0.085), (heightHip + (-0.02)), 0); grpFigure.add(grpHip);
+    const matThigh = (outfitGiven.pants === 'skirt+leggings') ? matPants : matPants;
+    const meshThigh = limbCapsuleOf(0.068, 0.26, matThigh); meshThigh.position.y = (lenLeg * -0.25); grpHip.add(meshThigh);
+    const grpKnee = new THREE.Group(); grpKnee.position.y = (lenLeg * -0.5); grpHip.add(grpKnee);
+    const matShin = (outfitGiven.pants === 'skirt+leggings') ? materialPlain(outfitGiven.pantsColor, 0.9) : matPants;
+    const meshShin = limbCapsuleOf(0.052, 0.26, matShin); meshShin.position.y = (lenLeg * -0.24); grpKnee.add(meshShin);
+    const grpShoe = new THREE.Group(); grpShoe.position.y = (0.03 + (-(lenLeg * 0.5))); grpKnee.add(grpShoe);
+    const meshShoe = limbCapsuleOf(0.05, 0.1, matShoe); meshShoe.rotation.x = (Math.PI / 2); meshShoe.scale.set(0.85, 1, 0.6); meshShoe.position.set(0, -0.02, 0.045); grpShoe.add(meshShoe);
+    const meshSole = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), materialPlain(0xf5f5f5, 0.7)); meshSole.position.set(0, -0.055, 0.04); grpShoe.add(meshSole);
+    const rigLeg = { hip: grpHip, knee: grpKnee };
+    return rigLeg; }
   const legLeft = buildLeg(-1), legRight = buildLeg(1);
-  if (optsIn.accessory === 'glasses') {
-    const frameMat = flatMaterialOf(0x14161a, 0.3);
-    [-1, 1].forEach((sideSign) => { const lensMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04), new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.1, metalness: 0.6 })); lensMesh.position.set(sideSign * 0.04, faceHeight + 0.012, headRadius + 0.012); headGroup.add(lensMesh); const barMesh = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), frameMat); barMesh.position.copy(lensMesh.position); barMesh.position.y += 0.023; headGroup.add(barMesh); }); }
-  if (optsIn.accessory === 'chain') { const chainMesh = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20), new THREE.MeshStandardMaterial({ color: 0xd8b13c, metalness: 0.9, roughness: 0.3 })); chainMesh.position.set(0, torsoLength - 0.02, 0.1); chainMesh.rotation.x = 0.5; torsoGroup.add(chainMesh); }
-  if (optsIn.accessory === 'phone') { const phoneMesh = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), flatMaterialOf(0x14161c, 0.3)); phoneMesh.position.set(0, -0.27, 0.03); armRight.elbow.add(phoneMesh); }
-  if (optsIn.accessory === 'cap+badge') { const badgeMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12), new THREE.MeshStandardMaterial({ color: 0xc8a028, metalness: 0.9, roughness: 0.3 })); badgeMesh.rotation.x = Math.PI / 2; badgeMesh.position.set(-0.07, torsoLength * 0.72, chestHalfWidth * 0.8); torsoGroup.add(badgeMesh); }
-  const shadowDisc = groundShadowDisc(0.42);
-  figureRoot.add(shadowDisc);
-  figureRoot.userData = { legL: legLeft.hip, legR: legRight.hip, kneeL: legLeft.knee, kneeR: legRight.knee,
-    armL: armLeft.shoulder, armR: armRight.shoulder, foreL: armLeft.elbow, foreR: armRight.elbow,
-    headG: headGroup, torsoG: torsoGroup, H: heightTotal };
-  // Callers pass the cast entry itself, so identity checks recover
-  // the cast key even where call sites never thread it through, and
-  // one hook covers rivals, dialogue staging and seated drivers alike
-  Object.keys(CAST_ASSET_MAP).forEach((castName) => {
-    if (optsIn === CAST[castName]) applyCastFigureOverride(figureRoot, castName); });
-  return figureRoot; }
-export function animateFigure(figIn, phaseIn, amountIn) {
-  const rig = figIn.userData; if (!rig) return;
-  if (rig.figIsGlb && rig.glbInner) {
-    const innerGroup = rig.glbInner;
-    if (amountIn > 0.05) {
-      innerGroup.position.y = Math.abs(Math.sin(phaseIn)) * 0.045;
-      innerGroup.rotation.z = Math.sin(phaseIn) * 0.035;
-      innerGroup.rotation.x = Math.min(1, amountIn) * 0.05;
+  if (optsGiven.accessory === 'glasses') {
+    const matFrame = materialPlain(0x14161a, 0.3);
+    sidesList.forEach((sideSign) => { const meshLens = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04), new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.1, metalness: 0.6 })); meshLens.position.set((sideSign * 0.04), (heightFace + 0.012), (radiusHead + 0.012)); grpHead.add(meshLens); const meshBar = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), matFrame); meshBar.position.copy(meshLens.position); meshBar.position.y += 0.023; grpHead.add(meshBar); }); }
+  if (optsGiven.accessory === 'chain') { const meshChain = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20), new THREE.MeshStandardMaterial({ color: 0xd8b13c, metalness: 0.9, roughness: 0.3 })); meshChain.position.set(0, (lenTorso + (-0.02)), 0.1); meshChain.rotation.x = 0.5; grpTorso.add(meshChain); }
+  if (optsGiven.accessory === 'phone') { const meshPhone = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), materialPlain(0x14161c, 0.3)); meshPhone.position.set(0, -0.27, 0.03); armRight.elbow.add(meshPhone); }
+  if (optsGiven.accessory === 'cap+badge') { const meshBadge = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12), new THREE.MeshStandardMaterial({ color: 0xc8a028, metalness: 0.9, roughness: 0.3 })); meshBadge.rotation.x = (Math.PI / 2); meshBadge.position.set(-0.07, (lenTorso * 0.72), (halfChestW * 0.8)); grpTorso.add(meshBadge); }
+  const shadowGround = shadowDiscMesh(0.42);
+  grpFigure.add(shadowGround);
+  grpFigure.userData = { legL: legLeft.hip, legR: legRight.hip, kneeL: legLeft.knee, kneeR: legRight.knee, armL: armLeft.shoulder, armR: armRight.shoulder, foreL: armLeft.elbow, foreR: armRight.elbow, headG: grpHead, torsoG: grpTorso, H: totalHeight };
+  // Callers pass the cast entry itself, so identity checks can
+  // recover the cast key even where call sites never thread it
+  // through, and a single hook covers rivals, dialogue staging
+  // and seated drivers alike
+  Object.keys(CAST_TO_ASSET).forEach((castKey) => {
+    if (optsGiven === CAST[castKey]) applyCastFigureOverride(grpFigure, castKey); });
+  return grpFigure; }
+
+export function animateFigure(figureGiven, phaseGiven, amountGiven) {
+  const rigGiven = figureGiven.userData; if (!rigGiven) return;
+  if (rigGiven.figIsGlb && rigGiven.glbInner) {
+    const holderGiven = rigGiven.glbInner;
+    const movingHard = (amountGiven > 0.05);
+    if (movingHard) {
+      holderGiven.position.y = (Math.abs(Math.sin(phaseGiven)) * 0.045);
+      holderGiven.rotation.z = (Math.sin(phaseGiven) * 0.035);
+      holderGiven.rotation.x = (Math.min(1, amountGiven) * 0.05);
     } else {
-      innerGroup.position.y = Math.sin(phaseIn * 0.35) * 0.008;
-      innerGroup.rotation.z = 0; innerGroup.rotation.x = 0; }
-    innerGroup.rotation.y = CAST_YAW_CORRECTION;
+      holderGiven.position.y = (Math.sin(phaseGiven * 0.35) * 0.008);
+      holderGiven.rotation.z = 0; holderGiven.rotation.x = 0; }
+    holderGiven.rotation.y = CAST_YAW_OFFSET;
     return; }
-  if (!rig.legL) return;
-  const swingFirst = Math.sin(phaseIn), swingSecond = Math.sin(phaseIn + Math.PI);
-  rig.legL.rotation.x = swingFirst * 0.55 * amountIn; rig.legR.rotation.x = swingSecond * 0.55 * amountIn;
-  rig.kneeL.rotation.x = Math.max(0, -swingSecond) * 0.6 * amountIn; rig.kneeR.rotation.x = Math.max(0, -swingFirst) * 0.6 * amountIn;
-  rig.armL.rotation.x = swingSecond * 0.4 * amountIn; rig.armR.rotation.x = swingFirst * 0.4 * amountIn;
-  rig.foreL.rotation.x = -0.25 - Math.max(0, swingFirst) * 0.3 * amountIn; rig.foreR.rotation.x = -0.25 - Math.max(0, swingSecond) * 0.3 * amountIn;
-  rig.torsoG.position.y = (rig.H * 0.48) + Math.abs(Math.sin(phaseIn)) * 0.03 * amountIn + (amountIn < 0.05 ? Math.sin(phaseIn * 0.35) * 0.006 : 0);
-  rig.headG.rotation.x = Math.sin(phaseIn * 0.5) * 0.03; }
-export function poseSeated(figIn) {
-  const rig = figIn.userData; if (!rig) return;
-  rig.seated = true;
-  if (rig.figIsGlb && rig.glbInner) { rig.glbInner.position.y = -0.55; return; }
-  if (!rig.legL) return;
-  const seatedHipAngle = 0.12 - Math.PI / 2;
-  const seatedKneeAngle = Math.PI / 2 - 0.15;
-  [rig.legL, rig.legR].forEach((jointIn) => { jointIn.rotation.x = seatedHipAngle; });
-  [rig.kneeL, rig.kneeR].forEach((jointIn) => { jointIn.rotation.x = seatedKneeAngle; });
-  [rig.armL, rig.armR].forEach((jointIn) => { jointIn.rotation.x = -0.85; });
-  rig.armL.rotation.z = 0.3; rig.armR.rotation.z = -0.3;
-  [rig.foreL, rig.foreR].forEach((jointIn) => { jointIn.rotation.x = -0.35; });
-  rig.torsoG.position.y = rig.H * 0.48; }
-export function createPlayer(G) {
-  startHeroLoad();
-  const outerGroup = new THREE.Group();
-  const proceduralVisual = makeFigure(CAST.ren);
-  outerGroup.add(proceduralVisual);
-  const spawnPosX = -412.5, spawnPosZ = 470;
-  outerGroup.position.set(spawnPosX, groundH(spawnPosX, spawnPosZ), spawnPosZ);
-  outerGroup.rotation.y = Math.PI;
-  G.scene.add(outerGroup);
-  const playerObj = { fig: outerGroup, procFig: proceduralVisual, visual: proceduralVisual, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x: spawnPosX, z: spawnPosZ, angle: Math.PI, phase: 0, speed: 0, health: 100 };
-  G.player = playerObj;
-  if (!swapHeroToModel(playerObj)) mcWaiters.add(playerObj);
-  return playerObj; }
-export function updatePlayer(G, dt) {
-  const pl = G.player; if (!pl || !pl.fig.visible) return;
-  const keyMap = G.keys;
-  let moveX = 0, moveZ = 0;
-  if (keyMap['KeyW'] || keyMap['ArrowUp']) moveZ += 1;
-  if (keyMap['KeyS'] || keyMap['ArrowDown']) moveZ -= 1;
-  if (keyMap['KeyA'] || keyMap['ArrowLeft']) moveX -= 1;
-  if (keyMap['KeyD'] || keyMap['ArrowRight']) moveX += 1;
-  const movingNow = !(moveX === 0 && moveZ === 0);
-  const paceRate = (keyMap['ShiftLeft'] || keyMap['ShiftRight']) ? 9 : 6;
-  if (movingNow) {
-    const cameraYaw = G.camYaw || 0;
-    const worldMoveX = Math.cos(cameraYaw) * moveX + Math.sin(cameraYaw) * moveZ;
-    const worldMoveZ = Math.cos(cameraYaw) * moveZ - Math.sin(cameraYaw) * moveX;
-    const moveLen = Math.hypot(worldMoveX, worldMoveZ) || 1;
-    pl.x += (worldMoveX / moveLen) * paceRate * dt; pl.z += (worldMoveZ / moveLen) * paceRate * dt;
-    pl.angle = Math.atan2(worldMoveX / moveLen, worldMoveZ / moveLen);
-    pl.phase += dt * paceRate * 1.9;
-    pl.speed = paceRate;
-  } else pl.speed = 0;
-  G.colliders.forEach((collider) => {
-    const deltaX = pl.x - collider.x, deltaZ = pl.z - collider.z;
-    const penAlongX = collider.hw + 0.45 - Math.abs(deltaX), penAlongZ = collider.hd + 0.45 - Math.abs(deltaZ);
-    if (penAlongX > 0 && penAlongZ > 0) { if (penAlongZ > penAlongX) pl.x += (deltaX >= 0 ? penAlongX : -penAlongX); else pl.z += (deltaZ >= 0 ? penAlongZ : -penAlongZ); } });
-  pl.x = Math.max(-655, Math.min(655, pl.x)); pl.z = Math.max(-655, Math.min(655, pl.z));
-  pl.fig.position.set(pl.x, groundH(pl.x, pl.z), pl.z);
-  pl.fig.rotation.y = pl.angle;
-  pl.elapsed = (pl.elapsed || 0) + dt;
-  if (pl.figIsGlb && pl.glbInner) {
-    const innerGroup = pl.glbInner;
-    const paceFraction = Math.min(1, Math.abs(pl.speed || 0) / 9);
-    if (movingNow) {
-      innerGroup.position.y = Math.abs(Math.sin(pl.phase)) * 0.045;
-      innerGroup.rotation.z = Math.sin(pl.phase) * 0.035;
-      innerGroup.rotation.x = paceFraction * 0.05;
+  if (!rigGiven.legL) return;
+  const swingSecond = Math.sin((phaseGiven + Math.PI));
+  const swingFirst = Math.sin(phaseGiven);
+  const swingPlan = [[rigGiven.legL, swingFirst], [rigGiven.legR, swingSecond]];
+  swingPlan.forEach(([jointGiven, swingGiven]) => { jointGiven.rotation.x = ((swingGiven * 0.55) * amountGiven); });
+  rigGiven.kneeL.rotation.x = ((Math.max(0, -swingSecond) * 0.6) * amountGiven); rigGiven.kneeR.rotation.x = ((Math.max(0, -swingFirst) * 0.6) * amountGiven);
+  rigGiven.armL.rotation.x = ((swingSecond * 0.4) * amountGiven); rigGiven.armR.rotation.x = ((swingFirst * 0.4) * amountGiven);
+  rigGiven.foreL.rotation.x = (-0.25 + (-((Math.max(0, swingFirst) * 0.3) * amountGiven))); rigGiven.foreR.rotation.x = (-0.25 + (-((Math.max(0, swingSecond) * 0.3) * amountGiven)));
+  const liftIdle = (amountGiven < 0.05) ? (Math.sin(phaseGiven * 0.35) * 0.006) : 0;
+  rigGiven.torsoG.position.y = (((rigGiven.H * 0.48) + ((Math.abs(Math.sin(phaseGiven)) * 0.03) * amountGiven)) + liftIdle);
+  rigGiven.headG.rotation.x = (Math.sin(phaseGiven * 0.5) * 0.03); }
+export function poseSeated(figureGiven) {
+  const rigGiven = figureGiven.userData; if (!rigGiven) return;
+  rigGiven.seated = true;
+  if (rigGiven.figIsGlb && rigGiven.glbInner) { rigGiven.glbInner.position.y = -0.55; return; }
+  if (!rigGiven.legL) return;
+  const bendHip = (0.12 + (-(Math.PI / 2)));
+  const bendKnee = ((Math.PI / 2) + (-0.15));
+  const pairHip = [rigGiven.legL, rigGiven.legR];
+  pairHip.forEach((jointGiven) => { jointGiven.rotation.x = bendHip; });
+  const pairKnee = [rigGiven.kneeL, rigGiven.kneeR];
+  pairKnee.forEach((jointGiven) => { jointGiven.rotation.x = bendKnee; });
+  const pairArm = [rigGiven.armL, rigGiven.armR];
+  pairArm.forEach((jointGiven) => { jointGiven.rotation.x = -0.85; });
+  rigGiven.armL.rotation.z = 0.3; rigGiven.armR.rotation.z = -0.3;
+  const pairFore = [rigGiven.foreL, rigGiven.foreR];
+  pairFore.forEach((jointGiven) => { jointGiven.rotation.x = -0.35; });
+  rigGiven.torsoG.position.y = (rigGiven.H * 0.48); }
+export function createPlayer(stateGiven) {
+  startMcLoad();
+  const grpOuter = new THREE.Group();
+  const figureProc = makeFigure(CAST.ren);
+  grpOuter.add(figureProc);
+  const bornX = -412.5;
+  const bornZ = 470;
+  grpOuter.position.set(bornX, groundH(bornX, bornZ), bornZ);
+  grpOuter.rotation.y = Math.PI;
+  stateGiven.scene.add(grpOuter);
+  const recordPlayer = { fig: grpOuter, procFig: figureProc, visual: figureProc, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x: bornX, z: bornZ, angle: Math.PI, phase: 0, speed: 0, health: 100 };
+  stateGiven.player = recordPlayer;
+  const swappedNow = tryMcSwap(recordPlayer);
+  if (!swappedNow) waitersMc.add(recordPlayer);
+  return recordPlayer; }
+function directionFromKeys(keysGiven) {
+  let dirX = 0, dirZ = 0;
+  if (keysGiven['KeyW'] || keysGiven['ArrowUp']) dirZ += 1;
+  if (keysGiven['KeyS'] || keysGiven['ArrowDown']) dirZ -= 1;
+  if (keysGiven['KeyA'] || keysGiven['ArrowLeft']) dirX -= 1;
+  if (keysGiven['KeyD'] || keysGiven['ArrowRight']) dirX += 1;
+  const dirOut = { inputX: dirX, inputZ: dirZ };
+  return dirOut; }
+function pushOutOfColliders(stateGiven, playerGiven) {
+  for (const colliderGiven of stateGiven.colliders) {
+    const offX = (playerGiven.x + (-colliderGiven.x)), offZ = (playerGiven.z + (-colliderGiven.z));
+    const penX = ((colliderGiven.hw + 0.45) + (-Math.abs(offX)));
+    const penZ = ((colliderGiven.hd + 0.45) + (-Math.abs(offZ)));
+    const touching = (penX > 0) && (penZ > 0);
+    if (!touching) continue;
+    if (penZ > penX) playerGiven.x += (offX >= 0) ? penX : -penX;
+    else playerGiven.z += (offZ >= 0) ? penZ : -penZ; } }
+function animatePlayerFigure(stateGiven, playerGiven, movingGiven) {
+  if (playerGiven.figIsGlb && playerGiven.glbInner) {
+    const holderGiven = playerGiven.glbInner;
+    const sharePace = Math.min(1, (Math.abs(playerGiven.speed || 0) / 9));
+    if (movingGiven) {
+      holderGiven.position.y = (Math.abs(Math.sin(playerGiven.phase)) * 0.045);
+      holderGiven.rotation.z = (Math.sin(playerGiven.phase) * 0.035);
+      holderGiven.rotation.x = (sharePace * 0.05);
     } else {
-      innerGroup.position.y = Math.sin(pl.elapsed * 1.6) * 0.008;
-      innerGroup.rotation.z = 0; innerGroup.rotation.x = 0; }
-    innerGroup.rotation.y = MC_YAW_CORRECTION;
-  } else animateFigure(pl.procFig || pl.fig, pl.phase, movingNow ? 1 : 0.04); }
+      holderGiven.position.y = (Math.sin(playerGiven.elapsed * 1.6) * 0.008);
+      holderGiven.rotation.z = 0; holderGiven.rotation.x = 0; }
+    holderGiven.rotation.y = MC_YAW_OFFSET;
+  } else animateFigure((playerGiven.procFig || playerGiven.fig), playerGiven.phase, movingGiven ? 1 : 0.04); }
+export function updatePlayer(stateGiven, dtGiven) {
+  const playerGiven = stateGiven.player;
+  const playerGone = !playerGiven || !playerGiven.fig.visible;
+  if (playerGone) return;
+  const keysGiven = stateGiven.keys;
+  const dirGiven = directionFromKeys(keysGiven);
+  const movingNow = !(dirGiven.inputX === 0 && dirGiven.inputZ === 0);
+  const sprintHeld = (keysGiven['ShiftLeft'] || keysGiven['ShiftRight']);
+  const speedPace = sprintHeld ? 9 : 6;
+  if (movingNow) {
+    const yawCam = (stateGiven.camYaw || 0);
+    const worldDirX = ((Math.cos(yawCam) * dirGiven.inputX) + (Math.sin(yawCam) * dirGiven.inputZ));
+    const worldDirZ = ((Math.cos(yawCam) * dirGiven.inputZ) + (-(Math.sin(yawCam) * dirGiven.inputX)));
+    const lenDir = (Math.hypot(worldDirX, worldDirZ) || 1);
+    playerGiven.x += (((worldDirX / lenDir) * speedPace) * dtGiven);
+    playerGiven.z += (((worldDirZ / lenDir) * speedPace) * dtGiven);
+    playerGiven.angle = Math.atan2((worldDirX / lenDir), (worldDirZ / lenDir));
+    playerGiven.phase += ((dtGiven * speedPace) * 1.9);
+    playerGiven.speed = speedPace;
+  } else playerGiven.speed = 0;
+  pushOutOfColliders(stateGiven, playerGiven);
+  playerGiven.x = Math.max(-655, Math.min(655, playerGiven.x));
+  playerGiven.z = Math.max(-655, Math.min(655, playerGiven.z));
+  playerGiven.fig.position.set(playerGiven.x, groundH(playerGiven.x, playerGiven.z), playerGiven.z);
+  playerGiven.fig.rotation.y = playerGiven.angle;
+  playerGiven.elapsed = ((playerGiven.elapsed || 0) + dtGiven);
+  animatePlayerFigure(stateGiven, playerGiven, movingNow); }

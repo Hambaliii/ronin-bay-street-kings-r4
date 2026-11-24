@@ -1,1770 +1,1330 @@
-// world.js — RONIN BAY itu sendiri: kubah langit gradien, terrain,
-// kisi jalan, bangunan, pantai, taman, HQ, pelabuhan dan pita touge,
-// plus penyegaran waktu-hari per frame.
-import * as THREE from 'three';
-import { CFG, DISTRICTS, TOUGE_POINTS, VICE } from './config.js';
-import { rnd, rr, ri, pick } from './random.js';
-import { loadHeroAsset } from './assets.js';
-let glowTexCache = null;
-function getGlowTexture() {
-  if (glowTexCache) return glowTexCache;
-  const lembar = document.createElement('canvas'); lembar.width = lembar.height = 128;
-  const sapu = lembar.getContext('2d');
-  const gradasi = sapu.createRadialGradient(64, 64, 2, 64, 64, 64);
-  gradasi.addColorStop(0, 'rgba(255,255,255,1)'); gradasi.addColorStop(0.4, 'rgba(255,255,255,.45)');
-  gradasi.addColorStop(1, 'rgba(255,255,255,0)');
-  sapu.fillStyle = gradasi; sapu.fillRect(0, 0, 128, 128);
-  glowTexCache = new THREE.CanvasTexture(lembar);
-  return glowTexCache; }
-// ---- kubah langit gradien plus kabut hangat ---------------------------
-const SKY_KEY_ROWS = [
-  [0, '#060a18', '#0e1830', '#16233f', '#101a2e'], [5, '#060a18', '#0e1830', '#16233f', '#101a2e'],
-  [7, '#3d6fb4', '#d9a06b', '#f2d5a0', '#e8c9a0'], [10.5, '#3a7bd5', '#8ec9e8', '#bfe3ef', '#cfe4ec'],
-  [16.5, '#3a6db0', '#c9b49a', '#f7d99a', '#ecd3a4'], [17.8, '#35507a', '#e8763a', '#ffc46b', '#f2c99a'],
-  [19.5, '#141e38', '#6a4a5a', '#c97a4a', '#7a5a4e'], [22, '#060a18', '#0e1830', '#16233f', '#101a2e'],
-  [24, '#060a18', '#0e1830', '#16233f', '#101a2e'],
-];
-const SKY_KEYFRAMES = [];
-for (const [jamBaris, hexAtas, hexTengah, hexHor, hexKabut] of SKY_KEY_ROWS) {
-  const entriKunci = {};
-  entriKunci.h = jamBaris; entriKunci.top = new THREE.Color(hexAtas); entriKunci.mid = new THREE.Color(hexTengah);
-  entriKunci.hor = new THREE.Color(hexHor); entriKunci.fog = new THREE.Color(hexKabut);
-  SKY_KEYFRAMES.push(entriKunci); }
-const skyTopCol = new THREE.Color(), skyMidCol = new THREE.Color(), skyHorCol = new THREE.Color(), skyFogCol = new THREE.Color();
-const skyWarmCol = new THREE.Color(0xffe0b8);
-function computeSkyColors(hourVal) {
-  // Telusuri tabel keyframe: idxKunci berakhir pada kunci terakhir
-  // yang jamnya sudah dicapai (dibatasi pada kunci kedua terakhir).
-  let idxKunci = 0;
-  for (let idxPindai = 1; idxPindai < SKY_KEYFRAMES.length - 1; ++idxPindai) {
-    if (SKY_KEYFRAMES[idxPindai].h > hourVal) break;
-    idxKunci = idxPindai; }
-  const kunciDari = SKY_KEYFRAMES[idxKunci], kunciKe = SKY_KEYFRAMES[idxKunci + 1];
-  const campurMentah = (hourVal - kunciDari.h) / Math.max(0.001, kunciKe.h - kunciDari.h);
-  const jumlahCampur = campurMentah < 0 ? 0 : campurMentah > 1 ? 1 : campurMentah;
-  skyTopCol.lerpColors(kunciDari.top, kunciKe.top, jumlahCampur);
-  skyMidCol.lerpColors(kunciDari.mid, kunciKe.mid, jumlahCampur);
-  skyHorCol.lerpColors(kunciDari.hor, kunciKe.hor, jumlahCampur);
-  skyFogCol.lerpColors(kunciDari.fog, kunciKe.fog, jumlahCampur); }
-let skySheet = null, skyBrush = null, skyTextureObj = null, skyDome = null, skyLastHour = -10;
-let glowSpritesList = [];
-function paintSkyDome() {
-  if (!skyBrush) return;
-  const gradasi = skyBrush.createLinearGradient(0, 0, 0, 512);
-  gradasi.addColorStop(0, '#' + skyTopCol.getHexString());
-  gradasi.addColorStop(0.55, '#' + skyMidCol.getHexString());
-  gradasi.addColorStop(1, '#' + skyHorCol.getHexString());
-  skyBrush.fillStyle = gradasi; skyBrush.fillRect(0, 0, 16, 512);
-  if (skyTextureObj) skyTextureObj.needsUpdate = true; }
-export function glowSprite(tintVal, sizeVal) {
-  const matSpr = new THREE.SpriteMaterial({ map: getGlowTexture(), color: tintVal, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85 });
-  const sprObj = new THREE.Sprite(matSpr);
-  sprObj.scale.set(sizeVal, sizeVal, 1);
-  return sprObj; }
-export function groundH(x, z) {
-  const geserX = x + 330, geserZ = z + 470;
-  const jarakNorm = ((geserX * geserX) + (geserZ * geserZ)) / (330 * 330);
-  let nilaiTinggi = 14 * Math.exp(-jarakNorm * 2.2);
-  if (x > -140 || z > -180) nilaiTinggi *= Math.max(0, Math.min(1, ((-140 - x) / 120 + 1)));
-  // Kisi kota tetap rata — bukit hanya naik di kuadran NW.
-  if (x > -100 || z > -100) nilaiTinggi = 0;
-  return nilaiTinggi; }
-function makeCanvasTexture(wVal, hVal, drawFn) {
-  const lembar = document.createElement('canvas'); lembar.width = wVal; lembar.height = hVal;
-  drawFn(lembar.getContext('2d'), wVal, hVal);
-  const texHasil = new THREE.CanvasTexture(lembar); texHasil.colorSpace = THREE.SRGBColorSpace; return texHasil; }
-function buildGroundTexture() {
-  // Tanah basis ialah permukaan terang hangat yang dirawat, tak
-  // pernah cucian olive/tanah datar lama. Tekstur per zona di bawah
-  // melakukan pekerjaan sesungguhnya; ini hanya tampil pada tepi
-  // yang tak ditutupi bidang zona.
-  return makeCanvasTexture(256, 256, (sapu) => {
-    sapu.fillStyle = VICE.ground.base;
-    sapu.fillRect(0, 0, 256, 256);
-    for (let idxBintik = 0; idxBintik < 900; ++idxBintik) { sapu.fillStyle = `rgba(${190 + ri(0, 50)},${175 + ri(0, 45)},${140 + ri(0, 40)},.14)`; sapu.fillRect(rnd() * 256, rnd() * 256, 2, 2); }
-    for (let idxTambal = 0; idxTambal < 26; ++idxTambal) { sapu.fillStyle = 'rgba(255,250,235,.06)'; sapu.fillRect(rnd() * 256, rnd() * 256, rr(18, 46), rr(12, 30)); }
-    sapu.strokeStyle = 'rgba(120,110,90,.10)'; sapu.strokeRect(0, 0, 256, 256); }); }
-// ---- perlakuan tanah: tekstur kanvas kecil, diubin ----------------
-// (a) kisi lempeng paving untuk trotoar / plaza / Coral + downtown
-const buildPavingTexture = () => {
-  const texHasil = makeCanvasTexture(128, 128, (sapu) => {
-    sapu.fillStyle = VICE.ground.paving;
-    sapu.fillRect(0, 0, 128, 128);
-    sapu.fillStyle = VICE.ground.pavingAlt;
-    sapu.fillRect(64, 0, 64, 64); sapu.fillRect(0, 64, 64, 64);
-    for (let idxBintik = 0; idxBintik < 260; ++idxBintik) { sapu.fillStyle = `rgba(${150 + ri(0, 60)},${145 + ri(0, 50)},${120 + ri(0, 40)},.13)`; sapu.fillRect(rnd() * 128, rnd() * 128, 2, 2); }
-    sapu.strokeStyle = VICE.ground.pavingGrout;
-    sapu.lineWidth = 3;
-    sapu.strokeRect(0, 0, 128, 128);
-    sapu.beginPath();
-    sapu.moveTo(64, 0); sapu.lineTo(64, 128); sapu.moveTo(0, 64); sapu.lineTo(128, 64);
-    sapu.stroke(); });
-  texHasil.wrapS = texHasil.wrapT = THREE.RepeatWrapping;
-  return texHasil; };
-// (b) rumput jenuh untuk taman / halaman Hoshino Heights + bukit
-const buildGrassTexture = () => {
-  const texHasil = makeCanvasTexture(128, 128, (sapu) => {
-    sapu.fillStyle = VICE.ground.grass;
-    sapu.fillRect(0, 0, 128, 128);
-    for (let idxBilah = 0; idxBilah < 700; ++idxBilah) { sapu.fillStyle = rnd() < 0.5 ? VICE.ground.grassLight : VICE.ground.grassDark; sapu.globalAlpha = rr(0.12, 0.3); sapu.fillRect(rnd() * 128, rnd() * 128, 2, rr(2, 4)); }
-    sapu.globalAlpha = 1;
+// Wave-8 pass: terrain, textures, housing, the market, beach and boulevard.
+// Builders below were re-decomposed; placement and draw order are unchanged.
+import * as THREE from 'three'; import {
+  CFG, DISTRICTS, TOUGE_POINTS, VICE }
+from './config.js'; import {
+  rnd, rr, ri, pick }
+from './random.js'; import {
+  loadHeroAsset }
+from './assets.js'; let zW8CacheTexPijar = null; function zW8GetGlowTexture() {
+  if (zW8CacheTexPijar) return zW8CacheTexPijar; const zW8KanvasPijar = document.createElement('canvas'); zW8KanvasPijar.height = 128;
+  zW8KanvasPijar.width = zW8KanvasPijar.height; const zW8KuasPijar = zW8KanvasPijar.getContext('2d');
+  const zW8RadialPijar = zW8KuasPijar.createRadialGradient(64, 64, 2, 64, 64, 64); zW8RadialPijar.addColorStop(0, 'rgba(255,255,255,1)');
+  zW8RadialPijar.addColorStop(0.4, 'rgba(255,255,255,.45)'); zW8RadialPijar.addColorStop(1, 'rgba(255,255,255,0)'); zW8KuasPijar.fillStyle = zW8RadialPijar;
+  zW8KuasPijar.fillRect(0, 0, 128, 128); zW8CacheTexPijar = new THREE.CanvasTexture(zW8KanvasPijar); return zW8CacheTexPijar; }
+
+const zW8SKY_KEY_ROWS = [[0, '#060a18', '#0e1830', '#16233f', '#101a2e'], [5, '#060a18', '#0e1830', '#16233f', '#101a2e'], [7, '#3d6fb4', '#d9a06b', '#f2d5a0', '#e8c9a0'], [10.5, '#3a7bd5', '#8ec9e8', '#bfe3ef', '#cfe4ec'], [16.5, '#3a6db0', '#c9b49a', '#f7d99a', '#ecd3a4'], [17.8, '#35507a', '#e8763a', '#ffc46b', '#f2c99a'], [19.5, '#141e38', '#6a4a5a', '#c97a4a', '#7a5a4e'], [22, '#060a18', '#0e1830', '#16233f', '#101a2e'], [24, '#060a18', '#0e1830', '#16233f', '#101a2e'],];
+const zW8SKY_KEYFRAMES = []; zW8SKY_KEY_ROWS.forEach(([zW8JamBaris, zW8HexAtas, zW8HexTengah, zW8HexHor, zW8HexKabut]) => {
+    const zW8RekKunci = {
+  }; zW8RekKunci.h = zW8JamBaris; zW8RekKunci.top = new THREE.Color(zW8HexAtas); zW8RekKunci.mid = new THREE.Color(zW8HexTengah);
+  zW8RekKunci.hor = new THREE.Color(zW8HexHor); zW8RekKunci.fog = new THREE.Color(zW8HexKabut); zW8SKY_KEYFRAMES.push(zW8RekKunci); });
+const zW8WarnaLangitAtas = new THREE.Color(), zW8WarnaLangitTengah = new THREE.Color(), zW8WarnaLangitHor = new THREE.Color(), zW8WarnaKabutLangit = new THREE.Color();
+const zW8WarnaLangitHangat = new THREE.Color(0xffe0b8); function zW8ComputeSkyColors(zW8JamNilai) {
+
+  let zW8IdxKunciAktif = 0; let zW8IdxPindai = 1;
+    while (zW8IdxPindai < zW8SKY_KEYFRAMES.length - 1) {
+    if (zW8SKY_KEYFRAMES[zW8IdxPindai].h > zW8JamNilai) break; zW8IdxKunciAktif = zW8IdxPindai; ++ zW8IdxPindai; }
+  const zW8KunciAwal = zW8SKY_KEYFRAMES[zW8IdxKunciAktif], zW8KunciTujuan = zW8SKY_KEYFRAMES[zW8IdxKunciAktif + 1];
+  const zW8FraksiMentah = (zW8JamNilai - (zW8KunciAwal.h)) / Math.max(0.001, zW8KunciTujuan.h - (zW8KunciAwal.h));
+  const zW8FraksiCampur = zW8FraksiMentah < 0 ? 0 : zW8FraksiMentah > 1 ? 1 : zW8FraksiMentah;
+  zW8WarnaLangitAtas.lerpColors(zW8KunciAwal.top, zW8KunciTujuan.top, zW8FraksiCampur);
+  zW8WarnaLangitTengah.lerpColors(zW8KunciAwal.mid, zW8KunciTujuan.mid, zW8FraksiCampur);
+  zW8WarnaLangitHor.lerpColors(zW8KunciAwal.hor, zW8KunciTujuan.hor, zW8FraksiCampur);
+  zW8WarnaKabutLangit.lerpColors(zW8KunciAwal.fog, zW8KunciTujuan.fog, zW8FraksiCampur); }
+let zW8LembarLangit = null, zW8KuasLangit = null, zW8TexLangitObj = null, zW8KubahLangit = null, zW8JamLangitTerakhir = - 10; let zW8DaftarSpritePijar = [];
+  function zW8PaintSkyDome() {
+  if (! zW8KuasLangit) return; const zW8GradienLangit = zW8KuasLangit.createLinearGradient(0, 0, 0, 512);
+  zW8GradienLangit.addColorStop(0, '#' + zW8WarnaLangitAtas.getHexString()); zW8GradienLangit.addColorStop(0.55, '#' + zW8WarnaLangitTengah.getHexString());
+  zW8GradienLangit.addColorStop(1, '#' + zW8WarnaLangitHor.getHexString()); zW8KuasLangit.fillStyle = zW8GradienLangit; zW8KuasLangit.fillRect(0, 0, 16, 512);
+  if (zW8TexLangitObj) zW8TexLangitObj.needsUpdate = true; }
+  export function glowSprite(zW8NadaPijar, zW8UkuranPijar) {
+    const zW8MatSpritePijar = new THREE.SpriteMaterial({
+    map : zW8GetGlowTexture(), color : zW8NadaPijar, transparent : true, blending : THREE.AdditiveBlending, depthWrite : false, opacity : 0.85
+  }); const zW8SpritePijarBaru = new THREE.Sprite(zW8MatSpritePijar); zW8SpritePijarBaru.scale.set (zW8UkuranPijar, zW8UkuranPijar, 1); return zW8SpritePijarBaru; }
+  export function groundH(x, z) {
+  const zW8OffsetX = 330 + x, zW8OffsetZ = 470 + z; const zW8JarakKuadratNorm = ((zW8OffsetX * zW8OffsetX) + (zW8OffsetZ * zW8OffsetZ)) / (330 * 330);
+  let zW8TinggiTanah = Math.exp(- zW8JarakKuadratNorm * 2.2) * 14; if (x > - 140 || z > - 180) zW8TinggiTanah *= Math.max(0, Math.min(1, ((- 140 - (x)) / 120) + 1));
+
+  if (x > - 100 || z > - 100) zW8TinggiTanah = 0; return zW8TinggiTanah; }
+  function zW8MakeCanvasTexture(zW8LebarVal, zW8TinggiVal, zW8FungsiGambar) {
+  const zW8KanvasBaru = document.createElement('canvas'); zW8KanvasBaru.width = zW8LebarVal; zW8KanvasBaru.height = zW8TinggiVal;
+  zW8FungsiGambar(zW8KanvasBaru.getContext('2d'), zW8LebarVal, zW8TinggiVal); const zW8TexKanvas = new THREE.CanvasTexture(zW8KanvasBaru);
+  zW8TexKanvas.colorSpace = THREE.SRGBColorSpace; return zW8TexKanvas; }
+  function zW8BuildGroundTexture() {
+
+    return zW8MakeCanvasTexture(256, 256, (zW8Kuas) => {
+    zW8Kuas.fillStyle = VICE.ground.base; zW8Kuas.fillRect(0, 0, 256, 256);
+      for (let zW8IdxBintik = 0; zW8IdxBintik < 900; ++ zW8IdxBintik) {
+      zW8Kuas.fillStyle = `rgba(${190 + ri(0, 50)},${175 + ri(0, 45)},${140 + ri(0, 40)},.14)`;
+      zW8Kuas.fillRect(rnd() * 256, rnd() * 256, 2, 2); }
+    let zW8IdxTambal = 0;
+      while (zW8IdxTambal < 26) {
+      zW8Kuas.fillStyle = 'rgba(255,250,235,.06)'; zW8Kuas.fillRect(rnd() * 256, rnd() * 256, rr(18, 46), rr(12, 30)); ++ zW8IdxTambal; }
+    zW8Kuas.strokeStyle = 'rgba(120,110,90,.10)'; zW8Kuas.strokeRect(0, 0, 256, 256); }); }
+
+  const zW8BuildPavingTexture = () => {
+    const zW8TexPaving = zW8MakeCanvasTexture(128, 128, (zW8KuasQ) => {
+    zW8KuasQ.fillStyle = VICE.ground.paving; zW8KuasQ.fillRect(0, 0, 128, 128); zW8KuasQ.fillStyle = VICE.ground.pavingAlt; zW8KuasQ.fillRect(64, 0, 64, 64);
+    zW8KuasQ.fillRect(0, 64, 64, 64); for (let zW8IdxBintikQ = 0; ! (zW8IdxBintikQ >= 260); ++ zW8IdxBintikQ) {
+      zW8KuasQ.fillStyle = `rgba(${150 + ri(0, 60)},${145 + ri(0, 50)},${120 + ri(0, 40)},.13)`;
+      zW8KuasQ.fillRect(rnd() * 128, rnd() * 128, 2, 2); }
+    zW8KuasQ.strokeStyle = VICE.ground.pavingGrout; zW8KuasQ.lineWidth = 3; zW8KuasQ.strokeRect(0, 0, 128, 128); zW8KuasQ.beginPath(); zW8KuasQ.moveTo(64, 0);
+    zW8KuasQ.lineTo(64, 128); zW8KuasQ.moveTo(0, 64); zW8KuasQ.lineTo(128, 64); zW8KuasQ.stroke();
+  }); zW8TexPaving.wrapS = zW8TexPaving.wrapT = THREE.RepeatWrapping; return zW8TexPaving; };
+
+  const zW8BuildGrassTexture = () => {
+    const zW8TexRumput = zW8MakeCanvasTexture(128, 128, (zW8KuasQQ) => {
+    zW8KuasQQ.fillStyle = VICE.ground.grass; zW8KuasQQ.fillRect(0, 0, 128, 128); for (let zW8IdxBilah = 0; zW8IdxBilah < 700; ++ zW8IdxBilah) {
+      zW8KuasQQ.fillStyle = ! (rnd() < 0.5) ? VICE.ground.grassDark : VICE.ground.grassLight; zW8KuasQQ.globalAlpha = rr(0.12, 0.3);
+      zW8KuasQQ.fillRect(rnd() * 128, rnd() * 128, 2, rr(2, 4)); }
+    zW8KuasQQ.globalAlpha = 1;
+  }); zW8TexRumput.wrapS = zW8TexRumput.wrapT = THREE.RepeatWrapping; return zW8TexRumput; };
+
+  const zW8BuildSandTexture = () => {
+    const zW8TexPasir = zW8MakeCanvasTexture(128, 128, (zW8KuasQQQ) => {
+    zW8KuasQQQ.fillStyle = VICE.ground.sand; zW8KuasQQQ.fillRect(0, 0, 128, 128); for (let zW8IdxButir = 0; zW8IdxButir < 500; ++ zW8IdxButir) {
+      zW8KuasQQQ.fillStyle = ! (rnd() < 0.6) ? '#fff3cf' : VICE.ground.sandSpeckle; zW8KuasQQQ.globalAlpha = rr(0.1, 0.28);
+      zW8KuasQQQ.fillRect(rnd() * 128, rnd() * 128, 2, 2); }
+    zW8KuasQQQ.globalAlpha = 1;
+  }); zW8TexPasir.wrapS = zW8TexPasir.wrapT = THREE.RepeatWrapping; return zW8TexPasir;
+}; const zW8MakeGrassMat = (zW8UlangX, zW8UlangY) => {
+  const zW8TexRumputQ = zW8BuildGrassTexture(); zW8TexRumputQ.repeat.set (zW8UlangX, zW8UlangY); return new THREE.MeshStandardMaterial({
+    map : zW8TexRumputQ, roughness : 1 });
+}; const zW8MakePavingMat = (zW8UlangXQ, zW8UlangYQ, zW8NadaVal) => {
+  const zW8TexPavingQ = zW8BuildPavingTexture(); zW8TexPavingQ.repeat.set (zW8UlangXQ, zW8UlangYQ); return new THREE.MeshStandardMaterial({
+    map : zW8TexPavingQ, color : zW8NadaVal || 0xffffff, roughness : 1 });
+}; const zW8LIT_WINDOW_TONES = ['#ffd9a0', '#ffc98a', '#fff3d0', '#ffe9b8', '#bfe0ff', '#9fd4ff',];
+  const zW8BuildBuildingTexture = (zW8WarnaDasar, zW8PeluangNyala) => zW8MakeCanvasTexture(128, 256, (zW8KuasQQQQ, zW8LebarValQ, zW8TinggiValQ) => {
+  zW8KuasQQQQ.fillStyle = zW8WarnaDasar; zW8KuasQQQQ.fillRect(0, 0, zW8LebarValQ, zW8TinggiValQ);
+    for (let zW8BarisY = 8; zW8BarisY < zW8TinggiValQ - 8; zW8BarisY += 14) for (let zW8KolomX = 6; zW8KolomX < zW8LebarValQ - 6; zW8KolomX += 14) {
+    const zW8IalahNyala = rnd() < zW8PeluangNyala; zW8KuasQQQQ.fillStyle = zW8IalahNyala ? zW8LIT_WINDOW_TONES[Math.floor(rnd() * (rnd() < 0.72 ? 4 : 6))] : '#2c3844';
+    zW8KuasQQQQ.fillRect(zW8KolomX, zW8BarisY, 9, 8); zW8KuasQQQQ.fillStyle = 'rgba(255,255,255,.15)'; zW8KuasQQQQ.fillRect(zW8KolomX, zW8BarisY, 9, 2); }
+}); const zW8BuildSignTexture = (zW8TeksLabel, zW8WarnaLatar, zW8WarnaDepan) => zW8MakeCanvasTexture(256, 64, (zW8KuasQQQQQ, zW8LebarValQQ, zW8TinggiValQQ) => {
+  zW8KuasQQQQQ.fillStyle = zW8WarnaLatar; zW8KuasQQQQQ.fillRect(0, 0, zW8LebarValQQ, zW8TinggiValQQ); zW8KuasQQQQQ.font = 'bold 34px sans-serif';
+  zW8KuasQQQQQ.textAlign = 'center'; zW8KuasQQQQQ.textBaseline = 'middle'; zW8KuasQQQQQ.shadowColor = zW8WarnaDepan; zW8KuasQQQQQ.shadowBlur = 12;
+  zW8KuasQQQQQ.fillStyle = zW8WarnaDepan; zW8KuasQQQQQ.fillText(zW8TeksLabel, zW8LebarValQQ / 2, zW8TinggiValQQ / 2);
+}); export function makePalm(zW8TinggiValQQQ) {
+  const zW8GrupPalemBaru = new THREE.Group(); const zW8MatBatangPalem = new THREE.MeshStandardMaterial({
+    color : 0x8a6b4a, roughness : 0.95 });
+  const zW8KurvaBatangPalem = new THREE.QuadraticBezierCurve3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.15, zW8TinggiValQQQ * 0.55, 0), new THREE.Vector3(0.55, zW8TinggiValQQQ, 0));
+  const zW8MeshBatangPalem = new THREE.Mesh(new THREE.TubeGeometry(zW8KurvaBatangPalem, 6, 0.14, 6), zW8MatBatangPalem); zW8GrupPalemBaru.add(zW8MeshBatangPalem);
+  const zW8TitikPuncak = zW8KurvaBatangPalem.getPoint(1); const zW8MatDaunPalem = new THREE.MeshStandardMaterial({
+    vertexColors : true, side : THREE.DoubleSide, roughness : 0.9
+  }); let zW8IdxDaun = 0;
+    while (zW8IdxDaun < 8) {
+    const zW8LenDaun = rr(2.0, 2.4); const zW8GeoDaunBaru = new THREE.PlaneGeometry(0.5, zW8LenDaun, 1, 6); const zW8AttrPosisi = zW8GeoDaunBaru.attributes.position;
+    const zW8DaftarWarnaDaun = []; const zW8WarnaAwalDaun = new THREE.Color(0x2e7d32); const zW8WarnaAkhirDaun = new THREE.Color(0x66bb4a);
+    const zW8WarnaCoretDaun = new THREE.Color(); for (let zW8IdxVertex = 0; zW8IdxVertex < zW8AttrPosisi.count; ++ zW8IdxVertex) {
+      const zW8VertexY = zW8AttrPosisi.getY(zW8IdxVertex); const zW8FraksiDaun = (zW8VertexY + (zW8LenDaun / 2)) / zW8LenDaun;
+      zW8AttrPosisi.setZ(zW8IdxVertex, - (Math.pow(zW8FraksiDaun, 2) * 0.9));
+      zW8AttrPosisi.setX(zW8IdxVertex, zW8AttrPosisi.getX(zW8IdxVertex) * (1 - (zW8FraksiDaun * 0.7)));
+      zW8WarnaCoretDaun.copy(zW8WarnaAwalDaun).lerp(zW8WarnaAkhirDaun, zW8FraksiDaun);
+      zW8DaftarWarnaDaun.push(zW8WarnaCoretDaun.r, zW8WarnaCoretDaun.g, zW8WarnaCoretDaun.b); }
+    zW8GeoDaunBaru.setAttribute('color', new THREE.Float32BufferAttribute(zW8DaftarWarnaDaun, 3)); zW8GeoDaunBaru.computeVertexNormals();
+    const zW8MeshDaunBaru = new THREE.Mesh(zW8GeoDaunBaru, zW8MatDaunPalem); zW8MeshDaunBaru.position.copy(zW8TitikPuncak); zW8MeshDaunBaru.rotation.order = 'YXZ';
+    zW8MeshDaunBaru.rotation.y = ((zW8IdxDaun / 8) * 2 * Math.PI) + rr(- 0.2, 0.2); zW8MeshDaunBaru.rotation.x = (- Math.PI / 2) + rr(0.35, 0.6);
+    zW8MeshDaunBaru.translateY((zW8LenDaun / 2) - 0.1); zW8GrupPalemBaru.add(zW8MeshDaunBaru); ++ zW8IdxDaun; }
+    zW8GrupPalemBaru.traverse((zW8ObjNode) => {
+    if (zW8ObjNode.isMesh) zW8ObjNode.castShadow = true;
+  }); return zW8GrupPalemBaru; }
+  export function makeShadeTree(zW8TinggiValQQQQ, zW8WarnaKanopi) {
+  const zW8GrupPohonBaru = new THREE.Group();
+    const zW8MeshBatangPohon = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.2, zW8TinggiValQQQQ * 0.55, 7), new THREE.MeshStandardMaterial({
+    color : 0x6b4a2f, roughness : 1
+  })); zW8MeshBatangPohon.position.y = zW8TinggiValQQQQ * 0.275; zW8GrupPohonBaru.add(zW8MeshBatangPohon); const zW8MatKanopiPohon = new THREE.MeshStandardMaterial({
+    color : zW8WarnaKanopi || 0x3d8b4f, roughness : 1, flatShading : true
+  }); for (let zW8IdxGumpal = 0; ! (zW8IdxGumpal >= 3); ++ zW8IdxGumpal) {
+    const zW8RadiusGumpalBaru = rr(0.28, 0.4) * zW8TinggiValQQQQ;
+    const zW8MeshGumpalBaru = new THREE.Mesh(new THREE.IcosahedronGeometry(zW8RadiusGumpalBaru, 1), zW8MatKanopiPohon);
+    zW8MeshGumpalBaru.position.set (rr(- 0.5, 0.5), (zW8TinggiValQQQQ * 0.55) + rr(0, zW8TinggiValQQQQ * 0.3), rr(- 0.5, 0.5)); zW8GrupPohonBaru.add(zW8MeshGumpalBaru); }
+  return zW8GrupPohonBaru; }
+
+  const zW8MARKET = {
+}; zW8MARKET.x = - 82.5; zW8MARKET.z = - 255; zW8MARKET.name = 'RONIN MART'; const zW8CacheMatStd = new Map();
+  function zW8SharedStdMat(zW8WarnaVal, zW8KasarVal, zW8LogamVal) {
+  const zW8KunciMat = zW8WarnaVal + '|' + (zW8KasarVal || 0.95) + '|' + (zW8LogamVal || 0);
+    if (! zW8CacheMatStd.has(zW8KunciMat)) zW8CacheMatStd.set (zW8KunciMat, new THREE.MeshStandardMaterial({
+    color : zW8WarnaVal, roughness : zW8KasarVal || 0.95, metalness : zW8LogamVal || 0
+  })); return zW8CacheMatStd.get (zW8KunciMat); }
+  const zW8TougeDistance = (x, z) => {
+  let zW8JarakMinimum = 1e9; TOUGE_POINTS.slice(0, - 1).forEach((zW8TitikA, zW8IdxSeg) => {
+    const zW8AxVal = zW8TitikA[0], zW8AzVal = zW8TitikA[1], zW8BxVal = TOUGE_POINTS[zW8IdxSeg + 1][0], zW8BzVal = TOUGE_POINTS[zW8IdxSeg + 1][1];
+    const zW8DeltaSegX = zW8BxVal - (zW8AxVal), zW8DeltaSegZ = zW8BzVal - (zW8AzVal);
+    const zW8PanjangSegKuadrat = ((zW8DeltaSegX * zW8DeltaSegX) + (zW8DeltaSegZ * zW8DeltaSegZ)) || 1;
+    let zW8ParameterT = (((x - (zW8AxVal)) * zW8DeltaSegX) + ((z - (zW8AzVal)) * zW8DeltaSegZ)) / zW8PanjangSegKuadrat;
+    zW8ParameterT = Math.max(0, Math.min(1, zW8ParameterT));
+    const zW8JarakKandidat = Math.hypot(x + (- (zW8AxVal + (zW8DeltaSegX * zW8ParameterT))), z + (- (zW8AzVal + (zW8DeltaSegZ * zW8ParameterT))));
+    if (zW8JarakKandidat < zW8JarakMinimum) zW8JarakMinimum = zW8JarakKandidat;
+  }); return zW8JarakMinimum;
+}; function zW8MakePrismGeo(zW8LebarValQQQ, zW8TinggiValQQQQQ, zW8DalamVal) {
+  const zW8SiluetPrisma = new THREE.Shape(); zW8SiluetPrisma.moveTo(- zW8LebarValQQQ / 2, 0); zW8SiluetPrisma.lineTo(zW8LebarValQQQ / 2, 0);
+  zW8SiluetPrisma.lineTo(0, zW8TinggiValQQQQQ); zW8SiluetPrisma.closePath(); const zW8GeoPrisma = new THREE.ExtrudeGeometry(zW8SiluetPrisma, {
+    depth : zW8DalamVal, bevelEnabled : false
+  }); zW8GeoPrisma.translate(0, 0, - zW8DalamVal / 2); return zW8GeoPrisma; }
+const zW8HOUSE_WALL_COLOURS = ['#f2e3c8', '#eec9b8', '#dfe8d8', '#f5d9e0', '#dcebf5', '#f7ecc9', '#e6d7f0', '#ffe8cc',];
+const zW8HOUSE_ROOF_COLOURS = [0xb5523c, 0x8a4a3a, 0x5d6d7e, 0xa03d2d, 0x6b4a35, 0x44586a, 0xc96f4a,];
+const zW8HOUSE_YARD_GREENS = [0x5d9a52, 0x67a35a, 0x548c4c, 0x71ab60,]; const zW8HouseWinMat = new THREE.MeshStandardMaterial({
+  color : 0xbfe0ea, roughness : 0.25, metalness : 0.4, emissive : 0xffc873, emissiveIntensity : 0.35
+}); let zW8WarnaDindingTerakhir = null; function zW8ConstructHouse(G, zW8Scene, zW8Hx, zW8Hz, zW8ArahHadap) {
+  const zW8GrupRumahBaru = new THREE.Group(); zW8GrupRumahBaru.position.set (zW8Hx, groundH(zW8Hx, zW8Hz), zW8Hz);
+  zW8GrupRumahBaru.rotation.y = zW8ArahHadap > 0 ? 0 : Math.PI; const zW8IalahDuaLantai = rnd() < 0.45;
+  const zW8WidRumah = rr(9, 12), zW8DepRumah = rr(8, 10), zW8TinggiDindingRumah = zW8IalahDuaLantai ? rr(5.2, 6) : rr(2.9, 3.4); const zW8TinggiAtapRumah = rr(1.8, 2.6);
+
+  const zW8MeshLotRumah = new THREE.Mesh(new THREE.PlaneGeometry(30, 25), zW8MakePavingMat(6, 5)); void zW8HOUSE_YARD_GREENS; zW8MeshLotRumah.rotation.x = - Math.PI / 2;
+  zW8MeshLotRumah.position.y = 0.03; zW8GrupRumahBaru.add(zW8MeshLotRumah);
+  const zW8MeshDriveRumah = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 8.5), zW8SharedStdMat(0x9a9a96, 1)); zW8MeshDriveRumah.rotation.x = - Math.PI / 2;
+  zW8MeshDriveRumah.position.set (zW8WidRumah * - 0.28, 0.05, (zW8DepRumah / 2) + 4.2); zW8GrupRumahBaru.add(zW8MeshDriveRumah);
+  const zW8MatPagarRumah = zW8SharedStdMat(0x2e6b34, 1); const zW8MeshPagarBelakangRumah = new THREE.Mesh(new THREE.BoxGeometry(30, 0.55, 0.4), zW8MatPagarRumah);
+  zW8MeshPagarBelakangRumah.position.set (0, 0.28, - 12.3); zW8GrupRumahBaru.add(zW8MeshPagarBelakangRumah); [- 1, 1].forEach((zW8TandaSisi) => {
+    const zW8MeshPagarSisiRumah = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.55, 25), zW8MatPagarRumah);
+    zW8MeshPagarSisiRumah.position.set (zW8TandaSisi * 14.8, 0.28, 0); zW8GrupRumahBaru.add(zW8MeshPagarSisiRumah);
+  }); let zW8WarnaDindingRumah = pick(zW8HOUSE_WALL_COLOURS);
+  if (zW8WarnaDindingRumah === zW8WarnaDindingTerakhir) zW8WarnaDindingRumah = zW8HOUSE_WALL_COLOURS[(zW8HOUSE_WALL_COLOURS.indexOf(zW8WarnaDindingRumah) + 1) % zW8HOUSE_WALL_COLOURS.length];
+  zW8WarnaDindingTerakhir = zW8WarnaDindingRumah;
+  const zW8MeshDindingRumah = new THREE.Mesh(new THREE.BoxGeometry(zW8WidRumah, zW8TinggiDindingRumah, zW8DepRumah), zW8SharedStdMat(new THREE.Color(zW8WarnaDindingRumah).getHex(), 0.95));
+  zW8MeshDindingRumah.position.y = zW8TinggiDindingRumah / 2; zW8GrupRumahBaru.add(zW8MeshDindingRumah);
+  const zW8MeshAtapRumah = new THREE.Mesh(zW8MakePrismGeo(zW8WidRumah + 1.2, zW8TinggiAtapRumah, zW8DepRumah + 1), zW8SharedStdMat(pick(zW8HOUSE_ROOF_COLOURS), 0.9));
+  zW8MeshAtapRumah.position.y = zW8TinggiDindingRumah; zW8GrupRumahBaru.add(zW8MeshAtapRumah);
+  const zW8MeshPintuRumah = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.2), zW8SharedStdMat(0x4a3220, 0.9));
+  zW8MeshPintuRumah.position.set (zW8WidRumah * - 0.28, 1.1, (zW8DepRumah / 2) + 0.06); zW8GrupRumahBaru.add(zW8MeshPintuRumah);
+  const zW8DaftarBarisJendela = zW8IalahDuaLantai ? [1.9, 4.4] : [1.9]; zW8DaftarBarisJendela.forEach((zW8BarisYQ) => {
+      [0, zW8WidRumah * 0.3].forEach((zW8KolomXQ) => {
+      const zW8MeshJendelaRumah = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.1), zW8HouseWinMat);
+      zW8MeshJendelaRumah.position.set (zW8KolomXQ, zW8BarisYQ, (zW8DepRumah / 2) + 0.06); zW8GrupRumahBaru.add(zW8MeshJendelaRumah); });
+  }); if (rnd() < 0.4) {
+    const zW8MeshCerobongRumah = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.4, 0.7), zW8SharedStdMat(0x8a7a6a, 1));
+    zW8MeshCerobongRumah.position.set (zW8WidRumah * 0.3, zW8TinggiDindingRumah + (zW8TinggiAtapRumah * 0.55), 0); zW8GrupRumahBaru.add(zW8MeshCerobongRumah); }
+    if (rnd() < 0.35) {
+    const zW8PohonHalamanRumah = makeShadeTree(rr(2.6, 3.4), 0x3d8b4f); zW8PohonHalamanRumah.position.set (11, 0, - 8); zW8GrupRumahBaru.add(zW8PohonHalamanRumah); }
+
+    zW8GrupRumahBaru.traverse((zW8ObjNodeQ) => {
+    if (zW8ObjNodeQ.isMesh) zW8ObjNodeQ.castShadow = true;
+  }); zW8MeshLotRumah.castShadow = false; zW8MeshLotRumah.receiveShadow = true; zW8MeshDriveRumah.castShadow = false; zW8MeshDriveRumah.receiveShadow = true;
+  zW8Scene.add(zW8GrupRumahBaru); G.addCollider(zW8Hx, zW8Hz, zW8WidRumah / 2, zW8DepRumah / 2, zW8TinggiDindingRumah + zW8TinggiAtapRumah); }
+  function zW8ConstructResidentialBlock(G, zW8SceneQ, zW8Cx, zW8Cz) { [{
+    dz : - 31, face : - 1 }, {
+    dz : 31, face : 1
+    }].forEach((zW8SpecBaris) => {
+      [- 57, - 19, 19, 57].forEach((zW8LokalX) => {
+      const zW8PosisiRumahX = (zW8Cx + zW8LokalX) + rr(- 3, 3), zW8PosisiRumahZ = (zW8Cz + zW8SpecBaris.dz) + rr(- 3, 3);
+      if (zW8TougeDistance(zW8PosisiRumahX, zW8PosisiRumahZ) < 16) return;
+      if (G.roadX.some((zW8NilaiJalan) => Math.abs(zW8PosisiRumahX - (zW8NilaiJalan)) < 26) || G.roadZ.some((zW8NilaiJalanQ) => Math.abs(zW8PosisiRumahZ - (zW8NilaiJalanQ)) < 26)) return;
+      zW8ConstructHouse(G, zW8SceneQ, zW8PosisiRumahX, zW8PosisiRumahZ, zW8SpecBaris.face); }); }); }
+  function zW8ConstructParkedCar(zW8WarnaCatVal) {
+  const zW8GrupMobilParkir = new THREE.Group(); const zW8MeshBadanParkir = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.55, 4.4), new THREE.MeshStandardMaterial({
+    color : zW8WarnaCatVal, roughness : 0.45, metalness : 0.35
+  })); zW8MeshBadanParkir.position.y = 0.55; zW8GrupMobilParkir.add(zW8MeshBadanParkir);
+  const zW8MeshKabinParkir = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.1), zW8SharedStdMat(0x1c2733, 0.2, 0.6)); zW8MeshKabinParkir.position.set (0, 1.05, - 0.15);
+  zW8GrupMobilParkir.add(zW8MeshKabinParkir); const zW8GeoRodaParkir = new THREE.CylinderGeometry(0.33, 0.33, 0.24, 10);
+  const zW8MatRodaParkir = zW8SharedStdMat(0x17181a, 0.9); [- 1, 1].forEach((zW8SisiX) => {
+      [- 1, 1].forEach((zW8SisiZ) => {
+      const zW8MeshRodaParkir = new THREE.Mesh(zW8GeoRodaParkir, zW8MatRodaParkir); zW8MeshRodaParkir.rotation.z = Math.PI / 2;
+      zW8MeshRodaParkir.position.set (zW8SisiX * 0.85, 0.33, zW8SisiZ * 1.35); zW8GrupMobilParkir.add(zW8MeshRodaParkir); });
+  }); return zW8GrupMobilParkir; }
+  function zW8ConstructMarket(G, zW8SceneQQ) {
+  const zW8MartX = zW8MARKET.x, zW8MartZ = zW8MARKET.z; const zW8GrupMartBaru = new THREE.Group();
+  zW8GrupMartBaru.position.set (zW8MartX, groundH(zW8MartX, zW8MartZ), zW8MartZ); zW8SceneQQ.add(zW8GrupMartBaru);
+  const zW8MeshBlokMart = new THREE.Mesh(new THREE.BoxGeometry(46, 9, 22), zW8SharedStdMat(0xdfe3e6, 0.9)); zW8MeshBlokMart.position.y = 4.5;
+  zW8GrupMartBaru.add(zW8MeshBlokMart); const zW8MeshLempengMart = new THREE.Mesh(new THREE.BoxGeometry(48, 0.5, 24), zW8SharedStdMat(0x3c4248, 0.9));
+  zW8MeshLempengMart.position.y = 9.25; zW8GrupMartBaru.add(zW8MeshLempengMart); [[- 14, - 6], [12, 5]].forEach(([zW8PosisiAcX, zW8PosisiAcZ]) => {
+    const zW8MeshAcMart = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.1, 2.6), zW8SharedStdMat(0x707880, 0.8, 0.3));
+    zW8MeshAcMart.position.set (zW8PosisiAcX, 10.05, zW8PosisiAcZ); zW8GrupMartBaru.add(zW8MeshAcMart);
+  }); const zW8MeshPitaMart = new THREE.Mesh(new THREE.BoxGeometry(34, 3.4, 0.4), zW8SharedStdMat(0x12233f, 0.8)); zW8MeshPitaMart.position.set (0, 7.4, 11.1);
+  zW8GrupMartBaru.add(zW8MeshPitaMart); const zW8TexTandaMart = zW8MakeCanvasTexture(1024, 160, (zW8KuasQQQQQQ, zW8LebarValQQQQ, zW8TinggiValQQQQQQ) => {
+    zW8KuasQQQQQQ.fillStyle = '#12233f'; zW8KuasQQQQQQ.fillRect(0, 0, zW8LebarValQQQQ, zW8TinggiValQQQQQQ); zW8KuasQQQQQQ.fillStyle = '#d8232a';
+    zW8KuasQQQQQQ.fillRect(0, zW8TinggiValQQQQQQ - 18, zW8LebarValQQQQ, 18); zW8KuasQQQQQQ.fillStyle = '#d8232a'; zW8KuasQQQQQQ.beginPath();
+    zW8KuasQQQQQQ.arc(72, 72, 44, 0, 2 * Math.PI); zW8KuasQQQQQQ.fill(); zW8KuasQQQQQQ.fillStyle = '#ffffff'; zW8KuasQQQQQQ.font = 'bold 44px sans-serif';
+    zW8KuasQQQQQQ.textAlign = 'center'; zW8KuasQQQQQQ.textBaseline = 'middle'; zW8KuasQQQQQQ.fillText('R', 72, 76); zW8KuasQQQQQQ.font = 'bold 96px sans-serif';
+    zW8KuasQQQQQQ.textAlign = 'left'; zW8KuasQQQQQQ.fillText('RONIN MART', 140, 76);
+  }); const zW8MeshTandaMart = new THREE.Mesh(new THREE.PlaneGeometry(32, 3.2), new THREE.MeshBasicMaterial({
+    map : zW8TexTandaMart
+  })); zW8MeshTandaMart.position.set (0, 7.4, 11.32); zW8GrupMartBaru.add(zW8MeshTandaMart); const zW8PijarMartBaru = glowSprite(0x9fd4ff, 17);
+  zW8PijarMartBaru.position.set (0, 7.4, 12.4); zW8PijarMartBaru.material.opacity = 0; zW8GrupMartBaru.add(zW8PijarMartBaru); zW8DaftarSpritePijar.push(zW8PijarMartBaru);
+    const zW8TexKacaMart = zW8MakeCanvasTexture(512, 64, (zW8KuasQQQQQQQ, zW8LebarValQQQQQ, zW8TinggiValQQQQQQQ) => {
+    const zW8GradienKaca = zW8KuasQQQQQQQ.createLinearGradient(0, 0, 0, zW8TinggiValQQQQQQQ); zW8GradienKaca.addColorStop(0, '#8fc3d4');
+    zW8GradienKaca.addColorStop(1, '#3d6d80'); zW8KuasQQQQQQQ.fillStyle = zW8GradienKaca; zW8KuasQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQ, zW8TinggiValQQQQQQQ);
+    zW8KuasQQQQQQQ.fillStyle = 'rgba(20,30,38,.85)'; zW8KuasQQQQQQQ.fillRect((zW8LebarValQQQQQ / 2) - 30, 6, 60, zW8TinggiValQQQQQQQ - 6);
+    zW8KuasQQQQQQQ.strokeStyle = 'rgba(240,248,250,.9)'; zW8KuasQQQQQQQ.lineWidth = 3; for (let zW8PanelX = 0; ! (zW8PanelX > zW8LebarValQQQQQ); zW8PanelX += 42) {
+      zW8KuasQQQQQQQ.beginPath(); zW8KuasQQQQQQQ.moveTo(zW8PanelX, 0); zW8KuasQQQQQQQ.lineTo(zW8PanelX, zW8TinggiValQQQQQQQ); zW8KuasQQQQQQQ.stroke(); }
+    zW8KuasQQQQQQQ.strokeStyle = 'rgba(240,248,250,.95)'; zW8KuasQQQQQQQ.strokeRect((zW8LebarValQQQQQ / 2) - 30, 6, 60, zW8TinggiValQQQQQQQ - 6);
+  }); const zW8MeshKacaMart = new THREE.Mesh(new THREE.PlaneGeometry(40, 3.1), new THREE.MeshStandardMaterial({
+    map : zW8TexKacaMart, roughness : 0.2, metalness : 0.5
+  })); zW8MeshKacaMart.position.set (0, 1.75, 11.06); zW8GrupMartBaru.add(zW8MeshKacaMart);
+  const zW8MeshKanopiMart = new THREE.Mesh(new THREE.BoxGeometry(11, 0.25, 3), zW8SharedStdMat(0x2c3138, 0.8)); zW8MeshKanopiMart.position.set (0, 3.6, 12.4);
+  zW8GrupMartBaru.add(zW8MeshKanopiMart); const zW8TexPadMart = zW8MakeCanvasTexture(1024, 512, (zW8KuasQQQQQQQQ, zW8LebarValQQQQQQ, zW8TinggiValQQQQQQQQ) => {
+    zW8KuasQQQQQQQQ.fillStyle = '#3a3d40'; zW8KuasQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQ, zW8TinggiValQQQQQQQQ);
+      for (let zW8IdxBintikQQ = 0; zW8IdxBintikQQ < 2600; ++ zW8IdxBintikQQ) {
+      const zW8ShadeVal = Math.floor(rnd() * 26) + 46;
+      zW8KuasQQQQQQQQ.fillStyle = `rgba(${zW8ShadeVal},${zW8ShadeVal},${zW8ShadeVal + 3},.16)`;
+      zW8KuasQQQQQQQQ.fillRect(rnd() * zW8LebarValQQQQQQ, rnd() * zW8TinggiValQQQQQQQQ, 2, 2); }
+    zW8KuasQQQQQQQQ.strokeStyle = 'rgba(245,245,240,.9)'; zW8KuasQQQQQQQQ.lineWidth = 5;
+      for (let zW8GarisX = 40; ! (zW8GarisX > zW8LebarValQQQQQQ - 40); zW8GarisX += 74) {
+      zW8KuasQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQ.moveTo(zW8GarisX, 10); zW8KuasQQQQQQQQ.lineTo(zW8GarisX, 128); zW8KuasQQQQQQQQ.stroke(); zW8KuasQQQQQQQQ.beginPath();
+      zW8KuasQQQQQQQQ.moveTo(zW8GarisX, zW8TinggiValQQQQQQQQ - 128); zW8KuasQQQQQQQQ.lineTo(zW8GarisX, zW8TinggiValQQQQQQQQ - 10); zW8KuasQQQQQQQQ.stroke(); }
+    zW8KuasQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQ.moveTo(40, 128); zW8KuasQQQQQQQQ.lineTo(zW8LebarValQQQQQQ - 40, 128); zW8KuasQQQQQQQQ.stroke();
+    zW8KuasQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQ.moveTo(40, zW8TinggiValQQQQQQQQ - 128); zW8KuasQQQQQQQQ.lineTo(zW8LebarValQQQQQQ - 40, zW8TinggiValQQQQQQQQ - 128);
+    zW8KuasQQQQQQQQ.stroke();
+  }); const zW8MeshPadMart = new THREE.Mesh(new THREE.PlaneGeometry(64, 32), new THREE.MeshStandardMaterial({
+    map : zW8TexPadMart, roughness : 1
+  })); zW8MeshPadMart.rotation.x = - Math.PI / 2; zW8MeshPadMart.position.set (0, 0.04, 27); zW8GrupMartBaru.add(zW8MeshPadMart);
+  const zW8MeshDriveMart = new THREE.Mesh(new THREE.PlaneGeometry(9, 42), zW8SharedStdMat(0x3a3d40, 1)); zW8MeshDriveMart.rotation.x = - Math.PI / 2;
+  zW8MeshDriveMart.position.set (0, 0.04, 64); zW8GrupMartBaru.add(zW8MeshDriveMart);
+  const zW8PaletParkirMart = [0xc0c4c9, 0x3f8cff, 0xd95555, 0x44484e, 0xf2b21b, 0x5a7d4f];
+  const zW8DaftarTitikParkir = [[- 22, 19.5, Math.PI], [- 14.5, 19.5, Math.PI], [6, 19.5, Math.PI], [18, 35, 0], [25.5, 19.5, Math.PI],];
+    zW8DaftarTitikParkir.forEach(([zW8TitikX, zW8TitikZ, zW8TitikRy], zW8IdxTitik) => {
+    const zW8MobilParkirMart = zW8ConstructParkedCar(zW8PaletParkirMart[zW8IdxTitik % zW8PaletParkirMart.length]);
+    zW8MobilParkirMart.position.set (zW8TitikX, 0, zW8TitikZ); zW8MobilParkirMart.rotation.y = zW8TitikRy; zW8GrupMartBaru.add(zW8MobilParkirMart);
+  }); const zW8MatRelMart = zW8SharedStdMat(0xb0b6bc, 0.4, 0.7); [[- 18, 31], [14, 16.5]].forEach(([zW8RelX, zW8RelZ]) => {
+      [- 1, 1].forEach((zW8TandaSisiQ) => {
+      const zW8MeshRelBaru = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 3.6), zW8MatRelMart);
+      zW8MeshRelBaru.position.set (zW8RelX + (zW8TandaSisiQ * 0.9), 0.75, zW8RelZ); zW8GrupMartBaru.add(zW8MeshRelBaru); [- 1, 1].forEach((zW8TandaUjung) => {
+        const zW8MeshTiangRel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.75, 0.08), zW8MatRelMart);
+        zW8MeshTiangRel.position.set (zW8RelX + (zW8TandaSisiQ * 0.9), 0.38, zW8RelZ + (zW8TandaUjung * 1.8)); zW8GrupMartBaru.add(zW8MeshTiangRel); });
+    }); const zW8MeshTroliMart = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.7), zW8MatRelMart); zW8MeshTroliMart.position.set (zW8RelX, 0.45, zW8RelZ);
+    zW8GrupMartBaru.add(zW8MeshTroliMart);
+  }); const zW8PaletPetiMart = [0xe8762a, 0x3f9d4e, 0xd8b93a, 0xc0392b]; [- 8.5, 8.5].forEach((zW8RakX) => {
+    const zW8MeshRakMart = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.9, 1.1), zW8SharedStdMat(0x6b4a2f, 0.95)); zW8MeshRakMart.position.set (zW8RakX, 0.45, 13.2);
+    zW8GrupMartBaru.add(zW8MeshRakMart); for (let zW8IdxPeti = 0; zW8IdxPeti < 3; ++ zW8IdxPeti) {
+      const zW8MeshPetiMart = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.55, 0.9), zW8SharedStdMat(zW8PaletPetiMart[(zW8IdxPeti + (zW8RakX > 0 ? 1 : 0)) % 4], 0.9));
+      zW8MeshPetiMart.position.set ((zW8RakX - 1) + zW8IdxPeti, 1.18, 13.2); zW8GrupMartBaru.add(zW8MeshPetiMart); }
+  }); const zW8MeshPilonMart = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 7, 8), zW8MatRelMart); zW8MeshPilonMart.position.set (24, 3.5, 52);
+  zW8GrupMartBaru.add(zW8MeshPilonMart); const zW8MeshTandaPilonMart = new THREE.Mesh(new THREE.BoxGeometry(7.5, 2.3, 0.35), new THREE.MeshBasicMaterial({
+    map : zW8TexTandaMart
+  })); zW8MeshTandaPilonMart.position.set (24, 6.8, 52); zW8GrupMartBaru.add(zW8MeshTandaPilonMart); G.addCollider(zW8MartX, zW8MartZ, 23, 11, 9); }
+
+  function zW8ConstructBeachStrip(G, zW8SceneQQQ) {
+  const zW8TitikMenabrakBangunan = (x, z, zW8NilaiPad) => G.colliders.some((zW8ObjKol) => Math.abs(x - (zW8ObjKol.x)) < zW8ObjKol.hw + zW8NilaiPad && Math.abs(z - (zW8ObjKol.z)) < zW8ObjKol.hd + zW8NilaiPad);
+    const zW8TexJalurPapan = zW8MakeCanvasTexture(256, 64, (zW8KuasQQQQQQQQQ, zW8LebarValQQQQQQQ, zW8TinggiValQQQQQQQQQ) => {
+    zW8KuasQQQQQQQQQ.fillStyle = '#a97e56'; zW8KuasQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQ, zW8TinggiValQQQQQQQQQ);
+    zW8KuasQQQQQQQQQ.strokeStyle = 'rgba(70,45,25,.55)'; zW8KuasQQQQQQQQQ.lineWidth = 3; for (let zW8PapanX = 0; ! (zW8PapanX > zW8LebarValQQQQQQQ); zW8PapanX += 32) {
+      zW8KuasQQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQQ.moveTo(zW8PapanX, 0); zW8KuasQQQQQQQQQ.lineTo(zW8PapanX, zW8TinggiValQQQQQQQQQ); zW8KuasQQQQQQQQQ.stroke(); }
+    zW8KuasQQQQQQQQQ.strokeStyle = 'rgba(70,45,25,.35)'; zW8KuasQQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQQ.moveTo(0, 2); zW8KuasQQQQQQQQQ.lineTo(zW8LebarValQQQQQQQ, 2);
+    zW8KuasQQQQQQQQQ.moveTo(0, zW8TinggiValQQQQQQQQQ - 2); zW8KuasQQQQQQQQQ.lineTo(zW8LebarValQQQQQQQ, zW8TinggiValQQQQQQQQQ - 2); zW8KuasQQQQQQQQQ.stroke();
+  }); zW8TexJalurPapan.wrapS = zW8TexJalurPapan.wrapT = THREE.RepeatWrapping; zW8TexJalurPapan.repeat.set (30, 1);
+    const zW8MeshJalurPapan = new THREE.Mesh(new THREE.BoxGeometry(1120, 0.1, 6), new THREE.MeshStandardMaterial({
+    map : zW8TexJalurPapan, roughness : 1
+  })); zW8MeshJalurPapan.position.set (100, 0.07, 556); zW8MeshJalurPapan.receiveShadow = true; zW8SceneQQQ.add(zW8MeshJalurPapan);
+    for (let zW8PalemX = - 440; ! (zW8PalemX > 640); zW8PalemX += 55) {
+    const zW8GeserAcakX = rr(- 3, 3) + zW8PalemX, zW8GeserAcakZ = rr(- 1, 1) + 549; if (zW8TitikMenabrakBangunan(zW8GeserAcakX, zW8GeserAcakZ, 1.5)) continue;
+    const zW8PalemPantai = makePalm(rr(4.5, 6.5)); zW8PalemPantai.position.set (zW8GeserAcakX, 0, zW8GeserAcakZ); zW8PalemPantai.rotation.y = rr(0, 6.28);
+    zW8SceneQQQ.add(zW8PalemPantai); }
+  const zW8PaletPayung = [0xff5da2, 0xffb35c, 0x39d5ff, 0xffe14d, 0x7dffb0, 0xff5c39]; for (let zW8IdxPayung = 0; zW8IdxPayung < 14; ++ zW8IdxPayung) {
+    let zW8CalonX = 0, zW8CalonZ = 0, zW8SudahTerpasang = false; for (let zW8IdxCoba = 0; zW8IdxCoba < 6 && ! zW8SudahTerpasang; ++ zW8IdxCoba) {
+      zW8CalonX = rr(- 420, 620); zW8CalonZ = rr(578, 636); zW8SudahTerpasang = ! zW8TitikMenabrakBangunan(zW8CalonX, zW8CalonZ, 2); }
+    if (! zW8SudahTerpasang) continue; const zW8GrupPayungBaru = new THREE.Group(); zW8GrupPayungBaru.position.set (zW8CalonX, 0, zW8CalonZ);
+    zW8GrupPayungBaru.rotation.y = rr(0, 6.28); const zW8MeshTiangPayung = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.3, 6), zW8SharedStdMat(0xd8d8d2, 0.7));
+    zW8MeshTiangPayung.position.y = 1.15; zW8MeshTiangPayung.rotation.z = 0.12; zW8GrupPayungBaru.add(zW8MeshTiangPayung);
+    const zW8MeshKanopiPayung = new THREE.Mesh(new THREE.ConeGeometry(1.7, 0.55, 10), zW8SharedStdMat(pick(zW8PaletPayung), 0.85));
+    zW8MeshKanopiPayung.position.set (0.14, 2.35, 0); zW8MeshKanopiPayung.rotation.z = 0.12; zW8GrupPayungBaru.add(zW8MeshKanopiPayung);
+      for (let zW8IdxKursi = 0; zW8IdxKursi < 2; ++ zW8IdxKursi) {
+      if (rnd() < 0.3) continue; const zW8GrupKursiBaru = new THREE.Group(); zW8GrupKursiBaru.position.set (rr(- 1.6, 1.6), 0, rr(0.8, 1.8));
+      zW8GrupKursiBaru.rotation.y = rr(- 0.5, 0.5); const zW8MeshDudukanKursi = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 1.5), zW8SharedStdMat(0xf2efe4, 0.9));
+      zW8MeshDudukanKursi.position.y = 0.28; zW8GrupKursiBaru.add(zW8MeshDudukanKursi);
+      const zW8MeshSandaranKursi = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 0.8), zW8SharedStdMat(pick(zW8PaletPayung), 0.9));
+      zW8MeshSandaranKursi.position.set (0, 0.5, - 0.75); zW8MeshSandaranKursi.rotation.x = - 0.7; zW8GrupKursiBaru.add(zW8MeshSandaranKursi);
+      zW8GrupPayungBaru.add(zW8GrupKursiBaru); }
+    zW8SceneQQQ.add(zW8GrupPayungBaru); }
+    [- 300, 100, 500].forEach((zW8AwalX) => {
+    let zW8PosisiMenaraX = zW8AwalX;
+    while (zW8TitikMenabrakBangunan(zW8PosisiMenaraX, 598, 2) && zW8PosisiMenaraX < zW8AwalX + 60) zW8PosisiMenaraX += 18;
+    if (zW8TitikMenabrakBangunan(zW8PosisiMenaraX, 598, 2)) return; const zW8GrupMenaraBaru = new THREE.Group();
+    zW8GrupMenaraBaru.position.set (zW8PosisiMenaraX, 0, 598); const zW8MatPutihMenara = zW8SharedStdMat(0xf2efe4, 0.85);
+    const zW8MatMerahMenara = zW8SharedStdMat(0xd8232a, 0.85); [- 1, 1].forEach((zW8SisiXQ) => {
+        [- 1, 1].forEach((zW8SisiZQ) => {
+        const zW8MeshKakiMenara = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.2, 0.12), zW8MatPutihMenara);
+        zW8MeshKakiMenara.position.set (zW8SisiXQ * 0.7, 1.1, zW8SisiZQ * 0.5); zW8GrupMenaraBaru.add(zW8MeshKakiMenara); });
+    }); const zW8MeshPlatformMenara = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.3), zW8MatPutihMenara); zW8MeshPlatformMenara.position.y = 2.25;
+    zW8GrupMenaraBaru.add(zW8MeshPlatformMenara); const zW8MeshPanelBelakangMenara = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.1, 0.1), zW8MatPutihMenara);
+    zW8MeshPanelBelakangMenara.position.set (0, 2.85, - 0.6); zW8GrupMenaraBaru.add(zW8MeshPanelBelakangMenara);
+    const zW8MeshAtapMenara = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.1, 1.5), zW8MatMerahMenara); zW8MeshAtapMenara.position.y = 3.5;
+    zW8GrupMenaraBaru.add(zW8MeshAtapMenara); const zW8MeshRampaMenara = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 2.6), zW8MatPutihMenara);
+    zW8MeshRampaMenara.position.set (0, 1.1, - 1.7); zW8MeshRampaMenara.rotation.x = 0.72; zW8GrupMenaraBaru.add(zW8MeshRampaMenara); zW8SceneQQQ.add(zW8GrupMenaraBaru);
+    G.addCollider(zW8PosisiMenaraX, 598, 1, 0.8, 3.5); }); }
+
+const zW8DensityPointHit = (G, x, z, zW8PadVal) => G.colliders.some((zW8ObjKolQ) => Math.abs(x - (zW8ObjKolQ.x)) < zW8ObjKolQ.hw + zW8PadVal && Math.abs(z - (zW8ObjKolQ.z)) < zW8ObjKolQ.hd + zW8PadVal);
+const zW8DensityFootHit = (G, x, z, zW8ParuhW, zW8ParuhD, zW8PadValQ) => G.colliders.some((zW8ObjKolQQ) => Math.abs(x - (zW8ObjKolQQ.x)) < ((zW8ObjKolQQ.hw + zW8ParuhW) + zW8PadValQ) && Math.abs(z - (zW8ObjKolQQ.z)) < ((zW8ObjKolQQ.hd + zW8ParuhD) + zW8PadValQ));
+  const zW8ApplyCastShadow = (zW8AkarObj) => {
+    zW8AkarObj.traverse((zW8ObjNodeQQ) => {
+    if (zW8ObjNodeQQ.isMesh) zW8ObjNodeQQ.castShadow = true;
+  }); return zW8AkarObj; };
+
+  function zW8ConstructBoulevardFrontage(G, zW8SceneQQQQ) {
+    const zW8HitunganPerSisi = {
+    north : 0, south : 0 };
+  const zW8OpsiTandaDepan = [['HOTEL CORAL', '#ffb35c'], ['SUSHI-GO', '#7dffb0'], ['ARCADE', '#ff7ab0'], ['CLUB NEON', '#e879ff'], ['RAMEN', '#ff5c39'], ['PAWN', '#ffe14d'],];
+    [{
+    key : 'north', facadeZ : 470, faceDir : 1 }, {
+    key : 'south', facadeZ : 518, faceDir : - 1
+    }].forEach((zW8SpecSisi) => {
+    let zW8WarnaPalingAkhir = null, zW8WarnaDuaLalu = null, zW8PenandaX = - 560;
+      while (zW8PenandaX < 640) {
+      let zW8LebarSegmen = rr(18, 30); if (zW8PenandaX + zW8LebarSegmen > 640) zW8LebarSegmen = 640 - (zW8PenandaX); if (zW8LebarSegmen < 10) break;
+      const zW8DalamSegmen = rr(12, 18); const zW8TinggiSegmen = rr(10, 26);
+      const zW8TengahX = (zW8LebarSegmen / 2) + zW8PenandaX, zW8TengahZ = zW8SpecSisi.facadeZ + (- (zW8SpecSisi.faceDir * (zW8DalamSegmen / 2)));
+
+      const zW8JalanPenghalang = G.roadX.find((zW8KoordinatJalan) => zW8TengahX - zW8LebarSegmen / 2 < zW8KoordinatJalan + 14 && zW8TengahX + zW8LebarSegmen / 2 > zW8KoordinatJalan - 14);
+        if (zW8JalanPenghalang !== undefined) {
+        zW8PenandaX = zW8JalanPenghalang + 14 + rr(0.5, 2); continue; }
+        if (zW8DensityFootHit(G, zW8TengahX, zW8TengahZ, zW8LebarSegmen / 2, zW8DalamSegmen / 2, 2)) {
+        zW8PenandaX += zW8LebarSegmen + rr(1.5, 5); continue; }
+
+      let zW8WarnaFasad = pick(VICE.coralPastels);
+      if (zW8WarnaFasad === zW8WarnaPalingAkhir) zW8WarnaFasad = VICE.coralPastels[(VICE.coralPastels.indexOf(zW8WarnaFasad) + 1) % VICE.coralPastels.length];
+      if (zW8WarnaFasad === zW8WarnaDuaLalu) zW8WarnaFasad = VICE.coralPastels[(VICE.coralPastels.indexOf(zW8WarnaFasad) + 1) % VICE.coralPastels.length];
+      zW8WarnaDuaLalu = zW8WarnaPalingAkhir; zW8WarnaPalingAkhir = zW8WarnaFasad; const zW8TexFasadDepan = zW8BuildBuildingTexture(zW8WarnaFasad, rr(0.25, 0.42));
+      zW8TexFasadDepan.wrapS = zW8TexFasadDepan.wrapT = THREE.RepeatWrapping; const zW8MatFasadDepan = new THREE.MeshStandardMaterial({
+        map : zW8TexFasadDepan, emissive : 0xffc873, emissiveMap : zW8TexFasadDepan, emissiveIntensity : 0, roughness : 0.9,
+      }); zW8MatFasadDepan.color.setRGB(rr(0.92, 1), rr(0.9, 1), rr(0.87, 0.98)); if (! G.buildingMats) G.buildingMats = []; G.buildingMats.push(zW8MatFasadDepan);
+      const zW8ElevasiDasar = groundH(zW8TengahX, zW8TengahZ);
+      const zW8MeshGedungDepan = new THREE.Mesh(new THREE.BoxGeometry(zW8LebarSegmen, zW8TinggiSegmen, zW8DalamSegmen), zW8MatFasadDepan);
+      zW8MeshGedungDepan.position.set (zW8TengahX, (zW8TinggiSegmen / 2) + zW8ElevasiDasar, zW8TengahZ); zW8MeshGedungDepan.castShadow = true;
+      zW8MeshGedungDepan.receiveShadow = true; zW8SceneQQQQ.add(zW8MeshGedungDepan);
+
+      const zW8TinggiUndak = rr(1.6, 3);
+      const zW8MeshUndak = new THREE.Mesh(new THREE.BoxGeometry(zW8LebarSegmen * 0.62, zW8TinggiUndak, zW8DalamSegmen * 0.62), zW8MatFasadDepan);
+      zW8MeshUndak.position.set (zW8TengahX, zW8TinggiSegmen + (zW8TinggiUndak / 2) + zW8ElevasiDasar, zW8TengahZ); zW8MeshUndak.castShadow = true;
+      zW8SceneQQQQ.add(zW8MeshUndak);
+
+      const zW8WarnaNeonDepan = pick(VICE.neonTrim); const zW8MatTrimDepan = new THREE.MeshStandardMaterial({
+        color : zW8WarnaNeonDepan, emissive : zW8WarnaNeonDepan, emissiveIntensity : 0, roughness : 0.6
+      }); const zW8MeshTrimDepan = new THREE.Mesh(new THREE.BoxGeometry(zW8LebarSegmen + 0.35, 0.3, zW8DalamSegmen + 0.35), zW8MatTrimDepan);
+      zW8MeshTrimDepan.position.set (zW8TengahX, (zW8TinggiSegmen * 0.84) + zW8ElevasiDasar, zW8TengahZ); zW8MeshTrimDepan.castShadow = true;
+      zW8SceneQQQQ.add(zW8MeshTrimDepan); if (! G.neonTrimMats) G.neonTrimMats = []; G.neonTrimMats.push(zW8MatTrimDepan);
+      const zW8PijarTrimDepan = glowSprite(new THREE.Color(zW8WarnaNeonDepan), 12);
+      zW8PijarTrimDepan.position.set (zW8TengahX, (zW8TinggiSegmen * 0.84) + zW8ElevasiDasar, zW8TengahZ); zW8PijarTrimDepan.material.opacity = 0;
+      zW8SceneQQQQ.add(zW8PijarTrimDepan); zW8DaftarSpritePijar.push(zW8PijarTrimDepan);
+
+      const zW8GarisFasadZ = zW8SpecSisi.facadeZ; if (rnd() < 0.6) {
+        const[zW8TeksTanda, zW8WarnaTanda] = pick(zW8OpsiTandaDepan);
+          const zW8MeshTandaDepan = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(14, zW8LebarSegmen * 0.7), 3.4), new THREE.MeshBasicMaterial({
+          map : zW8BuildSignTexture(zW8TeksTanda, '#101018', zW8WarnaTanda)
+        })); zW8MeshTandaDepan.position.set (zW8TengahX, 4.6 + zW8ElevasiDasar, zW8GarisFasadZ + (zW8SpecSisi.faceDir * 0.12));
+        if (zW8SpecSisi.faceDir < 0) zW8MeshTandaDepan.rotation.y = Math.PI; zW8SceneQQQQ.add(zW8MeshTandaDepan);
+        const zW8PijarTandaDepan = glowSprite(new THREE.Color(zW8WarnaTanda), 13);
+        zW8PijarTandaDepan.position.set (zW8TengahX, 4.6 + zW8ElevasiDasar, zW8GarisFasadZ + (zW8SpecSisi.faceDir * 0.05)); zW8PijarTandaDepan.material.opacity = 0;
+        zW8SceneQQQQ.add(zW8PijarTandaDepan); zW8DaftarSpritePijar.push(zW8PijarTandaDepan); }
+
+      const zW8WarnaTendaDepan = zW8HitunganPerSisi[zW8SpecSisi.key] % 2 === 0 ? pick(['#ff5da2', '#ffb35c']) : pick(['#39d5ff', '#7dffb0']);
+        const zW8MatTendaDepan = new THREE.MeshStandardMaterial({
+        color : new THREE.Color(zW8WarnaTendaDepan), roughness : 0.85
+      }); const zW8MeshTendaDepan = new THREE.Mesh(new THREE.BoxGeometry(Math.min(15, zW8LebarSegmen * 0.72), 0.15, 2.2), zW8MatTendaDepan);
+      zW8MeshTendaDepan.position.set (zW8TengahX, 3.6 + zW8ElevasiDasar, zW8GarisFasadZ + (zW8SpecSisi.faceDir * 1.05));
+      zW8MeshTendaDepan.rotation.x = zW8SpecSisi.faceDir * 0.3; zW8MeshTendaDepan.castShadow = true; zW8SceneQQQQ.add(zW8MeshTendaDepan);
+      G.addCollider(zW8TengahX, zW8TengahZ, zW8LebarSegmen / 2, zW8DalamSegmen / 2, zW8TinggiSegmen); ++ zW8HitunganPerSisi[zW8SpecSisi.key];
+      zW8PenandaX += zW8LebarSegmen + rr(1.5, 5); }
+  }); G.frontageCounts = zW8HitunganPerSisi; return zW8HitunganPerSisi; }
+
+  function zW8ConstructBoulevardPalms(G, zW8SceneQQQQQ) {
+  let zW8HitungPalem = 0; for (let zW8PalemXQ = - 560; ! (zW8PalemXQ > 640); zW8PalemXQ += 20) {
+    if (G.roadX.some((zW8NilaiJalanQQ) => Math.abs(zW8PalemXQ - (zW8NilaiJalanQQ)) < 16)) continue; [481, 509].forEach((zW8TrotoarZ) => {
+      if (zW8DensityPointHit(G, zW8PalemXQ, zW8TrotoarZ, 1.5)) return; const zW8PalemTrotoar = makePalm(rr(4.5, 6.5));
+      zW8PalemTrotoar.position.set (zW8PalemXQ, groundH(zW8PalemXQ, zW8TrotoarZ), zW8TrotoarZ); zW8PalemTrotoar.rotation.y = rr(0, 6.28);
+      zW8SceneQQQQQ.add(zW8PalemTrotoar); ++ zW8HitungPalem; }); }
+  G.boulevardPalmsAdded = zW8HitungPalem; return zW8HitungPalem; }
+
+  function zW8MakePlanterPalmUnit() {
+  const zW8GrupUnitPenanam = new THREE.Group(); const zW8MeshKotakPenanam = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 1.6), zW8SharedStdMat(0xd8d2c4, 1));
+  zW8MeshKotakPenanam.position.y = 0.275; zW8GrupUnitPenanam.add(zW8MeshKotakPenanam);
+  const zW8MeshTanahPenanam = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 1.4), zW8SharedStdMat(0x4a3826, 1)); zW8MeshTanahPenanam.position.y = 0.56;
+  zW8GrupUnitPenanam.add(zW8MeshTanahPenanam); const zW8MatSemakPenanam = new THREE.MeshStandardMaterial({
+    color : 0x3d8b4f, roughness : 1, flatShading : true
+  }); [[- 0.55, - 0.55], [0.55, - 0.55], [- 0.55, 0.55], [0.55, 0.55]].forEach(([zW8SudutX, zW8SudutZ]) => {
+    const zW8MeshGumpalSemak = new THREE.Mesh(new THREE.IcosahedronGeometry(rr(0.22, 0.3), 1), zW8MatSemakPenanam);
+    zW8MeshGumpalSemak.position.set (zW8SudutX, 0.68, zW8SudutZ); zW8GrupUnitPenanam.add(zW8MeshGumpalSemak);
+  }); const zW8PalemPenanam = makePalm(rr(4.5, 6)); zW8PalemPenanam.position.y = 0.55; zW8PalemPenanam.rotation.y = rr(0, 6.28); zW8GrupUnitPenanam.add(zW8PalemPenanam);
+  return zW8ApplyCastShadow(zW8GrupUnitPenanam); }
+  function zW8ConstructBoulevardPlanters(G, zW8SceneQQQQQQ) {
+  let zW8HitungPenanam = 0; for (let zW8PenanamX = - 320; ! (zW8PenanamX > 520); zW8PenanamX += 40) {
+    if (G.roadX.some((zW8NilaiJalanQQQ) => Math.abs(zW8PenanamX - (zW8NilaiJalanQQQ)) < 13)) continue; if (Math.abs(zW8PenanamX - 100) < 10) continue;
+    if (zW8DensityPointHit(G, zW8PenanamX, 513, 2)) continue; const zW8UnitPenanam = zW8MakePlanterPalmUnit();
+    zW8UnitPenanam.position.set (zW8PenanamX, groundH(zW8PenanamX, 513), 513); zW8SceneQQQQQQ.add(zW8UnitPenanam); ++ zW8HitungPenanam; }
+  G.boulevardPlantersAdded = zW8HitungPenanam; return zW8HitungPenanam; }
+
+  function zW8MakeBenchUnit() {
+  const zW8GrupBangkuBaru = new THREE.Group(); const zW8MatRangkaBangku = zW8SharedStdMat(0x3a3f45, 0.6, 0.5), zW8MatKayuBangku = zW8SharedStdMat(0x8a6844, 0.95);
+    [- 1, 1].forEach((zW8TandaSisiQQ) => {
+    const zW8MeshKakiDepanBangku = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.12), zW8MatRangkaBangku);
+    zW8MeshKakiDepanBangku.position.set (zW8TandaSisiQQ * 0.95, 0.22, 0.28); zW8GrupBangkuBaru.add(zW8MeshKakiDepanBangku);
+    const zW8MeshKakiBelakangBangku = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.85, 0.12), zW8MatRangkaBangku);
+    zW8MeshKakiBelakangBangku.position.set (zW8TandaSisiQQ * 0.95, 0.42, - 0.28); zW8GrupBangkuBaru.add(zW8MeshKakiBelakangBangku);
+  }); for (let zW8IdxBilahQ = 0; zW8IdxBilahQ < 3; ++ zW8IdxBilahQ) {
+    const zW8MeshBilahBangku = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.16), zW8MatKayuBangku);
+    zW8MeshBilahBangku.position.set (0, 0.45, (zW8IdxBilahQ * 0.22) - 0.2); zW8GrupBangkuBaru.add(zW8MeshBilahBangku); }
+    for (let zW8IdxSandaran = 0; zW8IdxSandaran < 2; ++ zW8IdxSandaran) {
+    const zW8MeshSandaranBangku = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.16, 0.05), zW8MatKayuBangku);
+    zW8MeshSandaranBangku.position.set (0, (zW8IdxSandaran * 0.24) + 0.68, - 0.32); zW8MeshSandaranBangku.rotation.x = - 0.18;
+    zW8GrupBangkuBaru.add(zW8MeshSandaranBangku); }
+  return zW8ApplyCastShadow(zW8GrupBangkuBaru); }
+  function zW8MakePlanterUnit() {
+  const zW8GrupKotakBaru = new THREE.Group(); const zW8MeshKotakBaru = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 0.9), zW8SharedStdMat(0x9a8a72, 1));
+  zW8MeshKotakBaru.position.y = 0.28; zW8GrupKotakBaru.add(zW8MeshKotakBaru);
+    const zW8MeshSemakBaru = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), new THREE.MeshStandardMaterial({
+    color : 0x3d8b4f, roughness : 1, flatShading : true
+  })); zW8MeshSemakBaru.position.y = 0.85; zW8GrupKotakBaru.add(zW8MeshSemakBaru); return zW8ApplyCastShadow(zW8GrupKotakBaru); }
+  function zW8MakeStallUnit() {
+  const zW8GrupKiosBaru = new THREE.Group(); const zW8MatTiangKios = zW8SharedStdMat(0x6b4a2f, 0.9); [- 1, 1].forEach((zW8SisiXQQ) => {
+      [- 1, 1].forEach((zW8SisiZQQ) => {
+      const zW8MeshTiangKios = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.5, 6), zW8MatTiangKios);
+      zW8MeshTiangKios.position.set (zW8SisiXQQ * 1.5, 1.25, zW8SisiZQQ * 0.9); zW8GrupKiosBaru.add(zW8MeshTiangKios); }); });
+
+    const zW8TexKanopiKios = zW8MakeCanvasTexture(128, 128, (zW8KuasQQQQQQQQQQ, zW8LebarValQQQQQQQQ, zW8TinggiValQQQQQQQQQQ) => {
+      for (let zW8IdxGaris = 0; zW8IdxGaris < 8; ++ zW8IdxGaris) {
+      zW8KuasQQQQQQQQQQ.fillStyle = zW8IdxGaris % 2 ? '#f7f2e6' : '#ff7a6b';
+      zW8KuasQQQQQQQQQQ.fillRect(zW8IdxGaris * (zW8LebarValQQQQQQQQ / 8), 0, zW8LebarValQQQQQQQQ / 8, zW8TinggiValQQQQQQQQQQ); }
+  }); zW8TexKanopiKios.wrapS = THREE.RepeatWrapping; zW8TexKanopiKios.wrapT = THREE.RepeatWrapping;
+    const zW8MeshKanopiKios = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.12, 2.4), new THREE.MeshStandardMaterial({
+    map : zW8TexKanopiKios, roughness : 0.9
+  })); zW8MeshKanopiKios.position.y = 2.55; zW8MeshKanopiKios.rotation.z = 0.06; zW8GrupKiosBaru.add(zW8MeshKanopiKios);
+  const zW8MeshKonterKios = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.9, 1.1), zW8SharedStdMat(0xa97e56, 0.95)); zW8MeshKonterKios.position.set (0, 0.45, 0.35);
+  zW8GrupKiosBaru.add(zW8MeshKonterKios); const zW8PaletPetiKios = [0xe8762a, 0x3f9d4e, 0xd8b93a, 0xc0392b]; for (let zW8IdxPetiQ = 0; zW8IdxPetiQ < 4; ++ zW8IdxPetiQ) {
+    const zW8MeshPetiKios = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.4, 0.55), zW8SharedStdMat(zW8PaletPetiKios[zW8IdxPetiQ % 4], 0.9));
+    zW8MeshPetiKios.position.set ((zW8IdxPetiQ * 0.72) - 1.1, 1.1, 0.35); zW8GrupKiosBaru.add(zW8MeshPetiKios); }
+  return zW8ApplyCastShadow(zW8GrupKiosBaru); }
+  function zW8ConstructGatherSpots(G, zW8SceneQQQQQQQ) {
+    const zW8DaftarKandidatTitik = [{
+    x : 100, z : 511, ry : Math.PI, stall : true }, {
+    x : 300, z : 552, ry : 0, stall : true }, {
+    x : - 60, z : - 238, ry : Math.PI, stall : false }, {
+    x : - 210, z : 481, ry : 0, stall : false
+  },]; G.gatherSpots = []; zW8DaftarKandidatTitik.forEach((zW8KandidatObj) => {
+    let zW8PosisiPasangX = null; for (let zW8IdxLangkah = 0; ! (zW8IdxLangkah > 10) && zW8PosisiPasangX === null; ++ zW8IdxLangkah) {
+      const zW8DaftarGeserCoba = zW8IdxLangkah === 0 ? [0] : [zW8IdxLangkah * 4, - zW8IdxLangkah * 4]; for (const zW8NilaiGeser of zW8DaftarGeserCoba) {
+        const zW8CobaX = zW8KandidatObj.x + zW8NilaiGeser; if (! zW8DensityPointHit(G, zW8CobaX, zW8KandidatObj.z, 2.5)) {
+          zW8PosisiPasangX = zW8CobaX; break; } } }
+    if (zW8PosisiPasangX === null) return; const zW8GrupTitikBaru = new THREE.Group();
+    zW8GrupTitikBaru.position.set (zW8PosisiPasangX, groundH(zW8PosisiPasangX, zW8KandidatObj.z), zW8KandidatObj.z); zW8GrupTitikBaru.rotation.y = zW8KandidatObj.ry;
+      [- 1.9, 1.9].forEach((zW8BangkuX) => {
+      const zW8BangkuBaru = zW8MakeBenchUnit(); zW8BangkuBaru.position.set (zW8BangkuX, 0, 0); zW8GrupTitikBaru.add(zW8BangkuBaru);
+    }); [- 3.6, 3.6].forEach((zW8PenanamXQ) => {
+      const zW8PenanamBaru = zW8MakePlanterUnit(); zW8PenanamBaru.position.set (zW8PenanamXQ, 0, 0.25); zW8GrupTitikBaru.add(zW8PenanamBaru);
+    }); if (zW8KandidatObj.stall) {
+      const zW8KiosBaru = zW8MakeStallUnit(); zW8KiosBaru.position.set (0, 0, - 2.4); zW8GrupTitikBaru.add(zW8KiosBaru);
+      const zW8KosinusRy = Math.cos(zW8KandidatObj.ry), zW8SinusRy = Math.sin(zW8KandidatObj.ry);
+      const zW8KiosDuniaX = ((0 * zW8KosinusRy) - (2.4 * zW8SinusRy)) + zW8PosisiPasangX, zW8KiosDuniaZ = ((- 0 * zW8SinusRy) - (2.4 * zW8KosinusRy)) + zW8KandidatObj.z;
+      G.addCollider(zW8KiosDuniaX, zW8KiosDuniaZ, 1.8, 1.2, 2.6); }
+    zW8SceneQQQQQQQ.add(zW8GrupTitikBaru); const zW8RekamanTitik = {
+    }; zW8RekamanTitik.x = zW8PosisiPasangX; zW8RekamanTitik.z = zW8KandidatObj.z; zW8RekamanTitik.ry = zW8KandidatObj.ry; zW8RekamanTitik.stall = zW8KandidatObj.stall;
+    G.gatherSpots.push(zW8RekamanTitik);
+  }); return G.gatherSpots; }
+
+  function zW8ConstructHoshinoRows(G, zW8SceneQQQQQQQQ) {
+  let zW8HitungRumah = 0; const zW8DaftarSpecBaris = [{
+    z : - 378, face : 1 }, {
+    z : - 284, face : - 1
+  }]; zW8DaftarSpecBaris.forEach((zW8SpecBarisQ) => {
+      for (let zW8RumahX = - 520; ! (zW8RumahX > - 180); zW8RumahX += 24) {
+      if (Math.abs(zW8RumahX + 495) < 15 || Math.abs(zW8RumahX + 330) < 15) continue; if (zW8DensityFootHit(G, zW8RumahX, zW8SpecBarisQ.z, 6, 5, 2)) continue;
+      zW8ConstructHouse(G, zW8SceneQQQQQQQQ, zW8RumahX, zW8SpecBarisQ.z, zW8SpecBarisQ.face); ++ zW8HitungRumah; }
+  }); G.hoshinoHousesAdded = zW8HitungRumah; return zW8HitungRumah; }
+
+const zW8PARK_CENTRE_CANDIDATES = [[82, 415], [- 82, 415], [82, 82], [- 82, 82], [247, 82],]; function zW8MakeRoundTree(zW8TinggiValQQQQQQQQQQQ, zW8WarnaValQ) {
+  const zW8GrupPohonBundar = new THREE.Group();
+  const zW8MeshBatangBundar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, zW8TinggiValQQQQQQQQQQQ * 0.45, 7), zW8SharedStdMat(0x6b4a2f, 1));
+  zW8MeshBatangBundar.position.y = zW8TinggiValQQQQQQQQQQQ * 0.225; zW8GrupPohonBundar.add(zW8MeshBatangBundar);
+    const zW8MatKanopiBundar = new THREE.MeshStandardMaterial({
+    color : zW8WarnaValQ, roughness : 1, flatShading : true
+  }); const zW8DaftarSpecGumpal = [[0, 1, 0, 1.6], [0.95, 1.22, 0.3, 1.2], [- 0.9, 1.18, - 0.4, 1.05],];
+    zW8DaftarSpecGumpal.forEach(([zW8GumpalX, zW8GumpalY, zW8GumpalZ, zW8GumpalR]) => {
+    const zW8MeshGumpalBundar = new THREE.Mesh(new THREE.SphereGeometry(zW8GumpalR, 10, 8), zW8MatKanopiBundar); zW8MeshGumpalBundar.scale.y = 0.75;
+    zW8MeshGumpalBundar.position.set (zW8GumpalX, (zW8TinggiValQQQQQQQQQQQ * 0.45) + (zW8GumpalY * (zW8TinggiValQQQQQQQQQQQ * 0.28)), zW8GumpalZ);
+    zW8GrupPohonBundar.add(zW8MeshGumpalBundar);
+  }); return zW8ApplyCastShadow(zW8GrupPohonBundar); }
+  function zW8ConstructPark(G, zW8SceneQQQQQQQQQ) {
+  let zW8PusatTamanX = zW8PARK_CENTRE_CANDIDATES[0][0], zW8PusatTamanZ = zW8PARK_CENTRE_CANDIDATES[0][1], zW8SudahKetemu = false; const zW8DaftarKandidatLewati = [];
+    for (const[zW8KandidatX, zW8KandidatZ] of zW8PARK_CENTRE_CANDIDATES) {
+      if (! zW8DensityFootHit(G, zW8KandidatX, zW8KandidatZ, 38, 38, 2)) {
+      zW8PusatTamanX = zW8KandidatX; zW8PusatTamanZ = zW8KandidatZ; zW8SudahKetemu = true; break; }
+    zW8DaftarKandidatLewati.push([zW8KandidatX, zW8KandidatZ]); }
+  G.parkScanSkipped = zW8DaftarKandidatLewati; G.parkFallbackUsed = ! zW8SudahKetemu; const zW8ElevasiTaman = groundH(zW8PusatTamanX, zW8PusatTamanZ);
+  const zW8GrupTamanBaru = new THREE.Group(); zW8GrupTamanBaru.position.set (zW8PusatTamanX, zW8ElevasiTaman, zW8PusatTamanZ); zW8SceneQQQQQQQQQ.add(zW8GrupTamanBaru);
+
+  const zW8MeshPlazaBaru = new THREE.Mesh(new THREE.PlaneGeometry(76, 76), zW8MakePavingMat(19, 19, 0xd8d2c2)); zW8MeshPlazaBaru.rotation.x = - Math.PI / 2;
+  zW8MeshPlazaBaru.position.y = 0.04; zW8MeshPlazaBaru.receiveShadow = true; zW8GrupTamanBaru.add(zW8MeshPlazaBaru);
+
+  const zW8MeshJalurNS = new THREE.Mesh(new THREE.PlaneGeometry(6, 76), zW8MakePavingMat(2, 19, 0xffffff)); zW8MeshJalurNS.rotation.x = - Math.PI / 2;
+  zW8MeshJalurNS.position.y = 0.07; zW8MeshJalurNS.receiveShadow = true; zW8GrupTamanBaru.add(zW8MeshJalurNS);
+  const zW8MeshJalurEW = new THREE.Mesh(new THREE.PlaneGeometry(76, 6), zW8MakePavingMat(19, 2, 0xffffff)); zW8MeshJalurEW.rotation.x = - Math.PI / 2;
+  zW8MeshJalurEW.position.y = 0.07; zW8MeshJalurEW.receiveShadow = true; zW8GrupTamanBaru.add(zW8MeshJalurEW);
+
+    [- 1, 1].forEach((zW8KuadranX) => {
+      [- 1, 1].forEach((zW8KuadranZ) => {
+      const zW8MeshLawnKuadran = new THREE.Mesh(new THREE.PlaneGeometry(31, 31), zW8MakeGrassMat(8, 8)); zW8MeshLawnKuadran.rotation.x = - Math.PI / 2;
+      zW8MeshLawnKuadran.position.set (zW8KuadranX * 19.5, 0.055, zW8KuadranZ * 19.5); zW8MeshLawnKuadran.receiveShadow = true; zW8GrupTamanBaru.add(zW8MeshLawnKuadran); });
   });
-  texHasil.wrapS = texHasil.wrapT = THREE.RepeatWrapping;
-  return texHasil; };
-// (c) pasir hangat terang untuk jalur pantai yang sesungguhnya
-const buildSandTexture = () => {
-  const texHasil = makeCanvasTexture(128, 128, (sapu) => {
-    sapu.fillStyle = VICE.ground.sand;
-    sapu.fillRect(0, 0, 128, 128);
-    for (let idxButir = 0; idxButir < 500; ++idxButir) { sapu.fillStyle = rnd() < 0.6 ? VICE.ground.sandSpeckle : '#fff3cf'; sapu.globalAlpha = rr(0.1, 0.28); sapu.fillRect(rnd() * 128, rnd() * 128, 2, 2); }
-    sapu.globalAlpha = 1;
-  });
-  texHasil.wrapS = texHasil.wrapT = THREE.RepeatWrapping;
-  return texHasil; };
-const makeGrassMat = (repX, repY) => {
-  const texHasil = buildGrassTexture();
-  texHasil.repeat.set(repX, repY);
-  return new THREE.MeshStandardMaterial({ map: texHasil, roughness: 1 }); };
-const makePavingMat = (repX, repY, tintVal) => {
-  const texHasil = buildPavingTexture();
-  texHasil.repeat.set(repX, repY);
-  return new THREE.MeshStandardMaterial({ map: texHasil, color: tintVal || 0xffffff, roughness: 1 }); };
-const LIT_WINDOW_TONES = [
-  '#ffd9a0', '#ffc98a', '#fff3d0', '#ffe9b8', '#bfe0ff', '#9fd4ff',
-];
-const buildBuildingTexture = (baseColour, litChance) => makeCanvasTexture(128, 256, (sapu, wVal, hVal) => {
-  sapu.fillStyle = baseColour; sapu.fillRect(0, 0, wVal, hVal);
-  for (let barisY = 8; barisY < hVal - 8; barisY += 14) for (let kolomX = 6; kolomX < wVal - 6; kolomX += 14) {
-    const menyalaFlag = rnd() < litChance;
-    sapu.fillStyle = menyalaFlag ? LIT_WINDOW_TONES[Math.floor(rnd() * (rnd() < 0.72 ? 4 : 6))] : '#2c3844'; sapu.fillRect(kolomX, barisY, 9, 8);
-    sapu.fillStyle = 'rgba(255,255,255,.15)'; sapu.fillRect(kolomX, barisY, 9, 2); } });
-const buildSignTexture = (labelText, bgColour, fgColour) => makeCanvasTexture(256, 64, (sapu, wVal, hVal) => {
-  sapu.fillStyle = bgColour; sapu.fillRect(0, 0, wVal, hVal);
-  sapu.font = 'bold 34px sans-serif'; sapu.textAlign = 'center'; sapu.textBaseline = 'middle';
-  sapu.shadowColor = fgColour; sapu.shadowBlur = 12; sapu.fillStyle = fgColour; sapu.fillText(labelText, wVal / 2, hVal / 2); });
-export function makePalm(heightVal) {
-  const grupPalem = new THREE.Group();
-  const matBatang = new THREE.MeshStandardMaterial({ color: 0x8a6b4a, roughness: 0.95 });
-  const kurvaBatang = new THREE.QuadraticBezierCurve3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.15, heightVal * 0.55, 0), new THREE.Vector3(0.55, heightVal, 0));
-  const meshBatang = new THREE.Mesh(new THREE.TubeGeometry(kurvaBatang, 6, 0.14, 6), matBatang);
-  grupPalem.add(meshBatang);
-  const titikMahkota = kurvaBatang.getPoint(1);
-  const matDaun = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.9 });
-  for (let idxDaun = 0; idxDaun < 8; ++idxDaun) {
-    const panjangDaun = rr(2.0, 2.4);
-    const geoDaun = new THREE.PlaneGeometry(0.5, panjangDaun, 1, 6);
-    const attrPos = geoDaun.attributes.position;
-    const susunanWarna = [];
-    const warnaDari = new THREE.Color(0x2e7d32);
-    const warnaKe = new THREE.Color(0x66bb4a);
-    const warnaKerja = new THREE.Color();
-    for (let idxTitik = 0; idxTitik < attrPos.count; ++idxTitik) {
-      const titikY = attrPos.getY(idxTitik);
-      const fraksiVal = (titikY + (panjangDaun / 2)) / panjangDaun;
-      attrPos.setZ(idxTitik, -Math.pow(fraksiVal, 2) * 0.9);
-      attrPos.setX(idxTitik, attrPos.getX(idxTitik) * (1 - (fraksiVal * 0.7)));
-      warnaKerja.copy(warnaDari).lerp(warnaKe, fraksiVal);
-      susunanWarna.push(warnaKerja.r, warnaKerja.g, warnaKerja.b); }
-    geoDaun.setAttribute('color', new THREE.Float32BufferAttribute(susunanWarna, 3));
-    geoDaun.computeVertexNormals();
-    const meshDaun = new THREE.Mesh(geoDaun, matDaun);
-    meshDaun.position.copy(titikMahkota);
-    meshDaun.rotation.order = 'YXZ';
-    meshDaun.rotation.y = (idxDaun / 8) * 2 * Math.PI + rr(-0.2, 0.2);
-    meshDaun.rotation.x = -Math.PI / 2 + rr(0.35, 0.6);
-    meshDaun.translateY(panjangDaun / 2 - 0.1);
-    grupPalem.add(meshDaun); }
-  grupPalem.traverse((objNode) => { if (objNode.isMesh) objNode.castShadow = true; });
-  return grupPalem; }
-export function makeShadeTree(heightVal, canopyColour) {
-  const grupPohon = new THREE.Group();
-  const meshBatang = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.2, heightVal * 0.55, 7), new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 1 }));
-  meshBatang.position.y = heightVal * 0.275; grupPohon.add(meshBatang);
-  const matKanopi = new THREE.MeshStandardMaterial({ color: canopyColour || 0x3d8b4f, roughness: 1, flatShading: true });
-  for (let idxGumpal = 0; idxGumpal < 3; ++idxGumpal) {
-    const radiusGumpal = heightVal * rr(0.28, 0.4);
-    const meshGumpal = new THREE.Mesh(new THREE.IcosahedronGeometry(radiusGumpal, 1), matKanopi);
-    meshGumpal.position.set(rr(-0.5, 0.5), heightVal * 0.55 + rr(0, heightVal * 0.3), rr(-0.5, 0.5));
-    grupPohon.add(meshGumpal); }
-  return grupPohon; }
-// ---- rumah, RONIN MART, material bersama ---------------------------
-const MARKET = {};
-MARKET.x = -82.5; MARKET.z = -255; MARKET.name = 'RONIN MART';
-const stdMatCache = new Map();
-function sharedStdMat(colourVal, roughVal, metalVal) {
-  const kunciCache = colourVal + '|' + (roughVal || 0.95) + '|' + (metalVal || 0);
-  if (!stdMatCache.has(kunciCache)) stdMatCache.set(kunciCache, new THREE.MeshStandardMaterial({ color: colourVal, roughness: roughVal || 0.95, metalness: metalVal || 0 }));
-  return stdMatCache.get(kunciCache); }
-const tougeDistance = (x, z) => {
-  let jarakTerbaik = 1e9;
-  for (let idxSeg = 0; idxSeg < TOUGE_POINTS.length - 1; ++idxSeg) {
-    const titikAx = TOUGE_POINTS[idxSeg][0], titikAz = TOUGE_POINTS[idxSeg][1], titikBx = TOUGE_POINTS[idxSeg + 1][0], titikBz = TOUGE_POINTS[idxSeg + 1][1];
-    const segDx = titikBx - titikAx, segDz = titikBz - titikAz, segLenSq = (segDx * segDx) + (segDz * segDz) || 1;
-    let proyeksiT = ((x - titikAx) * segDx + (z - titikAz) * segDz) / segLenSq;
-    proyeksiT = Math.max(0, Math.min(1, proyeksiT));
-    const nilaiJarak = Math.hypot(x - (titikAx + (segDx * proyeksiT)), z - (titikAz + (segDz * proyeksiT)));
-    if (nilaiJarak < jarakTerbaik) jarakTerbaik = nilaiJarak; }
-  return jarakTerbaik; };
-function makePrismGeo(wVal, hVal, dVal) {
-  const bentuk = new THREE.Shape();
-  bentuk.moveTo(-wVal / 2, 0); bentuk.lineTo(wVal / 2, 0); bentuk.lineTo(0, hVal); bentuk.closePath();
-  const geoHasil = new THREE.ExtrudeGeometry(bentuk, { depth: dVal, bevelEnabled: false });
-  geoHasil.translate(0, 0, -dVal / 2);
-  return geoHasil; }
-const HOUSE_WALL_COLOURS = [
-  '#f2e3c8', '#eec9b8', '#dfe8d8', '#f5d9e0',
-  '#dcebf5', '#f7ecc9', '#e6d7f0', '#ffe8cc',
-];
-const HOUSE_ROOF_COLOURS = [
-  0xb5523c, 0x8a4a3a, 0x5d6d7e, 0xa03d2d, 0x6b4a35, 0x44586a, 0xc96f4a,
-];
-const HOUSE_YARD_GREENS = [
-  0x5d9a52, 0x67a35a, 0x548c4c, 0x71ab60,
-];
-const houseWinMat = new THREE.MeshStandardMaterial({ color: 0xbfe0ea, roughness: 0.25, metalness: 0.4, emissive: 0xffc873, emissiveIntensity: 0.35 });
-let lastWallColour = null;
-function constructHouse(G, scene, hx, hz, faceDir) {
-  const grupRumah = new THREE.Group();
-  grupRumah.position.set(hx, groundH(hx, hz), hz);
-  grupRumah.rotation.y = faceDir > 0 ? 0 : Math.PI;
-  const duaLantaiFlag = rnd() < 0.45;
-  const lebarRumah = rr(9, 12), dalamRumah = rr(8, 10), tinggiDinding = duaLantaiFlag ? rr(5.2, 6) : rr(2.9, 3.4);
-  const tinggiAtap = rr(1.8, 2.6);
-  // Lempeng halaman ialah PAVING kini, bukan rumput — rumah duduk di
-  // lot berpaving dengan driveway berpaving; hijau hanya bertahan
-  // pada pagar tanaman plus satu taman pameran.
-  const meshLot = new THREE.Mesh(new THREE.PlaneGeometry(30, 25), makePavingMat(6, 5));
-  void HOUSE_YARD_GREENS;
-  meshLot.rotation.x = -Math.PI / 2; meshLot.position.y = 0.03; grupRumah.add(meshLot);
-  const meshDrive = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 8.5), sharedStdMat(0x9a9a96, 1));
-  meshDrive.rotation.x = -Math.PI / 2;
-  meshDrive.position.set(-lebarRumah * 0.28, 0.05, (dalamRumah / 2) + 4.2);
-  grupRumah.add(meshDrive);
-  const matPagar = sharedStdMat(0x2e6b34, 1);
-  const meshPagarBelakang = new THREE.Mesh(new THREE.BoxGeometry(30, 0.55, 0.4), matPagar);
-  meshPagarBelakang.position.set(0, 0.28, -12.3); grupRumah.add(meshPagarBelakang);
-  [-1, 1].forEach((tandaSisi) => { const meshPagarSisi = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.55, 25), matPagar); meshPagarSisi.position.set(tandaSisi * 14.8, 0.28, 0); grupRumah.add(meshPagarSisi); });
-  let warnaDinding = pick(HOUSE_WALL_COLOURS);
-  if (warnaDinding === lastWallColour) warnaDinding = HOUSE_WALL_COLOURS[(HOUSE_WALL_COLOURS.indexOf(warnaDinding) + 1) % HOUSE_WALL_COLOURS.length];
-  lastWallColour = warnaDinding;
-  const meshDinding = new THREE.Mesh(new THREE.BoxGeometry(lebarRumah, tinggiDinding, dalamRumah), sharedStdMat(new THREE.Color(warnaDinding).getHex(), 0.95));
-  meshDinding.position.y = tinggiDinding / 2; grupRumah.add(meshDinding);
-  const meshAtap = new THREE.Mesh(makePrismGeo(lebarRumah + 1.2, tinggiAtap, dalamRumah + 1), sharedStdMat(pick(HOUSE_ROOF_COLOURS), 0.9));
-  meshAtap.position.y = tinggiDinding; grupRumah.add(meshAtap);
-  const meshPintu = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 2.2), sharedStdMat(0x4a3220, 0.9));
-  meshPintu.position.set(-lebarRumah * 0.28, 1.1, (dalamRumah / 2) + 0.06); grupRumah.add(meshPintu);
-  const tinggiBarisJendela = duaLantaiFlag ? [1.9, 4.4] : [1.9];
-  tinggiBarisJendela.forEach((barisY) => {
-    [0, lebarRumah * 0.3].forEach((kolomX) => {
-      const meshJendela = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 1.1), houseWinMat);
-      meshJendela.position.set(kolomX, barisY, (dalamRumah / 2) + 0.06);
-      grupRumah.add(meshJendela); }); });
-  if (rnd() < 0.4) { const meshCerobong = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.4, 0.7), sharedStdMat(0x8a7a6a, 1)); meshCerobong.position.set(lebarRumah * 0.3, tinggiDinding + (tinggiAtap * 0.55), 0); grupRumah.add(meshCerobong); }
-  if (rnd() < 0.35) { const pohonHalaman = makeShadeTree(rr(2.6, 3.4), 0x3d8b4f); pohonHalaman.position.set(11, 0, -8); grupRumah.add(pohonHalaman); }
-  // Rumah melempar bayangan (lempeng tanah menerima ketimbang melempar).
-  grupRumah.traverse((objNode) => { if (objNode.isMesh) objNode.castShadow = true; });
-  meshLot.castShadow = false; meshLot.receiveShadow = true;
-  meshDrive.castShadow = false; meshDrive.receiveShadow = true;
-  scene.add(grupRumah);
-  G.addCollider(hx, hz, lebarRumah / 2, dalamRumah / 2, tinggiDinding + tinggiAtap); }
-function constructResidentialBlock(G, scene, cx, cz) {
-  [{ dz: -31, face: -1 }, { dz: 31, face: 1 }].forEach((specBaris) => {
-    [-57, -19, 19, 57].forEach((lokalX) => {
-      const rumahX = cx + lokalX + rr(-3, 3), rumahZ = cz + specBaris.dz + rr(-3, 3);
-      if (tougeDistance(rumahX, rumahZ) < 16) return;
-      if (G.roadX.some((nilaiJalan) => Math.abs(rumahX - nilaiJalan) < 26) || G.roadZ.some((nilaiJalan) => Math.abs(rumahZ - nilaiJalan) < 26)) return;
-      constructHouse(G, scene, rumahX, rumahZ, specBaris.face); }); }); }
-function constructParkedCar(paintVal) {
-  const grupMobil = new THREE.Group();
-  const meshBadan = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.55, 4.4), new THREE.MeshStandardMaterial({ color: paintVal, roughness: 0.45, metalness: 0.35 }));
-  meshBadan.position.y = 0.55; grupMobil.add(meshBadan);
-  const meshKabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.1), sharedStdMat(0x1c2733, 0.2, 0.6));
-  meshKabin.position.set(0, 1.05, -0.15); grupMobil.add(meshKabin);
-  const geoRoda = new THREE.CylinderGeometry(0.33, 0.33, 0.24, 10);
-  const matRoda = sharedStdMat(0x17181a, 0.9);
-  [-1, 1].forEach((sisiX) => {
-    [-1, 1].forEach((sisiZ) => {
-      const meshRoda = new THREE.Mesh(geoRoda, matRoda);
-      meshRoda.rotation.z = Math.PI / 2;
-      meshRoda.position.set(sisiX * 0.85, 0.33, sisiZ * 1.35);
-      grupMobil.add(meshRoda); }); });
-  return grupMobil; }
-function constructMarket(G, scene) {
-  const mx = MARKET.x, mz = MARKET.z;
-  const grupMart = new THREE.Group();
-  grupMart.position.set(mx, groundH(mx, mz), mz);
-  scene.add(grupMart);
-  const meshBlok = new THREE.Mesh(new THREE.BoxGeometry(46, 9, 22), sharedStdMat(0xdfe3e6, 0.9));
-  meshBlok.position.y = 4.5; grupMart.add(meshBlok);
-  const meshLempeng = new THREE.Mesh(new THREE.BoxGeometry(48, 0.5, 24), sharedStdMat(0x3c4248, 0.9));
-  meshLempeng.position.y = 9.25; grupMart.add(meshLempeng);
-  [[-14, -6], [12, 5]].forEach(([acX, acZ]) => {
-    const meshAc = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.1, 2.6), sharedStdMat(0x707880, 0.8, 0.3));
-    meshAc.position.set(acX, 10.05, acZ);
-    grupMart.add(meshAc); });
-  const meshPita = new THREE.Mesh(new THREE.BoxGeometry(34, 3.4, 0.4), sharedStdMat(0x12233f, 0.8));
-  meshPita.position.set(0, 7.4, 11.1); grupMart.add(meshPita);
-  const texTandaMart = makeCanvasTexture(1024, 160, (sapu, wVal, hVal) => {
-    sapu.fillStyle = '#12233f'; sapu.fillRect(0, 0, wVal, hVal);
-    sapu.fillStyle = '#d8232a'; sapu.fillRect(0, hVal - 18, wVal, 18);
-    sapu.fillStyle = '#d8232a';
-    sapu.beginPath(); sapu.arc(72, 72, 44, 0, 2 * Math.PI); sapu.fill();
-    sapu.fillStyle = '#ffffff';
-    sapu.font = 'bold 44px sans-serif'; sapu.textAlign = 'center'; sapu.textBaseline = 'middle';
-    sapu.fillText('R', 72, 76);
-    sapu.font = 'bold 96px sans-serif';
-    sapu.textAlign = 'left';
-    sapu.fillText('RONIN MART', 140, 76);
-  });
-  const meshTanda = new THREE.Mesh(new THREE.PlaneGeometry(32, 3.2), new THREE.MeshBasicMaterial({ map: texTandaMart }));
-  meshTanda.position.set(0, 7.4, 11.32); grupMart.add(meshTanda);
-  const pijarMart = glowSprite(0x9fd4ff, 17);
-  pijarMart.position.set(0, 7.4, 12.4);
-  pijarMart.material.opacity = 0;
-  grupMart.add(pijarMart);
-  glowSpritesList.push(pijarMart);
-  const texKacaMart = makeCanvasTexture(512, 64, (sapu, wVal, hVal) => {
-    const gradasi = sapu.createLinearGradient(0, 0, 0, hVal);
-    gradasi.addColorStop(0, '#8fc3d4');
-    gradasi.addColorStop(1, '#3d6d80');
-    sapu.fillStyle = gradasi; sapu.fillRect(0, 0, wVal, hVal);
-    sapu.fillStyle = 'rgba(20,30,38,.85)'; sapu.fillRect(wVal / 2 - 30, 6, 60, hVal - 6);
-    sapu.strokeStyle = 'rgba(240,248,250,.9)';
-    sapu.lineWidth = 3;
-    for (let panelX = 0; panelX <= wVal; panelX += 42) { sapu.beginPath(); sapu.moveTo(panelX, 0); sapu.lineTo(panelX, hVal); sapu.stroke(); }
-    sapu.strokeStyle = 'rgba(240,248,250,.95)'; sapu.strokeRect(wVal / 2 - 30, 6, 60, hVal - 6); });
-  const meshKaca = new THREE.Mesh(new THREE.PlaneGeometry(40, 3.1), new THREE.MeshStandardMaterial({ map: texKacaMart, roughness: 0.2, metalness: 0.5 }));
-  meshKaca.position.set(0, 1.75, 11.06); grupMart.add(meshKaca);
-  const meshKanopi = new THREE.Mesh(new THREE.BoxGeometry(11, 0.25, 3), sharedStdMat(0x2c3138, 0.8));
-  meshKanopi.position.set(0, 3.6, 12.4); grupMart.add(meshKanopi);
-  const texPadMart = makeCanvasTexture(1024, 512, (sapu, wVal, hVal) => {
-    sapu.fillStyle = '#3a3d40'; sapu.fillRect(0, 0, wVal, hVal);
-    for (let idxBintik = 0; idxBintik < 2600; ++idxBintik) { const shadeVal = 46 + Math.floor(rnd() * 26); sapu.fillStyle = `rgba(${shadeVal},${shadeVal},${shadeVal + 3},.16)`; sapu.fillRect(rnd() * wVal, rnd() * hVal, 2, 2); }
-    sapu.strokeStyle = 'rgba(245,245,240,.9)';
-    sapu.lineWidth = 5;
-    for (let garisX = 40; garisX <= wVal - 40; garisX += 74) {
-      sapu.beginPath();
-      sapu.moveTo(garisX, 10); sapu.lineTo(garisX, 128); sapu.stroke();
-      sapu.beginPath(); sapu.moveTo(garisX, hVal - 128); sapu.lineTo(garisX, hVal - 10); sapu.stroke(); }
-    sapu.beginPath(); sapu.moveTo(40, 128); sapu.lineTo(wVal - 40, 128); sapu.stroke();
-    sapu.beginPath(); sapu.moveTo(40, hVal - 128); sapu.lineTo(wVal - 40, hVal - 128); sapu.stroke(); });
-  const meshPad = new THREE.Mesh(new THREE.PlaneGeometry(64, 32), new THREE.MeshStandardMaterial({ map: texPadMart, roughness: 1 }));
-  meshPad.rotation.x = -Math.PI / 2; meshPad.position.set(0, 0.04, 27); grupMart.add(meshPad);
-  const meshDrive = new THREE.Mesh(new THREE.PlaneGeometry(9, 42), sharedStdMat(0x3a3d40, 1));
-  meshDrive.rotation.x = -Math.PI / 2; meshDrive.position.set(0, 0.04, 64); grupMart.add(meshDrive);
-  const warnaParkir = [0xc0c4c9, 0x3f8cff, 0xd95555, 0x44484e, 0xf2b21b, 0x5a7d4f];
-  const titikParkir = [
-    [-22, 19.5, Math.PI], [-14.5, 19.5, Math.PI], [6, 19.5, Math.PI], [18, 35, 0], [25.5, 19.5, Math.PI],
-  ];
-  titikParkir.forEach(([titikX, titikZ, titikRy], idxTitik) => {
-    const meshParkir = constructParkedCar(warnaParkir[idxTitik % warnaParkir.length]);
-    meshParkir.position.set(titikX, 0, titikZ);
-    meshParkir.rotation.y = titikRy;
-    grupMart.add(meshParkir); });
-  const matRel = sharedStdMat(0xb0b6bc, 0.4, 0.7);
-  [[-18, 31], [14, 16.5]].forEach(([relX, relZ]) => {
-    [-1, 1].forEach((tandaSisi) => {
-      const meshRel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 3.6), matRel);
-      meshRel.position.set(relX + (tandaSisi * 0.9), 0.75, relZ);
-      grupMart.add(meshRel);
-      [-1, 1].forEach((tandaUjung) => { const meshTiang = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.75, 0.08), matRel); meshTiang.position.set(relX + (tandaSisi * 0.9), 0.38, relZ + (tandaUjung * 1.8)); grupMart.add(meshTiang); }); });
-    const meshTroli = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.7, 0.7), matRel);
-    meshTroli.position.set(relX, 0.45, relZ);
-    grupMart.add(meshTroli); });
-  const daftarWarnaPeti = [0xe8762a, 0x3f9d4e, 0xd8b93a, 0xc0392b];
-  [-8.5, 8.5].forEach((rakX) => {
-    const meshRak = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.9, 1.1), sharedStdMat(0x6b4a2f, 0.95));
-    meshRak.position.set(rakX, 0.45, 13.2); grupMart.add(meshRak);
-    for (let idxPeti = 0; idxPeti < 3; ++idxPeti) {
-      const meshPeti = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.55, 0.9), sharedStdMat(daftarWarnaPeti[(idxPeti + (rakX > 0 ? 1 : 0)) % 4], 0.9));
-      meshPeti.position.set(rakX - 1 + idxPeti, 1.18, 13.2);
-      grupMart.add(meshPeti); } });
-  const meshPilon = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 7, 8), matRel);
-  meshPilon.position.set(24, 3.5, 52); grupMart.add(meshPilon);
-  const meshTandaPilon = new THREE.Mesh(new THREE.BoxGeometry(7.5, 2.3, 0.35), new THREE.MeshBasicMaterial({ map: texTandaMart }));
-  meshTandaPilon.position.set(24, 6.8, 52); grupMart.add(meshTandaPilon);
-  G.addCollider(mx, mz, 23, 11, 9); }
-// ---- hiasan pantai pesisir neon: boardwalk, palem, payung, kursi
-// santai dan menara penjaga pantai di sepanjang pesisir selatan (z 549-640) --------------
-function constructBeachStrip(G, scene) {
-  const titikKenaBangunan = (x, z, nilaiPad) => G.colliders.some((objKol) => Math.abs(x - objKol.x) < objKol.hw + nilaiPad && Math.abs(z - objKol.z) < objKol.hd + nilaiPad);
-  const texBoardwalk = makeCanvasTexture(256, 64, (sapu, wVal, hVal) => {
-    sapu.fillStyle = '#a97e56'; sapu.fillRect(0, 0, wVal, hVal);
-    sapu.strokeStyle = 'rgba(70,45,25,.55)';
-    sapu.lineWidth = 3;
-    for (let papanX = 0; papanX <= wVal; papanX += 32) { sapu.beginPath(); sapu.moveTo(papanX, 0); sapu.lineTo(papanX, hVal); sapu.stroke(); }
-    sapu.strokeStyle = 'rgba(70,45,25,.35)';
-    sapu.beginPath(); sapu.moveTo(0, 2); sapu.lineTo(wVal, 2); sapu.moveTo(0, hVal - 2); sapu.lineTo(wVal, hVal - 2); sapu.stroke(); });
-  texBoardwalk.wrapS = texBoardwalk.wrapT = THREE.RepeatWrapping;
-  texBoardwalk.repeat.set(30, 1);
-  const meshBoardwalk = new THREE.Mesh(new THREE.BoxGeometry(1120, 0.1, 6), new THREE.MeshStandardMaterial({ map: texBoardwalk, roughness: 1 }));
-  meshBoardwalk.position.set(100, 0.07, 556);
-  meshBoardwalk.receiveShadow = true;
-  scene.add(meshBoardwalk);
-  for (let palemX = -440; palemX <= 640; palemX += 55) {
-    const acakX = palemX + rr(-3, 3), acakZ = 549 + rr(-1, 1);
-    if (titikKenaBangunan(acakX, acakZ, 1.5)) continue;
-    const objPalem = makePalm(rr(4.5, 6.5));
-    objPalem.position.set(acakX, 0, acakZ);
-    objPalem.rotation.y = rr(0, 6.28);
-    scene.add(objPalem); }
-  const warnaPayung = [0xff5da2, 0xffb35c, 0x39d5ff, 0xffe14d, 0x7dffb0, 0xff5c39];
-  for (let idxPayung = 0; idxPayung < 14; ++idxPayung) {
-    let titikX = 0, titikZ = 0, terpasangFlag = false;
-    for (let idxCoba = 0; idxCoba < 6 && !terpasangFlag; ++idxCoba) { titikX = rr(-420, 620); titikZ = rr(578, 636); terpasangFlag = !titikKenaBangunan(titikX, titikZ, 2); }
-    if (!terpasangFlag) continue;
-    const grupPayung = new THREE.Group();
-    grupPayung.position.set(titikX, 0, titikZ);
-    grupPayung.rotation.y = rr(0, 6.28);
-    const meshTiang = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.3, 6), sharedStdMat(0xd8d8d2, 0.7));
-    meshTiang.position.y = 1.15; meshTiang.rotation.z = 0.12; grupPayung.add(meshTiang);
-    const meshKanopi = new THREE.Mesh(new THREE.ConeGeometry(1.7, 0.55, 10), sharedStdMat(pick(warnaPayung), 0.85));
-    meshKanopi.position.set(0.14, 2.35, 0); meshKanopi.rotation.z = 0.12; grupPayung.add(meshKanopi);
-    for (let idxKursi = 0; idxKursi < 2; ++idxKursi) {
-      if (rnd() < 0.3) continue;
-      const grupKursi = new THREE.Group();
-      grupKursi.position.set(rr(-1.6, 1.6), 0, rr(0.8, 1.8));
-      grupKursi.rotation.y = rr(-0.5, 0.5);
-      const meshDudukan = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 1.5), sharedStdMat(0xf2efe4, 0.9));
-      meshDudukan.position.y = 0.28; grupKursi.add(meshDudukan);
-      const meshSandaran = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.12, 0.8), sharedStdMat(pick(warnaPayung), 0.9));
-      meshSandaran.position.set(0, 0.5, -0.75); meshSandaran.rotation.x = -0.7; grupKursi.add(meshSandaran);
-      grupPayung.add(grupKursi); }
-    scene.add(grupPayung); }
-  [-300, 100, 500].forEach((awalX) => {
-    let menaraX = awalX;
-    while (titikKenaBangunan(menaraX, 598, 2) && menaraX < awalX + 60) menaraX += 18;
-    if (titikKenaBangunan(menaraX, 598, 2)) return;
-    const grupMenara = new THREE.Group();
-    grupMenara.position.set(menaraX, 0, 598);
-    const matPutih = sharedStdMat(0xf2efe4, 0.85);
-    const matMerah = sharedStdMat(0xd8232a, 0.85);
-    [-1, 1].forEach((sisiX) => {
-      [-1, 1].forEach((sisiZ) => {
-        const meshKaki = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.2, 0.12), matPutih);
-        meshKaki.position.set(sisiX * 0.7, 1.1, sisiZ * 0.5);
-        grupMenara.add(meshKaki); }); });
-    const meshPlatform = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.3), matPutih);
-    meshPlatform.position.y = 2.25; grupMenara.add(meshPlatform);
-    const meshPanelBelakang = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.1, 0.1), matPutih);
-    meshPanelBelakang.position.set(0, 2.85, -0.6); grupMenara.add(meshPanelBelakang);
-    const meshAtap = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.1, 1.5), matMerah);
-    meshAtap.position.y = 3.5; grupMenara.add(meshAtap);
-    const meshRampa = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 2.6), matPutih);
-    meshRampa.position.set(0, 1.1, -1.7); meshRampa.rotation.x = 0.72; grupMenara.add(meshRampa);
-    scene.add(grupMenara);
-    G.addCollider(menaraX, 598, 1, 0.8, 3.5); }); }
-// ---- ronde kepadatan --------------------------------------------------
-// Uji titik / tapak terhadap daftar collider bersama, mencerminkan
-// pola titikKenaBangunan milik constructBeachStrip.
-const densityPointHit = (G, x, z, padVal) => G.colliders.some((objKol) => Math.abs(x - objKol.x) < objKol.hw + padVal && Math.abs(z - objKol.z) < objKol.hd + padVal);
-const densityFootHit = (G, x, z, halfW, halfD, padVal) => G.colliders.some((objKol) => Math.abs(x - objKol.x) < (objKol.hw + halfW) + padVal && Math.abs(z - objKol.z) < (objKol.hd + halfD) + padVal);
-const applyCastShadow = (rootObj) => { rootObj.traverse((objNode) => { if (objNode.isMesh) objNode.castShadow = true; }); return rootObj; };
-// 1. FRONTASE CORAL: baris dekorasi kontinu pada kedua sisi jalan
-// bulevar z=495, mengisi bentangan antar-blok yang kosong. Bidang
-// fasad duduk pada z=470 (baris utara, menghadap +z/selatan ke jalan)
-// dan z=518 (baris selatan, menghadap -z/utara), jadi koridor jalan
-// tetap bersih sementara tak ada foto setinggi jalan di sepanjang
-// bulevar yang kebanyakan tanah kosong.
-function constructBoulevardFrontage(G, scene) {
-  const hitunganSisi = { north: 0, south: 0 };
-  const opsiTandaFrontase = [
-    ['HOTEL CORAL', '#ffb35c'], ['SUSHI-GO', '#7dffb0'], ['ARCADE', '#ff7ab0'],
-    ['CLUB NEON', '#e879ff'], ['RAMEN', '#ff5c39'], ['PAWN', '#ffe14d'],
-  ];
-  [{ key: 'north', facadeZ: 470, faceDir: 1 }, { key: 'south', facadeZ: 518, faceDir: -1 }].forEach((specSisi) => {
-    let warnaTerakhir = null, warnaSebelumnya = null, kursorX = -560;
-    while (kursorX < 640) {
-      let lebarBentang = rr(18, 30);
-      if (kursorX + lebarBentang > 640) lebarBentang = 640 - kursorX;
-      if (lebarBentang < 10) break;
-      const dalamBentang = rr(12, 18);
-      const tinggiBentang = rr(10, 26);
-      const pusatX = kursorX + (lebarBentang / 2), pusatZ = specSisi.facadeZ - (specSisi.faceDir * (dalamBentang / 2));
-      // Koridor jalan melintang: lewati bentangan apa pun yang mengganggu jalan.
-      const nilaiJalan = G.roadX.find((koordinatJalan) => pusatX - lebarBentang / 2 < koordinatJalan + 14 && pusatX + lebarBentang / 2 > koordinatJalan - 14);
-      if (nilaiJalan !== undefined) { kursorX = nilaiJalan + 14 + rr(0.5, 2); continue; }
-      if (densityFootHit(G, pusatX, pusatZ, lebarBentang / 2, dalamBentang / 2, 2)) { kursorX += lebarBentang + rr(1.5, 5); continue; }
-      // Siklus pastel dengan aturan tanpa-ulang-berdampingan milik
-      // loop tersemai — diperluas ke warna dua bangunan ke belakang (penjaga Coral).
-      let warnaDasar = pick(VICE.coralPastels);
-      if (warnaDasar === warnaTerakhir) warnaDasar = VICE.coralPastels[(VICE.coralPastels.indexOf(warnaDasar) + 1) % VICE.coralPastels.length];
-      if (warnaDasar === warnaSebelumnya) warnaDasar = VICE.coralPastels[(VICE.coralPastels.indexOf(warnaDasar) + 1) % VICE.coralPastels.length];
-      warnaSebelumnya = warnaTerakhir;
-      warnaTerakhir = warnaDasar;
-      const texFasad = buildBuildingTexture(warnaDasar, rr(0.25, 0.42));
-      texFasad.wrapS = texFasad.wrapT = THREE.RepeatWrapping;
-      const matFasad = new THREE.MeshStandardMaterial({
-        map: texFasad, emissive: 0xffc873, emissiveMap: texFasad, emissiveIntensity: 0, roughness: 0.9,
-      });
-      matFasad.color.setRGB(rr(0.92, 1), rr(0.9, 1), rr(0.87, 0.98));
-      if (!G.buildingMats) G.buildingMats = [];
-      G.buildingMats.push(matFasad);
-      const dasarY = groundH(pusatX, pusatZ);
-      const meshBangunan = new THREE.Mesh(new THREE.BoxGeometry(lebarBentang, tinggiBentang, dalamBentang), matFasad);
-      meshBangunan.position.set(pusatX, (tinggiBentang / 2) + dasarY, pusatZ);
-      meshBangunan.castShadow = true;
-      meshBangunan.receiveShadow = true;
-      scene.add(meshBangunan);
-      // Siluet dekorasi berundak, seperti baris pantai tersemai.
-      const tinggiUndakan = rr(1.6, 3);
-      const meshUndakan = new THREE.Mesh(new THREE.BoxGeometry(lebarBentang * 0.62, tinggiUndakan, dalamBentang * 0.62), matFasad);
-      meshUndakan.position.set(pusatX, tinggiBentang + (tinggiUndakan / 2) + dasarY, pusatZ);
-      meshUndakan.castShadow = true;
-      scene.add(meshUndakan);
-      // Trim neon, didaftarkan persis seperti bangunan Coral tersemai.
-      const warnaNeon = pick(VICE.neonTrim);
-      const matTrim = new THREE.MeshStandardMaterial({ color: warnaNeon, emissive: warnaNeon, emissiveIntensity: 0, roughness: 0.6 });
-      const meshTrim = new THREE.Mesh(new THREE.BoxGeometry(lebarBentang + 0.35, 0.3, dalamBentang + 0.35), matTrim);
-      meshTrim.position.set(pusatX, (tinggiBentang * 0.84) + dasarY, pusatZ);
-      meshTrim.castShadow = true;
-      scene.add(meshTrim);
-      if (!G.neonTrimMats) G.neonTrimMats = [];
-      G.neonTrimMats.push(matTrim);
-      const pijarTrim = glowSprite(new THREE.Color(warnaNeon), 12);
-      pijarTrim.position.set(pusatX, (tinggiBentang * 0.84) + dasarY, pusatZ);
-      pijarTrim.material.opacity = 0;
-      scene.add(pijarTrim);
-      glowSpritesList.push(pijarTrim);
-      // Tanda toko + tenda miring pada sisi yang menghadap bulevar.
-      const garisFasadZ = specSisi.facadeZ;
-      if (rnd() < 0.6) {
-        const [teksTanda, warnaTanda] = pick(opsiTandaFrontase);
-        const meshTanda = new THREE.Mesh(new THREE.PlaneGeometry(Math.min(14, lebarBentang * 0.7), 3.4), new THREE.MeshBasicMaterial({ map: buildSignTexture(teksTanda, '#101018', warnaTanda) }));
-        meshTanda.position.set(pusatX, 4.6 + dasarY, garisFasadZ + (specSisi.faceDir * 0.12));
-        if (specSisi.faceDir < 0) meshTanda.rotation.y = Math.PI;
-        scene.add(meshTanda);
-        const pijarTanda = glowSprite(new THREE.Color(warnaTanda), 13);
-        pijarTanda.position.set(pusatX, 4.6 + dasarY, garisFasadZ + (specSisi.faceDir * 0.05));
-        pijarTanda.material.opacity = 0;
-        scene.add(pijarTanda);
-        glowSpritesList.push(pijarTanda); }
-      // Aksen tenda bergantian menurut paritas indeks bangunan
-      // (hitunganSisi[specSisi.key] ialah indeks bangunan ini pada
-      // sisinya, dinaikkan pada akhir loop) — bangunan genap mengambil
-      // aksen hangat, bangunan ganjil yang sejuk, jadi toko
-      // bertetangga tak pernah berbagi keluarga aksen.
-      const warnaTenda = hitunganSisi[specSisi.key] % 2 === 0 ? pick(['#ff5da2', '#ffb35c']) : pick(['#39d5ff', '#7dffb0']);
-      const matTenda = new THREE.MeshStandardMaterial({ color: new THREE.Color(warnaTenda), roughness: 0.85 });
-      const meshTenda = new THREE.Mesh(new THREE.BoxGeometry(Math.min(15, lebarBentang * 0.72), 0.15, 2.2), matTenda);
-      meshTenda.position.set(pusatX, 3.6 + dasarY, garisFasadZ + (specSisi.faceDir * 1.05));
-      meshTenda.rotation.x = specSisi.faceDir * 0.3;
-      meshTenda.castShadow = true;
-      scene.add(meshTenda);
-      G.addCollider(pusatX, pusatZ, lebarBentang / 2, dalamBentang / 2, tinggiBentang);
-      ++hitunganSisi[specSisi.key];
-      kursorX += lebarBentang + rr(1.5, 5);
-    } });
-  G.frontageCounts = hitunganSisi;
-  return hitunganSisi; }
-// 2. Palem lebih rapat pada kedua trotoar bulevar (z=481 / z=509).
-function constructBoulevardPalms(G, scene) {
-  let jumlahTambah = 0;
-  for (let palemX = -560; palemX <= 640; palemX += 20) {
-    if (G.roadX.some((nilaiJalan) => Math.abs(palemX - nilaiJalan) < 16)) continue;
-    [481, 509].forEach((trotoarZ) => {
-      if (densityPointHit(G, palemX, trotoarZ, 1.5)) return;
-      const objPalem = makePalm(rr(4.5, 6.5));
-      objPalem.position.set(palemX, groundH(palemX, trotoarZ), trotoarZ);
-      objPalem.rotation.y = rr(0, 6.28);
-      scene.add(objPalem);
-      ++jumlahTambah; }); }
-  G.boulevardPalmsAdded = jumlahTambah;
-  return jumlahTambah; }
-// 2b. Palem berkotak penanam pada trotoar SELATAN bulevar, seperti
-// bingkai konsep itu: tiap palem terbit dari kotak penanam beton
-// pucat persegi (1.6 x 0.55 x 1.6 m) dengan gumpalan semak hijau kecil
-// terselip pada dasarnya. Baris pada z=513 — antara tepi selatan
-// jalan dan frontase selatan z=518 — tiap ~40 m dari x=-320 ke 520.
-// Lewati: jalan melintang (|x-r|<13 untuk tiap jalan vertikal),
-// collider apa pun dalam pad 2, dan tapak titik kumpul GS1
-// (|x-100|<10) supaya gugus sosial mempertahankan lantai terbukanya.
-function makePlanterPalmUnit() {
-  const grupUnit = new THREE.Group();
-  const meshKotak = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 1.6), sharedStdMat(0xd8d2c4, 1));
-  meshKotak.position.y = 0.275; grupUnit.add(meshKotak);
-  const meshTanah = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 1.4), sharedStdMat(0x4a3826, 1));
-  meshTanah.position.y = 0.56; grupUnit.add(meshTanah);
-  const matSemak = new THREE.MeshStandardMaterial({ color: 0x3d8b4f, roughness: 1, flatShading: true });
-  [[-0.55, -0.55], [0.55, -0.55], [-0.55, 0.55], [0.55, 0.55]].forEach(([sudutX, sudutZ]) => {
-    const meshGumpal = new THREE.Mesh(new THREE.IcosahedronGeometry(rr(0.22, 0.3), 1), matSemak);
-    meshGumpal.position.set(sudutX, 0.68, sudutZ);
-    grupUnit.add(meshGumpal); });
-  const objPalem = makePalm(rr(4.5, 6));
-  objPalem.position.y = 0.55;
-  objPalem.rotation.y = rr(0, 6.28);
-  grupUnit.add(objPalem);
-  return applyCastShadow(grupUnit); }
-function constructBoulevardPlanters(G, scene) {
-  let jumlahTambah = 0;
-  for (let penanamX = -320; penanamX <= 520; penanamX += 40) {
-    if (G.roadX.some((nilaiJalan) => Math.abs(penanamX - nilaiJalan) < 13)) continue;
-    if (Math.abs(penanamX - 100) < 10) continue;
-    if (densityPointHit(G, penanamX, 513, 2)) continue;
-    const objUnit = makePlanterPalmUnit();
-    objUnit.position.set(penanamX, groundH(penanamX, 513), 513);
-    scene.add(objUnit);
-    ++jumlahTambah; }
-  G.boulevardPlantersAdded = jumlahTambah;
-  return jumlahTambah; }
-// 3. Titik kumpul: bangku + penanam (plus kios vendor pada dua).
-function makeBenchUnit() {
-  const grupBangku = new THREE.Group();
-  const matRangka = sharedStdMat(0x3a3f45, 0.6, 0.5), matKayu = sharedStdMat(0x8a6844, 0.95);
-  [-1, 1].forEach((tandaSisi) => {
-    const meshKakiDepan = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.12), matRangka);
-    meshKakiDepan.position.set(tandaSisi * 0.95, 0.22, 0.28);
-    grupBangku.add(meshKakiDepan);
-    const meshKakiBelakang = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.85, 0.12), matRangka);
-    meshKakiBelakang.position.set(tandaSisi * 0.95, 0.42, -0.28);
-    grupBangku.add(meshKakiBelakang); });
-  for (let idxBilah = 0; idxBilah < 3; ++idxBilah) { const meshBilah = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.16), matKayu); meshBilah.position.set(0, 0.45, -0.2 + (idxBilah * 0.22)); grupBangku.add(meshBilah); }
-  for (let idxSandaran = 0; idxSandaran < 2; ++idxSandaran) { const meshSandaran = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.16, 0.05), matKayu); meshSandaran.position.set(0, 0.68 + (idxSandaran * 0.24), -0.32); meshSandaran.rotation.x = -0.18; grupBangku.add(meshSandaran); }
-  return applyCastShadow(grupBangku); }
-function makePlanterUnit() {
-  const grupPenanam = new THREE.Group();
-  const meshKotak = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 0.9), sharedStdMat(0x9a8a72, 1));
-  meshKotak.position.y = 0.28; grupPenanam.add(meshKotak);
-  const meshSemak = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 1), new THREE.MeshStandardMaterial({ color: 0x3d8b4f, roughness: 1, flatShading: true }));
-  meshSemak.position.y = 0.85; grupPenanam.add(meshSemak);
-  return applyCastShadow(grupPenanam); }
-function makeStallUnit() {
-  const grupKios = new THREE.Group();
-  const matTiang = sharedStdMat(0x6b4a2f, 0.9);
-  [-1, 1].forEach((sisiX) => {
-    [-1, 1].forEach((sisiZ) => {
-      const meshTiang = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.5, 6), matTiang);
-      meshTiang.position.set(sisiX * 1.5, 1.25, sisiZ * 0.9);
-      grupKios.add(meshTiang); }); });
-  // Kanopi bergaris: garis koral / putih, keluarga payung pantai.
-  const texKanopiKios = makeCanvasTexture(128, 128, (sapu, wVal, hVal) => {
-    for (let idxGaris = 0; idxGaris < 8; ++idxGaris) { sapu.fillStyle = idxGaris % 2 ? '#f7f2e6' : '#ff7a6b'; sapu.fillRect(idxGaris * (wVal / 8), 0, wVal / 8, hVal); } });
-  texKanopiKios.wrapS = THREE.RepeatWrapping;
-  texKanopiKios.wrapT = THREE.RepeatWrapping;
-  const meshKanopi = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.12, 2.4), new THREE.MeshStandardMaterial({ map: texKanopiKios, roughness: 0.9 }));
-  meshKanopi.position.y = 2.55; meshKanopi.rotation.z = 0.06; grupKios.add(meshKanopi);
-  const meshKonter = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.9, 1.1), sharedStdMat(0xa97e56, 0.95));
-  meshKonter.position.set(0, 0.45, 0.35); grupKios.add(meshKonter);
-  const warnaPetiKios = [0xe8762a, 0x3f9d4e, 0xd8b93a, 0xc0392b];
-  for (let idxPeti = 0; idxPeti < 4; ++idxPeti) {
-    const meshPeti = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.4, 0.55), sharedStdMat(warnaPetiKios[idxPeti % 4], 0.9));
-    meshPeti.position.set(-1.1 + (idxPeti * 0.72), 1.1, 0.35);
-    grupKios.add(meshPeti); }
-  return applyCastShadow(grupKios); }
-function constructGatherSpots(G, scene) {
-  const kandidatTitik = [
-    { x: 100, z: 511, ry: Math.PI, stall: true },
-    { x: 300, z: 552, ry: 0, stall: true },
-    { x: -60, z: -238, ry: Math.PI, stall: false },
-    { x: -210, z: 481, ry: 0, stall: false },
-  ];
-  G.gatherSpots = [];
-  kandidatTitik.forEach((objKandidat) => {
-    let terpasangX = null;
-    for (let idxLangkah = 0; idxLangkah <= 10 && terpasangX === null; ++idxLangkah) {
-      const daftarGeser = idxLangkah === 0 ? [0] : [idxLangkah * 4, -idxLangkah * 4];
-      for (const nilaiGeser of daftarGeser) {
-        const cobaX = objKandidat.x + nilaiGeser;
-        if (!densityPointHit(G, cobaX, objKandidat.z, 2.5)) { terpasangX = cobaX; break; } } }
-    if (terpasangX === null) return;
-    const grupTitik = new THREE.Group();
-    grupTitik.position.set(terpasangX, groundH(terpasangX, objKandidat.z), objKandidat.z);
-    grupTitik.rotation.y = objKandidat.ry;
-    [-1.9, 1.9].forEach((bangkuX) => { const objBangku = makeBenchUnit(); objBangku.position.set(bangkuX, 0, 0); grupTitik.add(objBangku); });
-    [-3.6, 3.6].forEach((penanamX) => { const objPenanam = makePlanterUnit(); objPenanam.position.set(penanamX, 0, 0.25); grupTitik.add(objPenanam); });
-    if (objKandidat.stall) {
-      const objKios = makeStallUnit();
-      objKios.position.set(0, 0, -2.4);
-      grupTitik.add(objKios);
-      const kosRy = Math.cos(objKandidat.ry), sinRy = Math.sin(objKandidat.ry);
-      const kiosDuniaX = terpasangX + ((0 * kosRy) + (-2.4 * sinRy)), kiosDuniaZ = objKandidat.z + ((-0 * sinRy) + (-2.4 * kosRy));
-      G.addCollider(kiosDuniaX, kiosDuniaZ, 1.8, 1.2, 2.6);
-    }
-    scene.add(grupTitik);
-    const rekTitik = {};
-    rekTitik.x = terpasangX; rekTitik.z = objKandidat.z; rekTitik.ry = objKandidat.ry; rekTitik.stall = objKandidat.stall;
-    G.gatherSpots.push(rekTitik); });
-  return G.gatherSpots; }
-// 4. Baris Hoshino: baris rumah kontinu mengapit jalan z=-330.
-function constructHoshinoRows(G, scene) {
-  let jumlahTambah = 0;
-  const specBarisList = [{ z: -378, face: 1 }, { z: -284, face: -1 }];
-  specBarisList.forEach((specBaris) => {
-    for (let rumahX = -520; rumahX <= -180; rumahX += 24) {
-      if (Math.abs(rumahX + 495) < 15 || Math.abs(rumahX + 330) < 15) continue;
-      if (densityFootHit(G, rumahX, specBaris.z, 6, 5, 2)) continue;
-      constructHouse(G, scene, rumahX, specBaris.z, specBaris.face);
-      ++jumlahTambah; } });
-  G.hoshinoHousesAdded = jumlahTambah;
-  return jumlahTambah; }
-// 5. TAMAN: SATU taman pameran yang disengaja — satu-satunya rumput
-// baru di kota ini. Pusat kandidat dipindai DALAM URUTAN terhadap
-// daftar collider saja (tak ada rnd() dalam pindai, jadi urutan RNG
-// tersemai tiap pembangun lain tak tersentuh); pusat pertama yang
-// tapak 76x76 m-nya bersih collider (pad 2) menang.
-const PARK_CENTRE_CANDIDATES = [
-  [82, 415], [-82, 415], [82, 82], [-82, 82], [247, 82],
-];
-function makeRoundTree(heightVal, colourVal) {
-  const grupPohon = new THREE.Group();
-  const meshBatang = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, heightVal * 0.45, 7), sharedStdMat(0x6b4a2f, 1));
-  meshBatang.position.y = heightVal * 0.225; grupPohon.add(meshBatang);
-  const matKanopi = new THREE.MeshStandardMaterial({ color: colourVal, roughness: 1, flatShading: true });
-  const specGumpalList = [
-    [0, 1, 0, 1.6], [0.95, 1.22, 0.3, 1.2], [-0.9, 1.18, -0.4, 1.05],
-  ];
-  specGumpalList.forEach(([gumpalX, gumpalY, gumpalZ, gumpalR]) => {
-    const meshGumpal = new THREE.Mesh(new THREE.SphereGeometry(gumpalR, 10, 8), matKanopi);
-    meshGumpal.scale.y = 0.75;
-    meshGumpal.position.set(gumpalX, (heightVal * 0.45) + (gumpalY * (heightVal * 0.28)), gumpalZ);
-    grupPohon.add(meshGumpal); });
-  return applyCastShadow(grupPohon); }
-function constructPark(G, scene) {
-  let tamanX = PARK_CENTRE_CANDIDATES[0][0], tamanZ = PARK_CENTRE_CANDIDATES[0][1], ketemuFlag = false;
-  const daftarLewati = [];
-  for (const [kandidatX, kandidatZ] of PARK_CENTRE_CANDIDATES) {
-    if (!densityFootHit(G, kandidatX, kandidatZ, 38, 38, 2)) { tamanX = kandidatX; tamanZ = kandidatZ; ketemuFlag = true; break; }
-    daftarLewati.push([kandidatX, kandidatZ]); }
-  G.parkScanSkipped = daftarLewati;
-  G.parkFallbackUsed = !ketemuFlag;
-  const dasarY = groundH(tamanX, tamanZ);
-  const grupTaman = new THREE.Group();
-  grupTaman.position.set(tamanX, dasarY, tamanZ);
-  scene.add(grupTaman);
-  // (a) basis plaza: 76x76 paving
-  const meshPlaza = new THREE.Mesh(new THREE.PlaneGeometry(76, 76), makePavingMat(19, 19, 0xd8d2c2));
-  meshPlaza.rotation.x = -Math.PI / 2; meshPlaza.position.y = 0.04; meshPlaza.receiveShadow = true; grupTaman.add(meshPlaza);
-  // (b) jalur silang: dua strip paving lebih terang 6 m melintasi pusat
-  const meshJalurNS = new THREE.Mesh(new THREE.PlaneGeometry(6, 76), makePavingMat(2, 19, 0xffffff));
-  meshJalurNS.rotation.x = -Math.PI / 2; meshJalurNS.position.y = 0.07; meshJalurNS.receiveShadow = true; grupTaman.add(meshJalurNS);
-  const meshJalurEW = new THREE.Mesh(new THREE.PlaneGeometry(76, 6), makePavingMat(19, 2, 0xffffff));
-  meshJalurEW.rotation.x = -Math.PI / 2; meshJalurEW.position.y = 0.07; meshJalurEW.receiveShadow = true; grupTaman.add(meshJalurEW);
-  // (c) panel LAWN: empat sisipan kuadran antara jalur —
-  // SATU-SATUNYA rumput baru yang ditambahkan ronde ini (hijau taman jenuh).
-  [-1, 1].forEach((kuadranX) => {
-    [-1, 1].forEach((kuadranZ) => {
-      const meshLawn = new THREE.Mesh(new THREE.PlaneGeometry(31, 31), makeGrassMat(8, 8));
-      meshLawn.rotation.x = -Math.PI / 2;
-      meshLawn.position.set(kuadranX * 19.5, 0.055, kuadranZ * 19.5);
-      meshLawn.receiveShadow = true;
-      grupTaman.add(meshLawn); }); });
-  // (d) AIR MANCUR pada pusat persis
-  const grupMancur = new THREE.Group();
-  grupTaman.add(grupMancur);
-  const matBeton = sharedStdMat(0xe6e0d0, 0.9);
-  const meshCekungan = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.4, 0.8, 24), matBeton);
-  meshCekungan.position.y = 0.4; grupMancur.add(meshCekungan);
-  const meshBibir = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.18, 8, 24), matBeton);
-  meshBibir.rotation.x = Math.PI / 2; meshBibir.position.y = 0.82; grupMancur.add(meshBibir);
-  const matAirMancur = new THREE.MeshStandardMaterial({ color: 0x3fa7d6, transparent: true, opacity: 0.9, roughness: 0.15 });
-  const meshAir = new THREE.Mesh(new THREE.CircleGeometry(3.7, 24), matAirMancur);
-  meshAir.rotation.x = -Math.PI / 2; meshAir.position.y = 0.72; grupMancur.add(meshAir);
-  const meshPilar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.65, 1.5, 12), matBeton);
-  meshPilar.position.y = 1.4; grupMancur.add(meshPilar);
-  const meshMangkuk = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 0.9, 0.35, 16), matBeton);
-  meshMangkuk.position.y = 2.25; grupMancur.add(meshMangkuk);
-  const meshAirMangkuk = new THREE.Mesh(new THREE.CircleGeometry(1.1, 16), matAirMancur);
-  meshAirMangkuk.rotation.x = -Math.PI / 2; meshAirMangkuk.position.y = 2.44; grupMancur.add(meshAirMangkuk);
-  applyCastShadow(grupMancur);
-  G.addCollider(tamanX, tamanZ, 4.4, 4.4, 2.4);
-  // (e) POHON: 14 — palem + pohon bundar pada kuadran lawn, palem
-  // pada dua sudut plaza. Titik deterministik (tak ada rnd() di sini).
-  const daftarTitikPohon = [];
-  [-1, 1].forEach((kuadranX) => {
-    [-1, 1].forEach((kuadranZ) => {
-      daftarTitikPohon.push([kuadranX * 12, kuadranZ * 12], [kuadranX * 27, kuadranZ * 10], [kuadranX * 10, kuadranZ * 27]); }); });
-  daftarTitikPohon.push([-34, -34], [34, 34]);
-  const warnaPohonBundar = [0x3f9e4d, 0x359146, 0x4caf50];
-  daftarTitikPohon.forEach(([titikX, titikZ], idxPohon) => {
-    const objPohon = idxPohon % 3 === 2 ? makePalm(5 + (idxPohon % 2)) : makeRoundTree(4.6 + ((idxPohon % 3) * 0.5), warnaPohonBundar[idxPohon % 3]);
-    objPohon.position.set(titikX, 0, titikZ);
-    objPohon.rotation.y = (idxPohon * 1.7) % 6.28;
-    grupTaman.add(objPohon); });
-  // (f) BANGKU: 6 di sepanjang jalur, tiap diputar menghadap air mancur
-  // (konstruksi bangku yang sama seperti titik kumpul — makeBenchUnit).
-  [[10, 5.5], [-10, 5.5], [10, -5.5], [-10, -5.5], [5.5, 10], [-5.5, -10]].forEach(([bangkuX, bangkuZ]) => {
-    const objBangku = makeBenchUnit();
-    objBangku.position.set(bangkuX, 0, bangkuZ);
-    objBangku.rotation.y = Math.atan2(-bangkuX, -bangkuZ);
-    grupTaman.add(objBangku); });
-  // (g) SATU kios vendor pada tepi plaza timur (pola titik kumpul)
-  const kiosDuniaX = tamanX + 32;
-  const kiosDuniaZ = tamanZ + 8;
-  const objKios = makeStallUnit();
-  objKios.position.set(32, 0, 8);
-  objKios.rotation.y = Math.PI / 2;
-  grupTaman.add(objKios);
-  G.addCollider(kiosDuniaX, kiosDuniaZ, 1.8, 1.8, 2.6);
-  // (h) 4 tiang lampu pada sudut plaza (visual saja, gaya lampu jalan)
-  [[-35, -35], [35, -35], [-35, 35], [35, 35]].forEach(([lampuX, lampuZ]) => {
-    const grupLampu = new THREE.Group();
-    const meshTiang = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5, 6), sharedStdMat(0x3a3f45, 0.8, 0.5));
-    meshTiang.position.y = 2.5; grupLampu.add(meshTiang);
-    const meshKepala = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6),
-      new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc98a, emissiveIntensity: 0.4, roughness: 0.5 }));
-    meshKepala.position.y = 5.05; grupLampu.add(meshKepala);
-    grupLampu.position.set(lampuX, 0, lampuZ);
-    applyCastShadow(grupLampu);
-    grupTaman.add(grupLampu); });
-  // (i) petak bunga: 4 kotak rendah dalam warna terang di sepanjang jalur
-  const daftarWarnaBunga = [0xff5da2, 0xffb35c, 0xffe14d, 0xff5da2];
-  [[20, 4.4, 0], [-20, 4.4, 0], [20, -4.4, 0], [-4.4, -20, Math.PI / 2]].forEach(([petakX, petakZ, petakRy], idxPetak) => {
-    const grupPetak = new THREE.Group();
-    const meshKotakPetak = new THREE.Mesh(new THREE.BoxGeometry(4, 0.35, 1.2), sharedStdMat(0x9a8a72, 1));
-    meshKotakPetak.position.y = 0.18; grupPetak.add(meshKotakPetak);
-    const meshAtasPetak = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.14, 1.0),
-      new THREE.MeshStandardMaterial({ color: daftarWarnaBunga[idxPetak], roughness: 0.9, flatShading: true }));
-    meshAtasPetak.position.y = 0.42; grupPetak.add(meshAtasPetak);
-    grupPetak.position.set(petakX, 0, petakZ);
-    grupPetak.rotation.y = petakRy;
-    applyCastShadow(grupPetak);
-    grupTaman.add(grupPetak); });
-  const rekTitikTaman = {};
-  rekTitikTaman.x = tamanX; rekTitikTaman.z = tamanZ; rekTitikTaman.stallX = kiosDuniaX; rekTitikTaman.stallZ = kiosDuniaZ;
-  G.parkSpot = rekTitikTaman;
-  const rekHitungTaman = {};
-  rekHitungTaman.trees = daftarTitikPohon.length; rekHitungTaman.benches = 6; rekHitungTaman.lamps = 4;
-  rekHitungTaman.flowerBeds = 4; rekHitungTaman.stalls = 1; rekHitungTaman.fountains = 1;
-  G.parkCounts = rekHitungTaman;
-  return G.parkSpot; }
-let streetlampGlowList = [];
-export function buildWorld(G) {
-  const scene = G.scene;
-  G.roadX = [
-    -660, -495, -330, -165, 0, 165, 330, 495, 660,
-  ];
-  G.roadZ = [
-    -660, -495, -330, -165, 0, 165, 330, 495, 660,
-  ];
-  G.touge = TOUGE_POINTS.map((objTitik) => ({ x: objTitik[0], z: objTitik[1] }));
-  streetlampGlowList = [];
-  glowSpritesList = [];
-  skyLastHour = -10;
-  // Kubah langit gradien (digambar ulang murah oleh updateWorld saat jam bergerak).
-  skySheet = document.createElement('canvas');
-  skySheet.width = 16;
-  skySheet.height = 512;
-  skyBrush = skySheet.getContext('2d');
-  skyTextureObj = new THREE.CanvasTexture(skySheet);
-  skyTextureObj.colorSpace = THREE.SRGBColorSpace;
-  computeSkyColors(G.timeOfDay || 10.5);
-  paintSkyDome();
-  skyDome = new THREE.Mesh(new THREE.SphereGeometry(1500, 24, 12), new THREE.MeshBasicMaterial({ map: skyTextureObj, side: THREE.BackSide, fog: false, depthWrite: false }));
-  skyDome.renderOrder = -1;
-  scene.add(skyDome);
-  scene.fog = new THREE.Fog(0xcfe4ec, 220, 1500);
-  // Basis tanah
-  const texTanah = buildGroundTexture();
-  texTanah.wrapS = texTanah.wrapT = THREE.RepeatWrapping;
-  texTanah.repeat.set(40, 40);
-  if (G.maxAniso) texTanah.anisotropy = G.maxAniso;
-  const meshTanah = new THREE.Mesh(new THREE.PlaneGeometry(1320, 1320), new THREE.MeshStandardMaterial({ map: texTanah, roughness: 1 }));
-  meshTanah.rotation.x = -Math.PI / 2;
-  meshTanah.receiveShadow = true;
-  scene.add(meshTanah);
-  // Mesh bukit di bawah rute touge
-  const geoBukit = new THREE.PlaneGeometry(700, 700, 24, 24);
-  { const attrPos = geoBukit.attributes.position; for (let idxTitik = 0; idxTitik < attrPos.count; ++idxTitik) { const titikVx = attrPos.getX(idxTitik) - 330, titikVz = -(attrPos.getY(idxTitik)) - 330; attrPos.setZ(idxTitik, groundH(titikVx, titikVz)); } geoBukit.computeVertexNormals(); }
-  const meshBukit = new THREE.Mesh(geoBukit, makeGrassMat(28, 28));
-  meshBukit.rotation.x = -Math.PI / 2;
-  meshBukit.position.set(-330, 0.02, -330);
-  meshBukit.receiveShadow = true;
-  scene.add(meshBukit);
-  // Bidang air
-  const meshAir = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshStandardMaterial({ color: 0x1d6fb8, transparent: true, opacity: 0.95, roughness: 0.3, metalness: 0.2 }));
-  meshAir.rotation.x = -Math.PI / 2;
-  meshAir.position.y = -0.4;
-  scene.add(meshAir);
-  G.water = meshAir;
-  // Pantai — tekstur pasir hangat terang (boardwalk duduk di atas)
-  const texPasirPantai = buildSandTexture();
-  texPasirPantai.repeat.set(66, 5);
-  if (G.maxAniso) texPasirPantai.anisotropy = G.maxAniso;
-  const meshPantai = new THREE.Mesh(new THREE.PlaneGeometry(1320, 100), new THREE.MeshStandardMaterial({ map: texPasirPantai, roughness: 1 }));
-  meshPantai.rotation.x = -Math.PI / 2;
-  meshPantai.position.set(0, 0.03, 610);
-  meshPantai.receiveShadow = true;
-  scene.add(meshPantai);
-  // ---- overlay tanah per zona (y .015-.02: di atas tanah basis pada 0,
-  // di bawah jalan .05 / trotoar .06 / marka .07+; tata letak dan
-  // collider tak tersentuh). Blok Coral + Neon Mile + Portside terbaca
-  // sebagai plaza lempeng paving, Hoshino Heights sebagai rumput
-  // jenuh — tak ada tanah menghadap kamera yang dibiarkan sebagai
-  // bidang tanah datar, latar depan bulevar pantai termasuk.
-  {
-    const tambahOverlayZona = (zonaX, zonaZ, matZona) => {
-      const meshOverlay = new THREE.Mesh(new THREE.PlaneGeometry(660, 660), matZona);
-      meshOverlay.rotation.x = -Math.PI / 2;
-      meshOverlay.position.set(zonaX, 0.018, zonaZ);
-      meshOverlay.receiveShadow = true;
-      scene.add(meshOverlay); };
-    // Ulang 66 di atas bidang 660 m = ubin 10 m / lempeng 5 m
-    // (pengulangan 55 lebih awal terbaca sebagai ubin raksasa 12 m /
-    // lempeng 6 m pada ketinggian jalan di sini).
-    const zonaPaveA = buildPavingTexture(); zonaPaveA.repeat.set(66, 66);
-    if (G.maxAniso) zonaPaveA.anisotropy = G.maxAniso;
-    tambahOverlayZona(330, 330, new THREE.MeshStandardMaterial({ map: zonaPaveA, roughness: 1 }));
-    const zonaPaveB = buildPavingTexture(); zonaPaveB.repeat.set(66, 66);
-    if (G.maxAniso) zonaPaveB.anisotropy = G.maxAniso;
-    tambahOverlayZona(330, -330, new THREE.MeshStandardMaterial({ map: zonaPaveB, roughness: 1 }));
-    const zonaPaveC = buildPavingTexture(); zonaPaveC.repeat.set(66, 66);
-    if (G.maxAniso) zonaPaveC.anisotropy = G.maxAniso;
-    tambahOverlayZona(-330, 330, new THREE.MeshStandardMaterial({ map: zonaPaveC, roughness: 1 }));
-    // Hoshino Heights tak butuh overlay: mesh bukit menutupi seluruh
-    // kuadran itu dan kini membawa tekstur rumput, begitu juga halaman rumah di sini.
-  }
-  // Jalan
-  // Aspal bermarka: tekstur U = melintasi jalan, V = sepanjang
-  // panjangnya. Penampang 4 lajur: garis tepi solid, pembagi lajur
-  // putus-putus duduk pada U .25/.75 (dash mengisi 45% ubin V, jadi
-  // ia berubin mulus), garis pusat solid ganda kuning pucat.
-  // Noise bintik/retak di atas basis seperti sebelumnya.
-  const texAspal = makeCanvasTexture(64, 256, (sapu, wVal, hVal) => {
-    sapu.fillStyle = '#33373c'; sapu.fillRect(0, 0, wVal, hVal);
-    for (let idxBintik = 0; idxBintik < 700; ++idxBintik) { const shadeVal = 40 + Math.floor(rnd() * 36); sapu.fillStyle = `rgba(${shadeVal},${shadeVal},${shadeVal + 4},.18)`; sapu.fillRect(rnd() * wVal, rnd() * hVal, 2, 2); }
-    for (let idxKilau = 0; idxKilau < 130; ++idxKilau) { sapu.fillStyle = 'rgba(255,255,255,.045)'; sapu.fillRect(rnd() * wVal, rnd() * hVal, 2, 2); }
-    sapu.strokeStyle = 'rgba(0,0,0,.16)';
-    sapu.lineWidth = 1;
-    for (let idxRetak = 0; idxRetak < 7; ++idxRetak) { sapu.beginPath(); let retakX = rnd() * wVal, retakY = rnd() * hVal; sapu.moveTo(retakX, retakY); for (let idxSeg = 0; idxSeg < 3; ++idxSeg) { retakX += rr(-9, 9); retakY += rr(4, 14); sapu.lineTo(retakX, retakY); } sapu.stroke(); }
-    const gambarGarisJalan = (posisiU, warnaGaris, fraksiLebar) => { sapu.fillStyle = warnaGaris; const lebarGaris = Math.max(1, wVal * fraksiLebar); sapu.fillRect(wVal * posisiU - lebarGaris / 2, 0, lebarGaris, hVal); };
-    gambarGarisJalan(0.03, '#d8d8d2', 0.012);
-    gambarGarisJalan(0.97, '#d8d8d2', 0.012);
-    gambarGarisJalan(0.478, '#e8d9a0', 0.008);
-    gambarGarisJalan(0.522, '#e8d9a0', 0.008);
-    sapu.fillStyle = '#ffffff';
-    [0.25, 0.75].forEach((posisiU) => { const lebarGaris = Math.max(1, wVal * 0.010); sapu.fillRect(wVal * posisiU - lebarGaris / 2, 0, lebarGaris, hVal * 0.45); }); });
-  texAspal.wrapS = texAspal.wrapT = THREE.RepeatWrapping;
-  if (G.maxAniso) texAspal.anisotropy = G.maxAniso;
-  const matAspal = new THREE.MeshStandardMaterial({ map: texAspal, roughness: 0.95 });
-  const matAspalPolos = new THREE.MeshStandardMaterial({ color: 0x33373d, roughness: 0.95 });
-  // Trotoar memakai tekstur lempeng paving, diubin sepanjang panjangnya.
-  const texTrotoarV = buildPavingTexture();
-  texTrotoarV.repeat.set(1, 110);
-  if (G.maxAniso) texTrotoarV.anisotropy = G.maxAniso;
-  const matTrotoarV = new THREE.MeshStandardMaterial({ map: texTrotoarV, roughness: 1 });
-  const texTrotoarH = buildPavingTexture();
-  texTrotoarH.repeat.set(110, 1);
-  if (G.maxAniso) texTrotoarH.anisotropy = G.maxAniso;
-  const matTrotoarH = new THREE.MeshStandardMaterial({ map: texTrotoarH, roughness: 1 });
-  G.roadX.forEach((nilaiJalanX) => {
-    const klonTex = texAspal.clone();
-    klonTex.needsUpdate = true;
-    klonTex.repeat.set(1, 44);
-    const meshJalan = new THREE.Mesh(new THREE.PlaneGeometry(CFG.roadW, 1320), new THREE.MeshStandardMaterial({ map: klonTex, roughness: 0.95 }));
-    meshJalan.rotation.x = -Math.PI / 2;
-    meshJalan.position.set(nilaiJalanX, 0.05, 0);
-    meshJalan.receiveShadow = true;
-    scene.add(meshJalan);
-    [-1, 1].forEach((tandaSisi) => { const meshTrotoar = new THREE.Mesh(new THREE.BoxGeometry(3, 0.12, 1320), matTrotoarV); meshTrotoar.position.set(nilaiJalanX + tandaSisi * ((CFG.roadW / 2) + 1.5), 0.06, 0); meshTrotoar.receiveShadow = true; scene.add(meshTrotoar); }); });
-  G.roadZ.forEach((nilaiJalanZ) => {
-    // rotation.z = PI/2 pada bidang ini mentranspos sumbu tekstur
-    // (bidang U berjalan sepanjang jalan, V melintas), jadi putar
-    // tekstur kembali: dengan rotasi PI/2 terhadap pusat, repeat
-    // (1,44) mendarat sebagai 1 ubin melintang dan 44 sepanjang
-    // panjang — kepadatan dan orientasi yang sama seperti jalan X.
-    const klonTex = texAspal.clone();
-    klonTex.needsUpdate = true;
-    klonTex.center.set(0.5, 0.5);
-    klonTex.rotation = Math.PI / 2;
-    klonTex.repeat.set(1, 44);
-    const meshJalan = new THREE.Mesh(new THREE.PlaneGeometry(1320, CFG.roadW), new THREE.MeshStandardMaterial({ map: klonTex, roughness: 0.95 }));
-    meshJalan.rotation.x = -Math.PI / 2;
-    meshJalan.position.set(0, 0.05, nilaiJalanZ);
-    meshJalan.rotation.z = Math.PI / 2;
-    meshJalan.receiveShadow = true;
-    scene.add(meshJalan);
-    [-1, 1].forEach((tandaSisi) => { const meshTrotoar = new THREE.Mesh(new THREE.BoxGeometry(1320, 0.12, 3), matTrotoarH); meshTrotoar.position.set(0, 0.06, nilaiJalanZ + tandaSisi * ((CFG.roadW / 2) + 1.5)); meshTrotoar.receiveShadow = true; scene.add(meshTrotoar); }); });
-  void matAspal; void matAspalPolos;
-  // Penyeberangan: satu InstancedMesh batang zebra pada tiap persimpangan kisi.
-  {
-    const batangPerSisi = 5;
-    const hitunganSisi = 4;
-    const totalBatang = G.roadX.length * G.roadZ.length * hitunganSisi * batangPerSisi;
-    const instZebra = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0xf2efe4, roughness: 0.9 }), totalBatang);
-    const mat4Sementara = new THREE.Matrix4(), quatSementara = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0)), vecSementara = new THREE.Vector3(), skalaSementara = new THREE.Vector3();
-    const geserSilang = (CFG.roadW / 2) + 3.5;
-    const rentangSilang = CFG.roadW / 6;
-    let idxBatang = 0;
-    G.roadX.forEach((silangX) => {
-      G.roadZ.forEach((silangZ) => {
-        for (let idxGaris = 0; idxGaris < batangPerSisi; ++idxGaris) {
-          const geserGaris = -2 * rentangSilang + (idxGaris * rentangSilang);
-          vecSementara.set(silangX + geserGaris, 0.07, silangZ - geserSilang); skalaSementara.set(2.4, 6, 1); instZebra.setMatrixAt(idxBatang++, mat4Sementara.compose(vecSementara, quatSementara, skalaSementara));
-          vecSementara.set(silangX + geserGaris, 0.07, silangZ + geserSilang); instZebra.setMatrixAt(idxBatang++, mat4Sementara.compose(vecSementara, quatSementara, skalaSementara));
-          vecSementara.set(silangX - geserSilang, 0.07, silangZ + geserGaris); skalaSementara.set(6, 2.4, 1); instZebra.setMatrixAt(idxBatang++, mat4Sementara.compose(vecSementara, quatSementara, skalaSementara));
-          vecSementara.set(silangX + geserSilang, 0.07, silangZ + geserGaris); instZebra.setMatrixAt(idxBatang++, mat4Sementara.compose(vecSementara, quatSementara, skalaSementara)); } }); });
-    instZebra.instanceMatrix.needsUpdate = true;
-    scene.add(instZebra); }
-  // ---- marka jalan: geometri rata yang diturunkan dari kisi + data
-  // touge yang SAMA yang dipakai jalan dan minimap. Enam InstancedMesh
-  // total (dash pusat, dash pembagi lajur, garis tepi, garis berhenti,
-  // dash touge dan strip tepi touge) dalam dua material bersama, pada
-  // y .08-.13 — di atas aspal (.05) dan batang zebra (.07), jadi tak ada z-fighting.
-  {
-    const setengahLebarJalan = CFG.roadW / 2;
-    const matMarkaPutih = new THREE.MeshStandardMaterial({ color: 0xf5f2e8, roughness: 0.85 });
-    const matMarkaKuning = new THREE.MeshStandardMaterial({ color: 0xf7d154, roughness: 0.85 });
-    const daftarDashPusat = [], daftarDashLajur = [], daftarGarisTepi = [];
-    const daftarGarisBerhenti = [], daftarDashTouge = [], daftarTepiTouge = [];
-    const dekatPersimpangan = (nilaiUji, daftarJalan) => daftarJalan.some((nilaiJalan) => Math.abs(nilaiUji - nilaiJalan) < setengahLebarJalan + 9);
-    G.roadX.forEach((nilaiJalanX) => {
-      for (let dashZ = -648; dashZ <= 648; dashZ += 12) {
-        if (dekatPersimpangan(dashZ, G.roadZ)) continue;
-        daftarDashPusat.push({ x: nilaiJalanX, z: dashZ + 3, sx: 0.4, sy: 6 });
-        daftarDashLajur.push({ x: nilaiJalanX - 7.5, z: dashZ + 2, sx: 0.3, sy: 4.5 });
-        daftarDashLajur.push({ x: nilaiJalanX + 7.5, z: dashZ + 2, sx: 0.3, sy: 4.5 }); }
-      for (let idxSeg = 0; idxSeg < G.roadZ.length - 1; ++idxSeg) {
-        const awalSegZ = G.roadZ[idxSeg] + setengahLebarJalan, akhirSegZ = G.roadZ[idxSeg + 1] - setengahLebarJalan;
-        daftarGarisTepi.push({ x: nilaiJalanX - setengahLebarJalan + 0.8, z: (awalSegZ + akhirSegZ) / 2, sx: 0.3, sy: akhirSegZ - awalSegZ });
-        daftarGarisTepi.push({ x: nilaiJalanX + setengahLebarJalan - 0.8, z: (awalSegZ + akhirSegZ) / 2, sx: 0.3, sy: akhirSegZ - awalSegZ }); } });
-    G.roadZ.forEach((nilaiJalanZ) => {
-      for (let dashX = -648; dashX <= 648; dashX += 12) {
-        if (dekatPersimpangan(dashX, G.roadX)) continue;
-        daftarDashPusat.push({ x: dashX + 3, z: nilaiJalanZ, sx: 6, sy: 0.4 });
-        daftarDashLajur.push({ x: dashX + 2, z: nilaiJalanZ - 7.5, sx: 4.5, sy: 0.3 });
-        daftarDashLajur.push({ x: dashX + 2, z: nilaiJalanZ + 7.5, sx: 4.5, sy: 0.3 }); }
-      for (let idxSeg = 0; idxSeg < G.roadX.length - 1; ++idxSeg) {
-        const awalSegX = G.roadX[idxSeg] + setengahLebarJalan, akhirSegX = G.roadX[idxSeg + 1] - setengahLebarJalan;
-        daftarGarisTepi.push({ x: (awalSegX + akhirSegX) / 2, z: nilaiJalanZ - setengahLebarJalan + 0.8, sx: akhirSegX - awalSegX, sy: 0.3 });
-        daftarGarisTepi.push({ x: (awalSegX + akhirSegX) / 2, z: nilaiJalanZ + setengahLebarJalan - 0.8, sx: akhirSegX - awalSegX, sy: 0.3 }); } });
-    // Garis berhenti pada keempat pendekatan tiap simpang
-    // (bersinyal), tepat sebelum pita zebra (batang pada HW+3.5, setengah rentang 3 -> luar 21.5).
-    G.roadX.forEach((silangX) => {
-      G.roadZ.forEach((silangZ) => {
-        const geserBerhenti = setengahLebarJalan + 8.5;
-        daftarGarisBerhenti.push({ x: silangX - 7, z: silangZ + geserBerhenti, sx: 13, sy: 0.55 });
-        daftarGarisBerhenti.push({ x: silangX + 7, z: silangZ - geserBerhenti, sx: 13, sy: 0.55 });
-        daftarGarisBerhenti.push({ x: silangX + geserBerhenti, z: silangZ - 7, sx: 0.55, sy: 13 });
-        daftarGarisBerhenti.push({ x: silangX - geserBerhenti, z: silangZ + 7, sx: 0.55, sy: 13 }); }); });
-    // Touge: dash pusat + strip tepi mengikuti poliline.
-    for (let idxSeg = 0; idxSeg < G.touge.length - 1; ++idxSeg) {
-      const titikSegA = G.touge[idxSeg], titikSegB = G.touge[idxSeg + 1];
-      const segDx = titikSegB.x - titikSegA.x, segDz = titikSegB.z - titikSegA.z;
-      const panjangSeg = Math.hypot(segDx, segDz) || 0.001;
-      const satuanX = segDx / panjangSeg, satuanZ = segDz / panjangSeg, tegakX = -satuanZ, tegakZ = satuanX;
-      const rotSegY = Math.atan2(-satuanX, -satuanZ);
-      for (let jarakDash = 4; jarakDash < panjangSeg; jarakDash += 9) {
-        const dashT = jarakDash / panjangSeg, dashX = titikSegA.x + (segDx * dashT), dashZ = titikSegA.z + (segDz * dashT);
-        daftarDashTouge.push({ x: dashX, z: dashZ, ry: rotSegY, sx: 0.35, sy: 3.2, y: groundH(dashX, dashZ) + 0.12 }); }
-      [-1, 1].forEach((tandaSisi) => {
-        const tengahX = ((titikSegA.x + titikSegB.x) / 2) + (tegakX * tandaSisi * 4.05), tengahZ = ((titikSegA.z + titikSegB.z) / 2) + (tegakZ * tandaSisi * 4.05);
-        const tinggiTepiA = groundH(titikSegA.x + tegakX * tandaSisi * 4.05, titikSegA.z + tegakZ * tandaSisi * 4.05);
-        const tinggiTepiB = groundH(titikSegB.x + tegakX * tandaSisi * 4.05, titikSegB.z + tegakZ * tandaSisi * 4.05);
-        daftarTepiTouge.push({ x: tengahX, z: tengahZ, ry: Math.atan2(satuanX, satuanZ), sx: 0.28, sz: panjangSeg, y: Math.max(tinggiTepiA, tinggiTepiB) + 0.13 }); }); }
-    const quatRata = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
-    const bangunInstBidang = (daftarEntri, refMat) => {
-      if (!daftarEntri.length) return;
-      const meshInst = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), refMat, daftarEntri.length);
-      const mat4Sementara = new THREE.Matrix4(), quatSementara = new THREE.Quaternion(), quatYSementara = new THREE.Quaternion(), vecSementara = new THREE.Vector3(), skalaSementara = new THREE.Vector3();
-      daftarEntri.forEach((objEntri, idxEntri) => {
-        if (objEntri.ry) { quatYSementara.setFromEuler(new THREE.Euler(0, objEntri.ry, 0)); quatSementara.copy(quatYSementara).multiply(quatRata); } else quatSementara.copy(quatRata);
-        meshInst.setMatrixAt(idxEntri, mat4Sementara.compose(vecSementara.set(objEntri.x, objEntri.y || 0.08, objEntri.z), quatSementara, skalaSementara.set(objEntri.sx, objEntri.sy, 1))); });
-      meshInst.instanceMatrix.needsUpdate = true;
-      scene.add(meshInst); };
-    const bangunInstKotak = (daftarEntri, refMat) => {
-      if (!daftarEntri.length) return;
-      const meshInst = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), refMat, daftarEntri.length);
-      const mat4Sementara = new THREE.Matrix4(), quatSementara = new THREE.Quaternion(), vecSementara = new THREE.Vector3(), skalaSementara = new THREE.Vector3();
-      daftarEntri.forEach((objEntri, idxEntri) => {
-        quatSementara.setFromEuler(new THREE.Euler(0, objEntri.ry || 0, 0));
-        meshInst.setMatrixAt(idxEntri, mat4Sementara.compose(vecSementara.set(objEntri.x, objEntri.y || 0.08, objEntri.z), quatSementara, skalaSementara.set(objEntri.sx, 0.05, objEntri.sz))); });
-      meshInst.instanceMatrix.needsUpdate = true;
-      scene.add(meshInst); };
-    bangunInstBidang(daftarDashPusat, matMarkaKuning);
-    bangunInstBidang(daftarDashLajur, matMarkaPutih);
-    bangunInstBidang(daftarGarisTepi, matMarkaPutih);
-    bangunInstBidang(daftarGarisBerhenti, matMarkaPutih);
-    bangunInstBidang(daftarDashTouge, matMarkaPutih);
-    bangunInstKotak(daftarTepiTouge, matMarkaPutih); }
-  // ---- lampu lalu lintas: dua tiang sinyal pada sudut diagonal
-  // tiap persimpangan kisi (tiang NE = kepala sumbu X, cakram
-  // menghadap +x; tiang SW = kepala sumbu Z, cakram menghadap +z).
-  // Tiang: satu geometri gabungan, satu InstancedMesh. Lampu: 12
-  // InstancedMesh (3 warna x nyala/mati x 2 sumbu); siklus hanya
-  // mengalihkan .visible pada perubahan fase. Siklus: NS hijau 5.5s,
-  // NS kuning 1.5s, semua-merah 0.75s, EW hijau 5.5s, EW kuning 1.5s,
-  // semua-merah 0.75s (loop 15.5s).
-  {
-    const gabungDaftarGeo = (daftarGeo) => {
-      let totalTitik = 0;
-      let totalIndeks = 0;
-      daftarGeo.forEach((objGeo) => { totalTitik += objGeo.attributes.position.count; totalIndeks += objGeo.index.count; });
-      const susunanPos = new Float32Array(totalTitik * 3), susunanNor = new Float32Array(totalTitik * 3), susunanUv = new Float32Array(totalTitik * 2);
-      const susunanIdx = new Uint32Array(totalIndeks);
-      let geserTitik = 0;
-      let geserIndeks = 0;
-      daftarGeo.forEach((objGeo) => {
-        susunanPos.set(objGeo.attributes.position.array, geserTitik * 3);
-        susunanNor.set(objGeo.attributes.normal.array, geserTitik * 3);
-        if (objGeo.attributes.uv) susunanUv.set(objGeo.attributes.uv.array, geserTitik * 2);
-        for (let idxElem = 0; idxElem < objGeo.index.count; idxElem++) susunanIdx[geserIndeks + idxElem] = objGeo.index.getX(idxElem) + geserTitik;
-        geserTitik += objGeo.attributes.position.count;
-        geserIndeks += objGeo.index.count; });
-      const geoGabungan = new THREE.BufferGeometry();
-      geoGabungan.setAttribute('position', new THREE.BufferAttribute(susunanPos, 3));
-      geoGabungan.setAttribute('normal', new THREE.BufferAttribute(susunanNor, 3));
-      geoGabungan.setAttribute('uv', new THREE.BufferAttribute(susunanUv, 2));
-      geoGabungan.setIndex(new THREE.BufferAttribute(susunanIdx, 1));
-      return geoGabungan; };
-    // Tiang kanonis: lengan mencapai menuju +z, kotak kepala pada ujungnya.
-    const geoTiangSinyal = gabungDaftarGeo([
-      new THREE.CylinderGeometry(0.07, 0.09, 4.6, 8).translate(0, 2.3, 0),
-      new THREE.BoxGeometry(0.12, 0.12, 1.0).translate(0, 4.5, 0.5),
-      new THREE.BoxGeometry(0.34, 0.9, 0.3).translate(0, 4.15, 0.95),
-    ]);
-    const matTiangSinyal = new THREE.MeshStandardMaterial({ color: 0x22262a, roughness: 0.6, metalness: 0.6 });
-    const daftarPersimpangan = [];
-    G.roadX.forEach((silangX) => { G.roadZ.forEach((silangZ) => daftarPersimpangan.push([silangX, silangZ])); });
-    const instTiang = new THREE.InstancedMesh(geoTiangSinyal, matTiangSinyal, daftarPersimpangan.length * 2);
-    const geoMukaLampu = new THREE.CircleGeometry(0.11, 12);
-    const daftarWarnaNyala = [0xff2a1e, 0xffb020, 0x2aff5a];
-    const petaMeshLampu = { x: [], z: [] };
-    ['x', 'z'].forEach((kunciSumbu) => {
-      for (let idxWarna = 0; idxWarna < 3; ++idxWarna) {
-        const meshNyala = new THREE.InstancedMesh(geoMukaLampu, new THREE.MeshBasicMaterial({ color: daftarWarnaNyala[idxWarna] }), daftarPersimpangan.length);
-        const meshMati = new THREE.InstancedMesh(geoMukaLampu, new THREE.MeshBasicMaterial({ color: 0x1a1c1e }), daftarPersimpangan.length);
-        const rekPasangan = {}; rekPasangan.on = meshNyala; rekPasangan.off = meshMati;
-        petaMeshLampu[kunciSumbu].push(rekPasangan);
-        scene.add(meshNyala);
-        scene.add(meshMati); } });
-    const mat4Sementara = new THREE.Matrix4(), quatSementara = new THREE.Quaternion(), eulerSementara = new THREE.Euler(), vecSkalaSatuan = new THREE.Vector3(1, 1, 1), vecPosSementara = new THREE.Vector3();
-    let idxTiang = 0;
-    daftarPersimpangan.forEach(([silangX, silangZ], idxSilang) => {
-      [[silangX + 13, silangZ + 13, Math.PI / 2, 'x'], [silangX - 13, silangZ - 13, 0, 'z']].forEach(([tiangX, tiangZ, rotTiangY, sumbuTiang]) => {
-        quatSementara.setFromEuler(eulerSementara.set(0, rotTiangY, 0));
-        instTiang.setMatrixAt(idxTiang++, mat4Sementara.compose(vecPosSementara.set(tiangX, 0, tiangZ), quatSementara, vecSkalaSatuan));
-        const kosRot = Math.cos(rotTiangY), sinRot = Math.sin(rotTiangY);
-        for (let idxWarna = 0; idxWarna < 3; ++idxWarna) {
-          const lampuY = 4.15 + [0.28, 0, -0.28][idxWarna], geserLampuZ = 1.11;
-          const lampuDuniaX = tiangX + (geserLampuZ * sinRot), lampuDuniaZ = tiangZ + (geserLampuZ * kosRot);
-          const matriksLampu = mat4Sementara.compose(vecPosSementara.set(lampuDuniaX, lampuY, lampuDuniaZ), quatSementara, vecSkalaSatuan);
-          petaMeshLampu[sumbuTiang][idxWarna].on.setMatrixAt(idxSilang, matriksLampu);
-          petaMeshLampu[sumbuTiang][idxWarna].off.setMatrixAt(idxSilang, matriksLampu); } }); });
-    instTiang.instanceMatrix.needsUpdate = true;
-    scene.add(instTiang);
-    ['x', 'z'].forEach((kunciSumbu) => { petaMeshLampu[kunciSumbu].forEach((rekPasangan) => { rekPasangan.on.instanceMatrix.needsUpdate = true; rekPasangan.off.instanceMatrix.needsUpdate = true; }); });
-    // Mesin status siklus
-    let waktuSiklus = 0, idxFase = -1, statusSinyalX = 'red', statusSinyalZ = 'green';
-    const terapkanStatusSinyal = () => {
-      [['x', statusSinyalX], ['z', statusSinyalZ]].forEach(([kunciSumbu, nilaiStatus]) => {
-        const idxAktif = nilaiStatus === 'red' ? 0 : nilaiStatus === 'yellow' ? 1 : 2;
-        petaMeshLampu[kunciSumbu].forEach((rekPasangan, idxWarna) => { rekPasangan.on.visible = idxWarna === idxAktif; rekPasangan.off.visible = idxWarna !== idxAktif; }); }); };
-    terapkanStatusSinyal();
-    G.lightState = (kunciSumbu) => (kunciSumbu === 'x' ? statusSinyalX : statusSinyalZ);
-    G.updaters.push((GInner, dtInner) => {
-      waktuSiklus = (waktuSiklus + dtInner) % 15.5;
-      let idxFaseBerikut;
-      let statusBerikutX = 'red', statusBerikutZ = 'red';
-      if (waktuSiklus < 5.5) { idxFaseBerikut = 0;
-        statusBerikutZ = 'green'; }
-      else if (waktuSiklus < 7) { idxFaseBerikut = 1;
-        statusBerikutZ = 'yellow'; }
-      else if (waktuSiklus < 7.75) { idxFaseBerikut = 2;
-      }
-      else if (waktuSiklus < 13.25) { idxFaseBerikut = 3;
-        statusBerikutX = 'green'; }
-      else if (waktuSiklus < 14.75) { idxFaseBerikut = 4;
-        statusBerikutX = 'yellow'; }
-      else { idxFaseBerikut = 5; }
-      if (idxFaseBerikut !== idxFase) { idxFase = idxFaseBerikut; statusSinyalX = statusBerikutX; statusSinyalZ = statusBerikutZ; terapkanStatusSinyal(); } }); }
-  // Loop bangunan
-  const fallbackPalette = ['#8d99ae', '#a39a8b', '#b08968', '#94867a', '#9c7bb5', '#6d8ea0'];
-  const beachPastels = VICE.coralPastels;
-  // Palet fasad per distrik (tetangga tak pernah berulang — lihat
-  // penjaga lastBaseColour)
-  const districtPaletteMap = {
-    neon: VICE.downtown,
-    coral: VICE.coralPastels,
-    port: [
-      '#8a7f6a', '#6b7a72', '#a08a68', '#5f8d7d', '#94867a', '#7f9bb3',
-    ],
-    hoshino: [
-      '#9aa0a6', '#a39a8b', '#7d9a7a', '#b09872', '#6d8ea0', '#9a8a72',
-    ],
-  };
-  let lastBaseColour = null, prevBaseColour = null;
-  const buildingSignOptions = [
-    ['RAMEN', '#ff5c39'], ['CLUB NEON', '#e879ff'], ['TURBO PARTS', '#57b7ff'],
-    ['HOTEL CORAL', '#ffb35c'], ['PAWN', '#ffe14d'], ['SUSHI-GO', '#7dffb0'], ['ARCADE', '#ff7ab0'],
-  ];
-  const posterTextOptions = [
-    'RONIN KAI', 'TURBO MAX', 'BAY COLA',
-  ];
-  for (let blockX = 0; blockX < 8; blockX++)
-    for (let blockZ = 0; blockZ < 8; ++blockZ) {
-    const blockCentreX = -577.5 + blockX * 165, blockCentreZ = -577.5 + blockZ * 165;
-    const districtObj = DISTRICTS.reduce((bestEntry, candEntry) => ((blockCentreX - candEntry.cx) ** 2 + (blockCentreZ - candEntry.cz) ** 2 < (blockCentreX - bestEntry.cx) ** 2 + (blockCentreZ - bestEntry.cz) ** 2 ? candEntry : bestEntry), DISTRICTS[0]);
-    // Blok Hoshino Heights dekat pusat distrik ialah perumahan
-    // — rumah alih-alih menara. Menara terkonsentrasi di Neon Mile
-    // (downtown); Portside turun ke ketinggian menengah.
-    if (districtObj.id === 'hoshino' && Math.hypot(blockCentreX - districtObj.cx, blockCentreZ - districtObj.cz) < 250) { constructResidentialBlock(G, scene, blockCentreX, blockCentreZ); continue; }
-    const beachFlag = blockCentreZ > 500;
-    const buildingsInBlock = ri(2, 4);
-    for (let buildingIdx = 0; buildingIdx < buildingsInBlock; ++buildingIdx) {
-      const spanW = rr(22, 44);
-      const spanD = rr(22, 44);
-      const spanTall = beachFlag ? rr(8, 20) : districtObj.id === 'neon' ? rr(24, 60) : districtObj.id === 'hoshino' ? rr(8, 22) : districtObj.id === 'port' ? rr(8, 20) : rr(10, 28);
-      const bldX = blockCentreX + rr(-48, 48), bldZ = blockCentreZ + rr(-48, 48);
-      if (Math.abs(bldX + 412.5) < 60 && Math.abs(bldZ - 412.5) < 60) continue;
-      if (Math.abs(bldX - MARKET.x) < 54 && Math.abs(bldZ - MARKET.z) < 76) continue;
-      const paletteList = beachFlag ? beachPastels : (districtPaletteMap[districtObj.id] || fallbackPalette);
-      let baseColour = pick(paletteList);
-      if (baseColour === lastBaseColour) baseColour = paletteList[(paletteList.indexOf(baseColour) + 1) % paletteList.length];
-      // Perpanjangan penjaga: pemeriksaan di atas MEMANG mencakup
-      // Coral (ia berjalan untuk tiap palet), tapi hanya terhadap
-      // satu bangunan sebelumnya dan baris pantai berbagi daftar
-      // pastel Coral — jadi untuk Coral / beachfront tolak juga
-      // warna yang dipakai dua bangunan lalu, menjaga fasad pastel
-      // bertetangga agar tak pernah cocok dalam satu lari.
-      if ((districtObj.id === 'coral' || beachFlag) && baseColour === prevBaseColour) baseColour = paletteList[(paletteList.indexOf(baseColour) + 1) % paletteList.length];
-      prevBaseColour = lastBaseColour;
-      lastBaseColour = baseColour;
-      const facadeTex = buildBuildingTexture(baseColour, rr(0.18, 0.42));
-      facadeTex.wrapS = facadeTex.wrapT = THREE.RepeatWrapping;
-      const facadeMat = new THREE.MeshStandardMaterial({ map: facadeTex, emissive: 0xffc873, emissiveMap: facadeTex, emissiveIntensity: 0, roughness: 0.9 });
-      facadeMat.color.setRGB(rr(0.92, 1), rr(0.9, 1), rr(0.87, 0.98));
-      const buildingMesh = new THREE.Mesh(new THREE.BoxGeometry(spanW, spanTall, spanD), facadeMat);
-      buildingMesh.position.set(bldX, spanTall / 2 + groundH(bldX, bldZ), bldZ);
-      buildingMesh.castShadow = true;
-      buildingMesh.receiveShadow = true;
-      scene.add(buildingMesh);
-      if (!G.buildingMats) G.buildingMats = [];
-      G.buildingMats.push(facadeMat);
-      G.addCollider(bldX, bldZ, spanW / 2, spanD / 2, spanTall);
-      if (beachFlag) {
-        const stepHeight = rr(1.6, 3);
-        const stepMesh = new THREE.Mesh(new THREE.BoxGeometry(spanW * 0.62, stepHeight, spanD * 0.62), facadeMat);
-        stepMesh.position.set(bldX, spanTall + stepHeight / 2 + groundH(bldX, bldZ), bldZ);
-        stepMesh.castShadow = true;
-        scene.add(stepMesh); }
-      if (beachFlag || districtObj.id === 'coral') {
-        const neonColour = pick(VICE.neonTrim);
-        const trimMat = new THREE.MeshStandardMaterial({ color: neonColour, emissive: neonColour, emissiveIntensity: 0, roughness: 0.6 });
-        const trimMesh = new THREE.Mesh(new THREE.BoxGeometry(spanW + 0.35, 0.3, spanD + 0.35), trimMat);
-        trimMesh.position.set(bldX, spanTall * 0.84 + groundH(bldX, bldZ), bldZ);
-        trimMesh.castShadow = true;
-        scene.add(trimMesh);
-        if (!G.neonTrimMats) G.neonTrimMats = [];
-        G.neonTrimMats.push(trimMat);
-        const trimGlow = glowSprite(new THREE.Color(neonColour), 12);
-        trimGlow.position.set(bldX, spanTall * 0.84 + groundH(bldX, bldZ), bldZ);
-        trimGlow.material.opacity = 0;
-        scene.add(trimGlow);
-        glowSpritesList.push(trimGlow); }
-      if (rnd() < 0.3) {
-        const propMesh = new THREE.Mesh(new THREE.BoxGeometry(rr(2, 4), rr(1, 2), rr(2, 4)), new THREE.MeshStandardMaterial({ color: 0x555a60 }));
-        propMesh.position.set(bldX + rr(-6, 6), spanTall + 0.8, bldZ + rr(-6, 6));
-        scene.add(propMesh); }
-      if (rnd() < 0.22) {
-        const posterTex = buildSignTexture(pick(posterTextOptions), '#14161c', '#ffb35c');
-        // Perbaikan tanda: satu bidang DoubleSide menampilkan poster
-        // TERBALIK dari belakang ("BAY COLA" terbalik dalam
-        // 4-hero.jpg). Pakai dua panel FrontSide saling membelakangi
-        // sebagai gantinya: panel depan bekerja seperti sebelumnya,
-        // plus panel belakang diputar PI jadi mukanya sendiri
-        // menghadap arah berlawanan, digeser 0.06 ke belakang
-        // sepanjang normal depan — teks kini terbaca benar dari
-        // KEDUA sisi, tak pernah terbalik.
-        const boardGeo = new THREE.PlaneGeometry(14, 4);
-        const boardMat = new THREE.MeshBasicMaterial({ map: posterTex, side: THREE.FrontSide });
-        const boardRotY = rr(0, Math.PI);
-        const boardMesh = new THREE.Mesh(boardGeo, boardMat);
-        boardMesh.position.set(bldX, spanTall + 4, bldZ);
-        boardMesh.rotation.y = boardRotY;
-        scene.add(boardMesh);
-        const boardBackMesh = new THREE.Mesh(boardGeo, boardMat);
-        boardBackMesh.position.set(bldX - Math.sin(boardRotY) * 0.06, spanTall + 4, bldZ - Math.cos(boardRotY) * 0.06);
-        boardBackMesh.rotation.y = boardRotY + Math.PI;
-        scene.add(boardBackMesh); }
-      // Toko pada lantai dasar neon/coral (dan strip pantai)
-      if ((districtObj.id === 'neon' || districtObj.id === 'coral' || beachFlag) && rnd() < (beachFlag ? 0.75 : 0.6)) {
-        const [signText, signColour] = pick(buildingSignOptions);
-        const storefrontSignTex = buildSignTexture(signText, '#101018', signColour);
-        const signMesh = new THREE.Mesh(new THREE.PlaneGeometry(14, 3.4), new THREE.MeshBasicMaterial({ map: storefrontSignTex }));
-        signMesh.position.set(bldX, 4.6, bldZ + spanD / 2 + 0.1);
-        scene.add(signMesh);
-        const signGlow = glowSprite(new THREE.Color(signColour), 13);
-        signGlow.position.set(bldX, 4.6, bldZ + spanD / 2 + 0.02);
-        signGlow.material.opacity = 0;
-        scene.add(signGlow);
-        glowSpritesList.push(signGlow);
-        const awningMesh = new THREE.Mesh(new THREE.BoxGeometry(15, 0.15, 2.2), new THREE.MeshStandardMaterial({ color: new THREE.Color(signColour) }));
-        awningMesh.position.set(bldX, 3.6, bldZ + spanD / 2 + 1);
-        awningMesh.rotation.x = 0.3;
-        scene.add(awningMesh); } } }
-  // Lampu jalan — ritme rapat sekota. Jalan utama (x=0, x=330 Neon,
-  // z=0, z=495 bulevar Coral) mendapat KEDUA sisi tiap ~45 m; jalan
-  // lain berselang satu sisi tiap ~55 m; plus baris putih sejuk
-  // boardwalk pada strip pantai. Tiang / kepala emisif / kolam tanah
-  // ialah tiga InstancedMesh total; sprite pijar hanya pada jalan
-  // utama + boardwalk. Tak ada sumber cahaya asli yang ditambahkan (rig tak berubah).
-  {
-    const lampSpotList = [];
-    const crossingSkipTest = (probeVal, roadList) => roadList.some((roadVal) => Math.abs(probeVal - roadVal) < 21);
-    const lampHitsBuilding = (x, z) => G.colliders.some((colObj) => Math.abs(x - colObj.x) < colObj.hw + 1 && Math.abs(z - colObj.z) < colObj.hd + 1);
-    G.roadX.forEach((roadXVal) => {
-      const mainFlag = roadXVal === 0 || roadXVal === 330;
-      let staggerIdx = 0;
-      for (let lampZ = -615; lampZ <= 615; lampZ += mainFlag ? 45 : 55, ++staggerIdx) {
-        if (crossingSkipTest(lampZ, G.roadZ)) continue;
-        if (mainFlag) { lampSpotList.push({ x: roadXVal - 17, z: lampZ, glow: 1 }); lampSpotList.push({ x: roadXVal + 17, z: lampZ + 22, glow: 1 }); }
-        else lampSpotList.push({ x: roadXVal + (staggerIdx % 2 === 0 ? 17 : -17), z: lampZ, glow: 0 }); } });
-    G.roadZ.forEach((roadZVal) => {
-      const mainFlag = roadZVal === 0 || roadZVal === 495;
-      let staggerIdx = 0;
-      for (let lampX = -615; lampX <= 615; lampX += mainFlag ? 45 : 55, ++staggerIdx) {
-        if (crossingSkipTest(lampX, G.roadX)) continue;
-        if (mainFlag) { lampSpotList.push({ x: lampX, z: roadZVal - 17, glow: 1 }); lampSpotList.push({ x: lampX + 22, z: roadZVal + 17, glow: 1 }); }
-        else lampSpotList.push({ x: lampX, z: roadZVal + (staggerIdx % 2 === 0 ? 17 : -17), glow: 0 }); } });
-    for (let boardX = -440; boardX <= 640; boardX += 55) {
-      if (lampHitsBuilding(boardX, 552)) continue;
-      lampSpotList.push({ x: boardX, z: 552, glow: 2 });
-    }
-    const lampTotalCount = lampSpotList.length;
-    const lampPoleMat = new THREE.MeshStandardMaterial({ color: 0x3a3f45, roughness: 0.8, metalness: 0.5 });
-    const tmpMat4 = new THREE.Matrix4();
-    const lampPoleInst = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, 6, 6), lampPoleMat, lampTotalCount);
-    lampSpotList.forEach((spotObj, lampIdx) => { tmpMat4.makeTranslation(spotObj.x, 3, spotObj.z); lampPoleInst.setMatrixAt(lampIdx, tmpMat4); });
-    lampPoleInst.instanceMatrix.needsUpdate = true;
-    scene.add(lampPoleInst);
-    const lampHeadMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffc98a, emissiveIntensity: 0.15, roughness: 0.5 });
-    const lampHeadInst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.22, 8, 6), lampHeadMat, lampTotalCount);
-    lampSpotList.forEach((spotObj, lampIdx) => { tmpMat4.makeTranslation(spotObj.x, 6.02, spotObj.z); lampHeadInst.setMatrixAt(lampIdx, tmpMat4); });
-    lampHeadInst.instanceMatrix.needsUpdate = true;
-    scene.add(lampHeadInst);
-    const lampPoolMat = new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
-    const lampPoolInst = new THREE.InstancedMesh(new THREE.CircleGeometry(5.5, 20), lampPoolMat, lampTotalCount);
-    const flatQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
-    const tmpVec = new THREE.Vector3(), unitScaleVec = new THREE.Vector3(1, 1, 1);
-    lampSpotList.forEach((spotObj, lampIdx) => { lampPoolInst.setMatrixAt(lampIdx, tmpMat4.compose(tmpVec.set(spotObj.x, 0.09, spotObj.z), flatQuat, unitScaleVec)); });
-    lampPoolInst.instanceMatrix.needsUpdate = true;
-    scene.add(lampPoolInst);
-    lampSpotList.forEach((spotObj) => {
-      if (!spotObj.glow) return;
-      const lampGlow = glowSprite(spotObj.glow === 2 ? 0xcfe6ff : 0xffd9a0, spotObj.glow === 2 ? 5 : 5.5);
-      lampGlow.position.set(spotObj.x, 6, spotObj.z);
-      lampGlow.material.opacity = 0;
-      scene.add(lampGlow);
-      streetlampGlowList.push(lampGlow); });
-    G.lampHeadMat = lampHeadMat;
-    G.lampPoolMat = lampPoolMat; }
-  G.streetlightGlows = streetlampGlowList;
-  G.signGlows = glowSpritesList;
-  // Blok HQ
-  constructHQ(G, scene);
-  // Supermarket RONIN MART + landmark untuk peta jeda / minimap
-  constructMarket(G, scene);
-  constructBeachStrip(G, scene);
-  const landmarkRec = {};
-  const marketRec = {}; marketRec.x = MARKET.x; marketRec.z = MARKET.z; marketRec.name = MARKET.name;
-  landmarkRec.market = marketRec;
-  const garageRec = {}; garageRec.x = G.hq.x; garageRec.z = G.hq.garage.z; garageRec.name = 'RONIN KAI HQ';
-  landmarkRec.garage = garageRec;
-  landmarkRec.districts = [
-    { name: 'Downtown', x: 0, z: 0 }, { name: 'Portside', x: -330, z: 330 },
-    { name: 'Coral Strip', x: 330, z: 330 }, { name: 'Neon Mile', x: 330, z: -330 },
-    { name: 'Hoshino Heights', x: -330, z: -330 }, { name: 'Touge', x: -330, z: -470 },
-  ];
-  G.landmarks = landmarkRec;
-  // Hiasan pelabuhan
-  constructHarbor(G, scene);
-  // Bangun pita touge
-  constructTouge(G, scene);
-  // Sebaran pohon
-  let treeTotalCount = 0;
-  for (let tryIdx = 0; tryIdx < 400 && treeTotalCount < 250; ++tryIdx) {
-    const scatterX = rr(-640, 640), scatterZ = rr(-640, 640);
-    if (G.roadX.some((roadVal) => Math.abs(scatterX - roadVal) < 22) || G.roadZ.some((roadVal) => Math.abs(scatterZ - roadVal) < 22)) continue;
-    if (Math.abs(scatterX + 412.5) < 55 && Math.abs(scatterZ - 412.5) < 55) continue;
-    if (Math.abs(scatterX - MARKET.x) < 58 && Math.abs(scatterZ - MARKET.z) < 78) continue;
-    const districtObj = DISTRICTS.reduce((bestEntry, candEntry) => ((scatterX - candEntry.cx) ** 2 + (scatterZ - candEntry.cz) ** 2 < (scatterX - bestEntry.cx) ** 2 + (scatterZ - bestEntry.cz) ** 2 ? candEntry : bestEntry), DISTRICTS[0]);
-    let treeObj;
-    if (districtObj.id === 'coral' || scatterZ > 520 || districtObj.id === 'neon') treeObj = makePalm(rr(4.5, 6.5));
-    else if (districtObj.id === 'hoshino') treeObj = makeShadeTree(rr(3.5, 5), rnd() < 0.3 ? 0xe8a0bf : 0x3d8b4f);
-    else treeObj = makeShadeTree(rr(3.5, 5.5), 0x3d8b4f);
-    treeObj.position.set(scatterX, groundH(scatterX, scatterZ), scatterZ);
-    treeObj.rotation.y = rr(0, 6.28);
-    scene.add(treeObj);
-    ++treeTotalCount; }
-  // ---- kepadatan prop (tersemai, di luar jalan) ----
-  {
-    const palmOffset = CFG.roadW / 2 + 3.8;
-    let addedPalmCount = 0;
-    for (let palmX = -600; palmX <= 600 && addedPalmCount < 72; palmX += 40) {
-      [-1, 1].forEach((sideSign) => {
-        const palmObj = makePalm(rr(4.5, 6.5));
-        palmObj.position.set(palmX + rr(-2, 2), groundH(palmX, 495 + sideSign * palmOffset), 495 + sideSign * palmOffset);
-        palmObj.rotation.y = rr(0, 6.28);
-        scene.add(palmObj);
-        ++addedPalmCount; }); }
-    for (let palmZ = -595; palmZ <= 95 && addedPalmCount < 82; palmZ += 70) {
-      const palmObj = makePalm(rr(4.5, 6.5));
-      palmObj.position.set(330 + palmOffset, groundH(330 + palmOffset, palmZ), palmZ + rr(-2, 2));
-      palmObj.rotation.y = rr(0, 6.28);
-      scene.add(palmObj);
-      ++addedPalmCount; }
-    // Peti pelabuhan dengan garis bahaya padanya
-    const hazardTex = makeCanvasTexture(128, 128, (brush, wVal, hVal) => {
-      brush.fillStyle = '#8a7a3a'; brush.fillRect(0, 0, wVal, hVal);
-      brush.fillStyle = '#2b2b2b';
-      for (let stripeIdx = -2; stripeIdx < 8; ++stripeIdx) { brush.save(); brush.translate(stripeIdx * 32, 0); brush.rotate(0.6); brush.fillRect(0, -40, 14, hVal + 80); brush.restore(); }
-      brush.fillStyle = 'rgba(255,255,255,.75)';
-      brush.fillRect(14, 44, 100, 40);
-      brush.fillStyle = '#333'; brush.font = 'bold 22px sans-serif'; brush.textAlign = 'center'; brush.fillText('CARGO', 64, 72); });
-    const portCrateMat = new THREE.MeshStandardMaterial({ map: hazardTex, roughness: 0.9 });
-    const portCrateGeo = new THREE.BoxGeometry(2.2, 2.2, 2.2);
-    for (let crateIdx = 0; crateIdx < 12; ++crateIdx) {
-      const crateX = -625 + (crateIdx % 4) * 36 + rr(-3, 3), crateZ = 532 + Math.floor(crateIdx / 4) * 30 + rr(-3, 3);
-      const crateMesh = new THREE.Mesh(portCrateGeo, portCrateMat);
-      crateMesh.position.set(crateX, 1.1, crateZ);
-      crateMesh.rotation.y = rr(0, 0.6);
-      scene.add(crateMesh);
-      if (crateIdx % 3 === 0) { const topCrateMesh = new THREE.Mesh(portCrateGeo, portCrateMat); topCrateMesh.position.set(crateX, 3.3, crateZ); topCrateMesh.rotation.y = rr(0, 0.6); scene.add(topCrateMesh); } }
-    // Penghalang beton dengan garis oranye, di sepanjang jalan pendekatan pelabuhan/HQ
-    const barrierTex = makeCanvasTexture(128, 32, (brush, wVal, hVal) => { brush.fillStyle = '#b8b4a8'; brush.fillRect(0, 0, wVal, hVal); brush.fillStyle = '#e8762a'; brush.fillRect(0, 12, wVal, 8); });
-    const barrierMat = new THREE.MeshStandardMaterial({ map: barrierTex, roughness: 0.95 });
-    for (let barrierIdx = 0; barrierIdx < 6; ++barrierIdx) {
-      const barrierMesh = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 0.5), barrierMat);
-      barrierMesh.position.set(-560 + barrierIdx * 40, 0.5, 472);
-      scene.add(barrierMesh); }
-    // Tempat sampah besar di interior blok Neon Mile
-    const dumpsterMat = new THREE.MeshStandardMaterial({ color: 0x2e4a34, roughness: 0.85, metalness: 0.2 });
-    const dumpsterLidMat = new THREE.MeshStandardMaterial({ color: 0x223828, roughness: 0.8, metalness: 0.2 });
-    [[270, -40], [390, 40], [270, -200], [390, -260]].forEach(([dumpX, dumpZ]) => {
-      const dumpsterMesh = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.4, 1.4), dumpsterMat);
-      dumpsterMesh.position.set(dumpX, 0.7, dumpZ);
-      scene.add(dumpsterMesh);
-      const lidMesh = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.12, 1.5), dumpsterLidMat);
-      lidMesh.position.set(dumpX, 1.46, dumpZ);
-      scene.add(lidMesh); }); }
-  // ---- ronde kepadatan: dipanggil TERAKHIR supaya urutan RNG
-  // tersemai tiap pembangun di atas tak tersentuh. Frontase dulu
-  // (collider-nya lalu menggerbangi palem bulevar dan pemeriksaan
-  // penempatan titik kumpul).
-  constructBoulevardFrontage(G, scene);
-  constructBoulevardPalms(G, scene);
-  constructGatherSpots(G, scene);
-  constructHoshinoRows(G, scene);
-  constructBoulevardPlanters(G, scene);
-  // Dua lot "taman" mandiri BUKAN lagi lempeng rumput — tiap kini
-  // ialah plaza BERPAVING (tekstur paving) yang dihias bangku +
-  // kotak penanam supaya terbaca sebagai permukaan terbangun.
-  // (Tak satu pun lot duduk di dalam tapak taman pameran.)
-  [[412, 412], [-412, -80]].forEach(([lotX, lotZ]) => {
-    const lotMesh = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), makePavingMat(15, 15));
-    lotMesh.rotation.x = -Math.PI / 2;
-    lotMesh.position.set(lotX, 0.04, lotZ);
-    lotMesh.receiveShadow = true;
-    scene.add(lotMesh);
-    for (let benchIdx = 0; benchIdx < 4; ++benchIdx) { const benchMesh = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.6), new THREE.MeshStandardMaterial({ color: 0x7a5a38 })); benchMesh.position.set(lotX + rr(-35, 35), 0.3, lotZ + rr(-35, 35)); scene.add(benchMesh); }
-    for (let planterIdx = 0; planterIdx < 4; ++planterIdx) {
-      const planterMesh = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, 1.8), new THREE.MeshStandardMaterial({ color: 0x9a8a72, roughness: 1 }));
-      planterMesh.position.set(lotX + rr(-38, 38), 0.3, lotZ + rr(-38, 38));
-      scene.add(planterMesh);
-      const bushMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), new THREE.MeshStandardMaterial({ color: 0x3d8b4f, roughness: 1, flatShading: true }));
-      bushMesh.position.set(planterMesh.position.x, 0.95, planterMesh.position.z);
-      scene.add(bushMesh); }
-    // Hiasan plaza: 2 bangku layak + 1 kotak penanam (para pembantu)
-    const plazaBenchA = makeBenchUnit();
-    plazaBenchA.position.set(lotX - 12, groundH(lotX - 12, lotZ + 10), lotZ + 10);
-    plazaBenchA.rotation.y = 0.4;
-    scene.add(plazaBenchA);
-    const plazaBenchB = makeBenchUnit();
-    plazaBenchB.position.set(lotX + 14, groundH(lotX + 14, lotZ - 8), lotZ - 8);
-    plazaBenchB.rotation.y = -0.7;
-    scene.add(plazaBenchB);
-    const plazaPlanter = makePlanterUnit();
-    plazaPlanter.position.set(lotX + 4, groundH(lotX + 4, lotZ + 16), lotZ + 16);
-    scene.add(plazaPlanter); });
-  // Taman pameran — dibangun PALING AKHIR dari semua supaya pindai
-  // collider-nya melihat kota lengkap dan tak ada urutan RNG hulu yang bergeser.
-  constructPark(G, scene); }
-// GLB garasi Tripo: fasad detailnya (pintu) ialah muka -Z model
-// sendiri dan sisi detail lainnya ialah +X. Memutar PI membalik -Z
-// menghadap selatan (+z, menuju apron / titik garasi / jalan) dan
-// +X menghadap barat (-x, menuju jalan pelabuhan).
-const GARAGE_ROT_Y = Math.PI;
-function constructHQ(G, scene) {
-  const hqX = -412.5;
-  const hqZ = 412.5;
-  // Semua visual bangunan HQ prosedural hidup dalam hqGrp supaya
-  // pertukaran GLB dapat membuang mereka dalam satu langkah. Apron
-  // tetap di luar grup (di bawah): ia permukaan tanah, bukan visual
-  // bangunan, dan harus selamat dari pertukaran.
-  const hqGrp = new THREE.Group();
-  scene.add(hqGrp);
-  const hqWallMat = new THREE.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.9 });
-  const hqBlockMesh = new THREE.Mesh(new THREE.BoxGeometry(70, 10, 34), hqWallMat);
-  hqBlockMesh.position.set(hqX, 5, hqZ);
-  hqGrp.add(hqBlockMesh);
-  // Collider cocok dengan tapak GLB (targetSize 30x30) jadi tabrakan
-  // identik dalam mode prosedural dan GLB.
-  G.addCollider(hqX, hqZ, 15, 15, 10);
-  const hqDoorMat = new THREE.MeshStandardMaterial({ color: 0x707880, roughness: 0.6, metalness: 0.6 });
-  for (let doorIdx = -1; doorIdx <= 1; ++doorIdx) {
-    const doorMesh = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), hqDoorMat);
-    doorMesh.position.set(hqX + doorIdx * 20, 3, hqZ + 17.2);
-    hqGrp.add(doorMesh); }
-  const hqSignTex = (() => {
-    const sheet = document.createElement('canvas');
-    sheet.width = 512;
-    sheet.height = 96;
-    const brush = sheet.getContext('2d');
-    brush.fillStyle = '#14100c';
-    brush.fillRect(0, 0, 512, 96);
-    brush.font = 'bold 58px sans-serif';
-    brush.textAlign = 'center';
-    brush.shadowColor = '#ff7a1a';
-    brush.shadowBlur = 16;
-    brush.fillStyle = '#ff7a1a';
-    brush.fillText('RONIN KAI', 256, 66);
-    const tex = new THREE.CanvasTexture(sheet);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    return tex; })();
-  const hqSignMesh = new THREE.Mesh(new THREE.PlaneGeometry(40, 7.5), new THREE.MeshBasicMaterial({ map: hqSignTex }));
-  hqSignMesh.position.set(hqX, 8.6, hqZ + 17.3);
-  hqGrp.add(hqSignMesh);
-  const hqWinMat = new THREE.MeshStandardMaterial({ color: 0xffd9a0, emissive: 0xffb35c, emissiveIntensity: 0.6 });
-  for (let winIdx = 0; winIdx < 5; ++winIdx) { const winMesh = new THREE.Mesh(new THREE.PlaneGeometry(5, 2.4), hqWinMat); winMesh.position.set(hqX - 28 + winIdx * 14, 7.6, hqZ - 17.2); winMesh.rotation.y = Math.PI; hqGrp.add(winMesh); }
-  // Apron (kedua mode, tetap di luar hqGrp): aspal bertekstur
-  // alih-alih warna datar — bintik, noda minyak, dan petak parkir
-  // putih di sepanjang tepi selatannya. Catatan kanvas: bidang
-  // diputar -PI/2 terhadap X, jadi bawah kanvas (v=0) memetakan ke
-  // tepi selatan-dunia apron.
-  const hqApronTex = makeCanvasTexture(1024, 384, (brush, wVal, hVal) => {
-    brush.fillStyle = '#6a6d70'; brush.fillRect(0, 0, wVal, hVal);
-    for (let speckIdx = 0; speckIdx < 5200; ++speckIdx) {
-      const shadeVal = 96 + Math.floor(rnd() * 48);
-      brush.fillStyle = `rgba(${shadeVal},${shadeVal},${shadeVal + 4},.14)`;
-      brush.fillRect(rnd() * wVal, rnd() * hVal, 2, 2); }
-    [[210, 120, 58, 20], [560, 210, 74, 26], [790, 90, 46, 16], [390, 290, 52, 18]].forEach(([stainX, stainY, stainRx, stainRy]) => {
-      brush.fillStyle = 'rgba(18,18,20,.20)';
-      brush.beginPath(); brush.ellipse(stainX, stainY, stainRx, stainRy, 0.4, 0, 2 * Math.PI); brush.fill();
-      brush.fillStyle = 'rgba(18,18,20,.12)';
-      brush.beginPath(); brush.ellipse(stainX + 14, stainY + 6, stainRx * 0.6, stainRy * 0.6, 0.4, 0, 2 * Math.PI); brush.fill(); });
-    // Petak parkir di sepanjang tepi selatan (bawah kanvas).
-    brush.strokeStyle = 'rgba(245,245,240,.88)'; brush.lineWidth = 5;
-    brush.beginPath(); brush.moveTo(0, hVal - 108); brush.lineTo(wVal, hVal - 108); brush.stroke();
-    for (let stallX = 32; stallX <= wVal - 32; stallX += 96) {
-      brush.beginPath(); brush.moveTo(stallX, hVal - 108); brush.lineTo(stallX, hVal - 6); brush.stroke(); } });
-  hqApronTex.wrapS = hqApronTex.wrapT = THREE.ClampToEdgeWrapping;
-  const apronMesh = new THREE.Mesh(new THREE.PlaneGeometry(80, 30), new THREE.MeshStandardMaterial({ map: hqApronTex, roughness: 1 }));
-  apronMesh.rotation.x = -Math.PI / 2;
-  apronMesh.position.set(hqX, 0.04, 455);
-  scene.add(apronMesh);
-  const hqRec = {};
-  hqRec.x = hqX; hqRec.z = hqZ;
-  const garagePt = {}; garagePt.x = hqX; garagePt.z = 455;
-  hqRec.garage = garagePt;
-  G.hq = hqRec;
-  // Aset hero: GLB garasi Tripo menggantikan bangunan HQ prosedural
-  // saat ia dimuat; pada null/kegagalan HQ prosedural di atas tetap
-  // tak tersentuh. Pertukaran dicoba ulang (pemuatan null tak lagi
-  // mengakhirinya — assets.js mengusir hasil null dari cache-nya,
-  // jadi panggilan ulang mengambil lagi) dan pembungkus DIKLON
-  // seperti tiap situs pertukaran GLB lain dalam game (mobil,
-  // pemain, pejalan semua mengklon pembungkus cache bersama; situs
-  // ini dulu menambahkan instans cache itu sendiri). Hiasan neon di
-  // bawah tak tersentuh: ia ditambahkan ke grup penempatan, dikunci
-  // pada posisi/rotasi penempatan sendiri, tak pernah pada pembungkus yang dimuat.
-  const attemptGarageSwap = (attemptsLeft) => {
-    loadHeroAsset('garage').then((loadedWrap) => {
-      try {
-        if (!loadedWrap) {
-          if (attemptsLeft > 0) setTimeout(() => attemptGarageSwap(attemptsLeft - 1), 1500);
-          return;
-        }
-        scene.remove(hqGrp);
-        const placementGrp = new THREE.Group();
-        placementGrp.position.set(hqX, groundH(hqX, hqZ), hqZ);
-        placementGrp.rotation.y = GARAGE_ROT_Y;
-        placementGrp.add(loadedWrap.clone ? loadedWrap.clone(true) : loadedWrap);
-        // Hiasan klub (mode GLB saja): GLB polos terbaca sebagai
-        // monolit gelap dan kehilangan identitas RONIN KAI, jadi
-        // hias ulang muka selatan-dunianya. Penalaran sisi tanda
-        // (terverifikasi): rotasi penempatan.y = PI memetakan titik
-        // lokal anak (x, z) ke offset dunia (-x, -z), jadi anak pada
-        // z lokal penempatan = -15.15 duduk pada z dunia = hz +
-        // 15.15 — muka SELATAN (fasad pembungkus sendiri berakhir
-        // menghadap selatan dunia lewat rotasi PI yang sama ini;
-        // targetSize GLB ialah 30 dalam, jadi mukanya pada |z| lokal
-        // = 15 dan tanda mengambang 0.15 bangga padanya). Muka depan
-        // bidang ialah +z lokalnya; dengan rotasi PI induk itu akan
-        // menghadap utara dunia (ke dalam bangunan), jadi tiap
-        // bidang hiasan mendapat rotation.y = PI sendiri: mukanya
-        // lalu menunjuk sepanjang -z lokal penempatan, yang dipetakan
-        // induk ke +z dunia (selatan, keluar) — dan dua putaran PI
-        // membatalkan, jadi teks tanda terbaca tak terbalik dari jalan.
-        const neonArtTex = (() => {
-          const sheet = document.createElement('canvas');
-          sheet.width = 1024;
-          sheet.height = 192;
-          const brush = sheet.getContext('2d');
-          brush.clearRect(0, 0, 1024, 192);
-          brush.font = 'italic bold 118px sans-serif';
-          brush.textAlign = 'center';
-          brush.shadowColor = '#ff4fd8';
-          brush.shadowBlur = 34;
-          brush.fillStyle = '#ff4fd8';
-          brush.fillText('RONIN KAI', 512, 122);
-          brush.shadowBlur = 18;
-          brush.fillStyle = '#ff7a1a';
-          brush.fillRect(212, 148, 600, 14);
-          const tex = new THREE.CanvasTexture(sheet); tex.colorSpace = THREE.SRGBColorSpace; return tex; })();
-        const neonSignMesh = new THREE.Mesh(
-          new THREE.PlaneGeometry(14, 2.6),
-          new THREE.MeshBasicMaterial({ map: neonArtTex, transparent: true }));
-        neonSignMesh.position.set(0, 10.8, -15.15);
-        neonSignMesh.rotation.y = Math.PI;
-        placementGrp.add(neonSignMesh);
-        const neonStripMat = new THREE.MeshBasicMaterial({ color: 0x39d5ff });
-        [-13.5, 13.5].forEach((stripX) => {
-          const stripMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 8), neonStripMat);
-          stripMesh.position.set(stripX, 6, -15.15);
-          stripMesh.rotation.y = Math.PI;
-          placementGrp.add(stripMesh); });
-        const neonGlow = glowSprite(0xff4fd8, 16);
-        neonGlow.position.set(0, 10.8, -15.35);
-        neonGlow.material.opacity = 0.35;
-        placementGrp.add(neonGlow);
-        scene.add(placementGrp);
-      } catch (e) { /* pertahankan HQ prosedural */ }
-    }).catch(() => { if (attemptsLeft > 0) setTimeout(() => attemptGarageSwap(attemptsLeft - 1), 1500); }); };
-  try { attemptGarageSwap(3); } catch (e) { /* pertahankan HQ prosedural */ } }
-function constructHarbor(G, scene) {
-  const containerColourList = [0xc0392b, 0x2471a3, 0x229954, 0xd4ac0d, 0x7d3c98, 0xca6f1e];
-  Array.from({ length: 26 }).forEach((unusedVal, contIdx) => {
-    const contX = rr(-620, -480), contZ = rr(480, 620);
-    const contMesh = new THREE.Mesh(new THREE.BoxGeometry(12, 2.6, 2.4), new THREE.MeshStandardMaterial({ color: pick(containerColourList), roughness: 0.8 }));
-    contMesh.position.set(contX, 1.3 + (contIdx % 3) * 2.6, contZ);
-    contMesh.rotation.y = rnd() < 0.5 ? 0 : Math.PI / 2;
-    scene.add(contMesh);
-    if (contIdx % 4 === 0) G.addCollider(contX, contZ, 6, 2, 3); });
-  const craneMat = new THREE.MeshStandardMaterial({ color: 0xd97c2b, roughness: 0.7, metalness: 0.4 });
-  [-560, -480].forEach((craneX) => {
-    const craneGrp = new THREE.Group();
-    [-1, 1].forEach((sideSign) => { const legMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 26, 1.2), craneMat); legMesh.position.set(sideSign * 8, 13, 0); craneGrp.add(legMesh); });
-    const boomMesh = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 34), craneMat);
-    boomMesh.position.set(0, 26, 6);
-    craneGrp.add(boomMesh);
-    const topBarMesh = new THREE.Mesh(new THREE.BoxGeometry(17.4, 1.4, 1.4), craneMat);
-    topBarMesh.position.y = 26;
-    craneGrp.add(topBarMesh);
-    craneGrp.position.set(craneX, 0, 540);
-    scene.add(craneGrp);
-    G.addCollider(craneX, 540, 9, 3, 26); });
-  const bollardMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
-  for (let bolIdx = 0; bolIdx < 10; ++bolIdx) { const bollardMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, 0.8, 8), bollardMat); bollardMesh.position.set(-640 + bolIdx * 16, 0.4, 648); scene.add(bollardMesh); } }
-function constructTouge(G, scene) {
-  // Bangun ulang: tiap quad segmen mencicipi groundH pada EMPAT
-  // sudutnya SENDIRI, jadi pita memeluk bukit alih-alih merata-rata
-  // tinggi ujung menjadi lempeng.
-  const routePtsRaw = TOUGE_POINTS.map((ptObj) => ({ x: ptObj[0], z: ptObj[1] }));
-  const ribbonWidth = 9, loopCentrePt = { x: -330, z: -470 };
-  const ribbonTex = makeCanvasTexture(128, 128, (brush, wVal, hVal) => {
-    brush.fillStyle = '#33373d'; brush.fillRect(0, 0, wVal, hVal);
-    for (let speckIdx = 0; speckIdx < 260; ++speckIdx) { brush.fillStyle = 'rgba(255,255,255,.05)'; brush.fillRect(rnd() * wVal, rnd() * hVal, 2, 2); }
-    brush.fillStyle = '#f0ead0'; brush.fillRect(wVal * 0.03, 0, 3, hVal); brush.fillRect(wVal * 0.97 - 3, 0, 3, hVal);
-    brush.fillRect(wVal / 2 - 2, 10, 4, 44);
-  });
-  ribbonTex.wrapS = THREE.ClampToEdgeWrapping;
-  ribbonTex.wrapT = THREE.RepeatWrapping;
-  const ribbonMat = new THREE.MeshStandardMaterial({ map: ribbonTex, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-  const guardRailMat = new THREE.MeshStandardMaterial({ color: 0xb0b6bc, metalness: 0.7, roughness: 0.4 });
-  const ribbonPosArr = [], ribbonUvArr = [], ribbonIdxArr = [], railPostPts = [];
-  let cumulativeLen = 0;
-  for (let segIdx = 0; segIdx < routePtsRaw.length - 1; ++segIdx) {
-    const segPtA = routePtsRaw[segIdx], segPtB = routePtsRaw[segIdx + 1];
-    const segDx = segPtB.x - segPtA.x, segDz = segPtB.z - segPtA.z;
-    const segLen = Math.hypot(segDx, segDz) || 0.001;
-    const unitX = segDx / segLen, unitZ = segDz / segLen, perpX = -unitZ, perpZ = unitX;
-    const cornerPointAt = (ptObj, sideSign) => { const cornerX = ptObj.x + perpX * sideSign * (ribbonWidth / 2), cornerZ = ptObj.z + perpZ * sideSign * (ribbonWidth / 2); return { x: cornerX, z: cornerZ, y: groundH(cornerX, cornerZ) + 0.07 }; };
-    const corner00 = cornerPointAt(segPtA, 1), corner01 = cornerPointAt(segPtA, -1), corner10 = cornerPointAt(segPtB, 1), corner11 = cornerPointAt(segPtB, -1);
-    const vertBase = ribbonPosArr.length / 3;
-    [corner00, corner01, corner10, corner11].forEach((cornerObj) => ribbonPosArr.push(cornerObj.x, cornerObj.y, cornerObj.z));
-    ribbonUvArr.push(0, cumulativeLen / 8, 1, cumulativeLen / 8, 0, (cumulativeLen + segLen) / 8, 1, (cumulativeLen + segLen) / 8);
-    ribbonIdxArr.push(vertBase, vertBase + 2, vertBase + 1, vertBase + 1, vertBase + 2, vertBase + 3);
-    // Pagar pengaman pada sisi LUAR (lebih jauh dari sentroid loop)
-    const midPtX = (segPtA.x + segPtB.x) / 2, midPtZ = (segPtA.z + segPtB.z) / 2;
-    const distPlusSide = Math.hypot(midPtX + perpX * 5 - loopCentrePt.x, midPtZ + perpZ * 5 - loopCentrePt.z);
-    const distMinusSide = Math.hypot(midPtX - perpX * 5 - loopCentrePt.x, midPtZ - perpZ * 5 - loopCentrePt.z);
-    const outerSideSign = distPlusSide >= distMinusSide ? 1 : -1;
-    const outerPt0 = outerSideSign > 0 ? corner00 : corner01, outerPt1 = outerSideSign > 0 ? corner10 : corner11;
-    const railMesh = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.18, segLen), guardRailMat);
-    railMesh.position.set((outerPt0.x + outerPt1.x) / 2, (outerPt0.y + outerPt1.y) / 2 + 0.55, (outerPt0.z + outerPt1.z) / 2);
-    railMesh.lookAt(outerPt1.x, outerPt1.y + 0.55, outerPt1.z);
-    scene.add(railMesh);
-    for (let postDist = 0; postDist <= segLen; postDist += 8) {
-      const postT = postDist / segLen;
-      const postX = segPtA.x + segDx * postT + perpX * outerSideSign * (ribbonWidth / 2 + 0.3), postZ = segPtA.z + segDz * postT + perpZ * outerSideSign * (ribbonWidth / 2 + 0.3);
-      railPostPts.push({ x: postX, z: postZ, y: groundH(postX, postZ) }); }
-    cumulativeLen += segLen; }
-  const ribbonGeo = new THREE.BufferGeometry();
-  ribbonGeo.setAttribute('position', new THREE.Float32BufferAttribute(ribbonPosArr, 3));
-  ribbonGeo.setAttribute('uv', new THREE.Float32BufferAttribute(ribbonUvArr, 2));
-  ribbonGeo.setIndex(ribbonIdxArr);
-  ribbonGeo.computeVertexNormals();
-  scene.add(new THREE.Mesh(ribbonGeo, ribbonMat));
-  // Tiang pagar pengaman sebagai satu InstancedMesh
-  const postInstMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 0.62, 6), guardRailMat, Math.max(1, railPostPts.length));
-  {
-    const tmpMat4 = new THREE.Matrix4();
-    railPostPts.forEach((postObj, postIdx) => { tmpMat4.makeTranslation(postObj.x, postObj.y + 0.31, postObj.z); postInstMesh.setMatrixAt(postIdx, tmpMat4); });
-    postInstMesh.instanceMatrix.needsUpdate = true; }
-  scene.add(postInstMesh);
-  // Pohon ceri di sepanjang rute (12, sisi bergantian, tiap pada tinggi tanahnya sendiri)
-  for (let treeIdx = 0; treeIdx < 12; ++treeIdx) {
-    const routePt = routePtsRaw[treeIdx % routePtsRaw.length];
-    const nextPt = routePtsRaw[Math.min(treeIdx + 1, routePtsRaw.length - 1)];
-    const segDx = nextPt.x - routePt.x, segDz = nextPt.z - routePt.z, segLen = Math.hypot(segDx, segDz) || 1;
-    const sideSign = treeIdx % 2 === 0 ? 1 : -1;
-    const treeX = routePt.x + (-segDz / segLen) * sideSign * rr(10, 13), treeZ = routePt.z + (segDx / segLen) * sideSign * rr(10, 13);
-    const cherryTree = makeShadeTree(rr(3, 4.5), 0xe8a0bf);
-    cherryTree.position.set(treeX, groundH(treeX, treeZ), treeZ);
-    cherryTree.rotation.y = rr(0, 6.28);
-    scene.add(cherryTree); } }
-export function roadRoute(G, fromPt, toPt) {
-  const snapCoordTo = (probeVal, roadList) => roadList.reduce((candA, candB) => Math.abs(candB - probeVal) < Math.abs(candA - probeVal) ? candB : candA, roadList[0]);
-  const fromSnapX = snapCoordTo(fromPt.x, G.roadX), fromSnapZ = snapCoordTo(fromPt.z, G.roadZ);
-  const toSnapX = snapCoordTo(toPt.x, G.roadX), toSnapZ = snapCoordTo(toPt.z, G.roadZ);
-  const routePtList = [{ x: fromPt.x, z: fromPt.z }, { x: fromSnapX, z: fromPt.z }, { x: fromSnapX, z: fromSnapZ }];
-  // Pilih urutan lebih pendek: kaki-x-dulu vs kaki-z-dulu via sudut
-  const cornerPtA = { x: toSnapX, z: fromSnapZ }, cornerPtB = { x: fromSnapX, z: toSnapZ };
-  const legDistA = Math.abs(toSnapX - fromSnapX) + Math.abs(toSnapZ - fromSnapZ), legDistB = legDistA;
-  void legDistB;
-  routePtList.push(cornerPtA, { x: toSnapX, z: toSnapZ }, { x: toPt.x, z: toPt.z });
-  void cornerPtB;
-  // Dedup titik berurutan
-  return routePtList.filter((ptObj, ptIdx) => ptIdx === 0 || Math.hypot(ptObj.x - routePtList[ptIdx - 1].x, ptObj.z - routePtList[ptIdx - 1].z) > 1); }
-function terapkanPijarSenja(G, jumlahNeon, jumlahGabungan, jumlahGelapTanda) {
-  if (G.buildingMats) G.buildingMats.forEach((refMat) => { refMat.emissiveIntensity = jumlahGabungan * 0.7; });
-  if (G.neonTrimMats) G.neonTrimMats.forEach((refMat) => { refMat.emissiveIntensity = jumlahNeon * 2.4; });
-  if (G.streetlightGlows) G.streetlightGlows.forEach((objSpr) => { objSpr.material.opacity = jumlahGabungan * 0.85; });
-  if (G.lampHeadMat) G.lampHeadMat.emissiveIntensity = 0.15 + jumlahGabungan * 3.0;
-  if (G.lampPoolMat) G.lampPoolMat.opacity = jumlahGabungan * 0.3;
-  glowSpritesList.forEach((objSpr) => { objSpr.material.opacity = jumlahGelapTanda * 0.9; }); }
-export function updateWorld(G, dt) {
-  const todVal = G.timeOfDay;
-  const dayLevel = Math.max(0, Math.min(1, Math.sin(((todVal - 6) / 12) * Math.PI)));
-  const duskAmt = Math.max(0, 1 - Math.abs(todVal - 18.2) / 1.6) * (todVal > 12 ? 1 : 0) + Math.max(0, 1 - Math.abs(todVal - 6.2) / 1.2) * 0.6;
-  computeSkyColors(todVal);
-  if (skyDome) {
-    if (Math.abs(todVal - skyLastHour) > 0.05) { paintSkyDome(); skyLastHour = todVal; }
-  } else {
-    G.scene.background = skyHorCol; }
-  if (G.scene.fog) { G.scene.fog.color.copy(skyFogCol); }
-  if (G.sun) { G.sun.intensity = 0.25 + dayLevel * 1.27; G.sun.color.set(0xffd9b0); const sunAngle = ((todVal - 6) / 12) * Math.PI; G.sun.position.set(Math.cos(sunAngle) * 300, Math.max(20, Math.sin(sunAngle) * 300), 120); }
-  if (G.hemi) { G.hemi.intensity = 0.25 + dayLevel * 0.65; if (G.hemi.color) G.hemi.color.copy(skyTopCol).lerp(skyWarmCol, 0.3); if (G.hemi.groundColor) G.hemi.groundColor.set(0xb09a7a); }
-  const nightAmt = 1 - dayLevel;
-  // Onset pijar senja: tiap kolam lampu / jendela menyala / ramp
-  // neon berangkat dari `combinedGlowAmt`, yang mulai pada
-  // VICE.dusk.onset (17.2, trim neon pada 17.0) dan PENUH pada
-  // VICE.dusk.full (17.8) — senja terbaca menyala, bukan hanya malam.
-  // Sesudah penuh ia tetap menyala sepanjang malam; pra-fajar ia mengikuti `nightAmt`.
-  const rampBetween = (rangeFrom, rangeTo) => Math.max(0, Math.min(1, (todVal - rangeFrom) / Math.max(0.001, rangeTo - rangeFrom)));
-  const duskGlowAmt = todVal >= VICE.dusk.onset && todVal < 24 ? Math.max(rampBetween(VICE.dusk.onset, VICE.dusk.full), nightAmt) : nightAmt;
-  const neonGlowAmt = todVal >= VICE.dusk.neonOnset && todVal < 24 ? Math.max(rampBetween(VICE.dusk.neonOnset, VICE.dusk.full), nightAmt) : nightAmt;
-  const combinedGlowAmt = Math.max(nightAmt, duskGlowAmt);
-  const signDarkAmt = Math.min(1, combinedGlowAmt * 0.9 + Math.min(1, Math.max(0, duskAmt)) * 0.35);
-  terapkanPijarSenja(G, neonGlowAmt, combinedGlowAmt, signDarkAmt);
-  if (G.water) G.water.position.y = -0.4 + Math.sin(G.elapsed || 0) * 0.03; }
+
+  const zW8GrupMancurBaru = new THREE.Group(); zW8GrupTamanBaru.add(zW8GrupMancurBaru); const zW8MatBetonMancur = zW8SharedStdMat(0xe6e0d0, 0.9);
+  const zW8MeshCekunganMancur = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.4, 0.8, 24), zW8MatBetonMancur); zW8MeshCekunganMancur.position.y = 0.4;
+  zW8GrupMancurBaru.add(zW8MeshCekunganMancur); const zW8MeshBibirMancur = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.18, 8, 24), zW8MatBetonMancur);
+  zW8MeshBibirMancur.rotation.x = Math.PI / 2; zW8MeshBibirMancur.position.y = 0.82; zW8GrupMancurBaru.add(zW8MeshBibirMancur);
+    const zW8MatAirMancur = new THREE.MeshStandardMaterial({
+    color : 0x3fa7d6, transparent : true, opacity : 0.9, roughness : 0.15
+  }); const zW8MeshAirMancur = new THREE.Mesh(new THREE.CircleGeometry(3.7, 24), zW8MatAirMancur); zW8MeshAirMancur.rotation.x = - Math.PI / 2;
+  zW8MeshAirMancur.position.y = 0.72; zW8GrupMancurBaru.add(zW8MeshAirMancur);
+  const zW8MeshPilarMancur = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.65, 1.5, 12), zW8MatBetonMancur); zW8MeshPilarMancur.position.y = 1.4;
+  zW8GrupMancurBaru.add(zW8MeshPilarMancur); const zW8MeshMangkukMancur = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 0.9, 0.35, 16), zW8MatBetonMancur);
+  zW8MeshMangkukMancur.position.y = 2.25; zW8GrupMancurBaru.add(zW8MeshMangkukMancur);
+  const zW8MeshAirMangkukMancur = new THREE.Mesh(new THREE.CircleGeometry(1.1, 16), zW8MatAirMancur); zW8MeshAirMangkukMancur.rotation.x = - Math.PI / 2;
+  zW8MeshAirMangkukMancur.position.y = 2.44; zW8GrupMancurBaru.add(zW8MeshAirMangkukMancur); zW8ApplyCastShadow(zW8GrupMancurBaru);
+  G.addCollider(zW8PusatTamanX, zW8PusatTamanZ, 4.4, 4.4, 2.4);
+
+  const zW8DaftarTitikPohon = []; [- 1, 1].forEach((zW8KuadranXQ) => {
+      [- 1, 1].forEach((zW8KuadranZQ) => {
+      zW8DaftarTitikPohon.push([zW8KuadranXQ * 12, zW8KuadranZQ * 12], [zW8KuadranXQ * 27, zW8KuadranZQ * 10], [zW8KuadranXQ * 10, zW8KuadranZQ * 27]); });
+  }); zW8DaftarTitikPohon.push([- 34, - 34], [34, 34]); const zW8PaletPohonBundar = [0x3f9e4d, 0x359146, 0x4caf50];
+    zW8DaftarTitikPohon.forEach(([zW8TitikXQ, zW8TitikZQ], zW8IdxPohon) => {
+    const zW8PohonBaru = zW8IdxPohon % 3 === 2 ? makePalm(5 + (zW8IdxPohon % 2)) : zW8MakeRoundTree(4.6 + ((zW8IdxPohon % 3) * 0.5), zW8PaletPohonBundar[zW8IdxPohon % 3]);
+    zW8PohonBaru.position.set (zW8TitikXQ, 0, zW8TitikZQ); zW8PohonBaru.rotation.y = (zW8IdxPohon * 1.7) % 6.28; zW8GrupTamanBaru.add(zW8PohonBaru); });
+
+    [[10, 5.5], [- 10, 5.5], [10, - 5.5], [- 10, - 5.5], [5.5, 10], [- 5.5, - 10]].forEach(([zW8BangkuXQ, zW8BangkuZ]) => {
+    const zW8BangkuTaman = zW8MakeBenchUnit(); zW8BangkuTaman.position.set (zW8BangkuXQ, 0, zW8BangkuZ);
+    zW8BangkuTaman.rotation.y = Math.atan2(- zW8BangkuXQ, - zW8BangkuZ); zW8GrupTamanBaru.add(zW8BangkuTaman); });
+
+  const zW8KiosTamanX = zW8PusatTamanX + 32; const zW8KiosTamanZ = zW8PusatTamanZ + 8; const zW8KiosTaman = zW8MakeStallUnit(); zW8KiosTaman.position.set (32, 0, 8);
+  zW8KiosTaman.rotation.y = Math.PI / 2; zW8GrupTamanBaru.add(zW8KiosTaman); G.addCollider(zW8KiosTamanX, zW8KiosTamanZ, 1.8, 1.8, 2.6);
+
+    [[- 35, - 35], [35, - 35], [- 35, 35], [35, 35]].forEach(([zW8LampuX, zW8LampuZ]) => {
+    const zW8GrupLampuTaman = new THREE.Group();
+    const zW8MeshTiangLampuTaman = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5, 6), zW8SharedStdMat(0x3a3f45, 0.8, 0.5));
+    zW8MeshTiangLampuTaman.position.y = 2.5; zW8GrupLampuTaman.add(zW8MeshTiangLampuTaman);
+      const zW8MeshKepalaLampuTaman = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6), new THREE.MeshStandardMaterial({
+      color : 0xffd9a0, emissive : 0xffc98a, emissiveIntensity : 0.4, roughness : 0.5
+    })); zW8MeshKepalaLampuTaman.position.y = 5.05; zW8GrupLampuTaman.add(zW8MeshKepalaLampuTaman); zW8GrupLampuTaman.position.set (zW8LampuX, 0, zW8LampuZ);
+    zW8ApplyCastShadow(zW8GrupLampuTaman); zW8GrupTamanBaru.add(zW8GrupLampuTaman); });
+
+  const zW8PaletBungaTaman = [0xff5da2, 0xffb35c, 0xffe14d, 0xff5da2];
+    [[20, 4.4, 0], [- 20, 4.4, 0], [20, - 4.4, 0], [- 4.4, - 20, Math.PI / 2]].forEach(([zW8PetakX, zW8PetakZ, zW8PetakRy], zW8IdxPetak) => {
+    const zW8GrupPetakBaru = new THREE.Group(); const zW8MeshKotakPetakBaru = new THREE.Mesh(new THREE.BoxGeometry(4, 0.35, 1.2), zW8SharedStdMat(0x9a8a72, 1));
+    zW8MeshKotakPetakBaru.position.y = 0.18; zW8GrupPetakBaru.add(zW8MeshKotakPetakBaru);
+      const zW8MeshAtasPetakBaru = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.14, 1.0), new THREE.MeshStandardMaterial({
+      color : zW8PaletBungaTaman[zW8IdxPetak], roughness : 0.9, flatShading : true
+    })); zW8MeshAtasPetakBaru.position.y = 0.42; zW8GrupPetakBaru.add(zW8MeshAtasPetakBaru); zW8GrupPetakBaru.position.set (zW8PetakX, 0, zW8PetakZ);
+    zW8GrupPetakBaru.rotation.y = zW8PetakRy; zW8ApplyCastShadow(zW8GrupPetakBaru); zW8GrupTamanBaru.add(zW8GrupPetakBaru);
+  }); const zW8RekamanTaman = {
+  }; zW8RekamanTaman.x = zW8PusatTamanX; zW8RekamanTaman.z = zW8PusatTamanZ; zW8RekamanTaman.stallX = zW8KiosTamanX; zW8RekamanTaman.stallZ = zW8KiosTamanZ;
+  G.parkSpot = zW8RekamanTaman; const zW8HitunganTaman = {
+  }; zW8HitunganTaman.trees = zW8DaftarTitikPohon.length; zW8HitunganTaman.benches = 6; zW8HitunganTaman.lamps = 4; zW8HitunganTaman.flowerBeds = 4;
+  zW8HitunganTaman.stalls = 1; zW8HitunganTaman.fountains = 1; G.parkCounts = zW8HitunganTaman; return G.parkSpot; }
+let zW8DaftarPijarLampuJalan = []; export function buildWorld(G) {
+  const zW8SceneQQQQQQQQQQ = G.scene; G.roadX = [- 660, - 495, - 330, - 165, 0, 165, 330, 495, 660,]; G.roadZ = [- 660, - 495, - 330, - 165, 0, 165, 330, 495, 660,];
+    G.touge = TOUGE_POINTS.map((zW8TitikObj) => ({
+    x : zW8TitikObj[0], z : zW8TitikObj[1]
+  })); zW8DaftarPijarLampuJalan = []; zW8DaftarSpritePijar = []; zW8JamLangitTerakhir = - 10;
+
+  zW8LembarLangit = document.createElement('canvas'); zW8LembarLangit.width = 16; zW8LembarLangit.height = 512; zW8KuasLangit = zW8LembarLangit.getContext('2d');
+  zW8TexLangitObj = new THREE.CanvasTexture(zW8LembarLangit); zW8TexLangitObj.colorSpace = THREE.SRGBColorSpace; zW8ComputeSkyColors(G.timeOfDay || 10.5);
+  zW8PaintSkyDome(); zW8KubahLangit = new THREE.Mesh(new THREE.SphereGeometry(1500, 24, 12), new THREE.MeshBasicMaterial({
+    map : zW8TexLangitObj, side : THREE.BackSide, fog : false, depthWrite : false
+  })); zW8KubahLangit.renderOrder = - 1; zW8SceneQQQQQQQQQQ.add(zW8KubahLangit); zW8SceneQQQQQQQQQQ.fog = new THREE.Fog(0xcfe4ec, 220, 1500);
+
+  const zW8TexTanahDasar = zW8BuildGroundTexture(); zW8TexTanahDasar.wrapS = zW8TexTanahDasar.wrapT = THREE.RepeatWrapping; zW8TexTanahDasar.repeat.set (40, 40);
+  if (G.maxAniso) zW8TexTanahDasar.anisotropy = G.maxAniso; const zW8MeshTanahDasar = new THREE.Mesh(new THREE.PlaneGeometry(1320, 1320), new THREE.MeshStandardMaterial({
+    map : zW8TexTanahDasar, roughness : 1
+  })); zW8MeshTanahDasar.rotation.x = - Math.PI / 2; zW8MeshTanahDasar.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshTanahDasar);
+
+  const zW8GeoBukitDasar = new THREE.PlaneGeometry(700, 700, 24, 24); {
+    const zW8AttrPosisiBukit = zW8GeoBukitDasar.attributes.position; for (let zW8IdxTitikQ = 0; zW8IdxTitikQ < zW8AttrPosisiBukit.count; ++ zW8IdxTitikQ) {
+      const zW8VxBukit = zW8AttrPosisiBukit.getX(zW8IdxTitikQ) - 330, zW8VzBukit = - (zW8AttrPosisiBukit.getY(zW8IdxTitikQ)) - 330;
+      zW8AttrPosisiBukit.setZ(zW8IdxTitikQ, groundH(zW8VxBukit, zW8VzBukit)); }
+    zW8GeoBukitDasar.computeVertexNormals(); }
+  const zW8MeshBukitTouge = new THREE.Mesh(zW8GeoBukitDasar, zW8MakeGrassMat(28, 28)); zW8MeshBukitTouge.rotation.x = - Math.PI / 2;
+  zW8MeshBukitTouge.position.set (- 330, 0.02, - 330); zW8MeshBukitTouge.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshBukitTouge);
+
+    const zW8MeshBidangAir = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshStandardMaterial({
+    color : 0x1d6fb8, transparent : true, opacity : 0.95, roughness : 0.3, metalness : 0.2
+  })); zW8MeshBidangAir.rotation.x = - Math.PI / 2; zW8MeshBidangAir.position.y = - 0.4; zW8SceneQQQQQQQQQQ.add(zW8MeshBidangAir); G.water = zW8MeshBidangAir;
+
+  const zW8TexPasirPantai = zW8BuildSandTexture(); zW8TexPasirPantai.repeat.set (66, 5); if (G.maxAniso) zW8TexPasirPantai.anisotropy = G.maxAniso;
+    const zW8MeshPantaiBaru = new THREE.Mesh(new THREE.PlaneGeometry(1320, 100), new THREE.MeshStandardMaterial({
+    map : zW8TexPasirPantai, roughness : 1
+  })); zW8MeshPantaiBaru.rotation.x = - Math.PI / 2; zW8MeshPantaiBaru.position.set (0, 0.03, 610); zW8MeshPantaiBaru.receiveShadow = true;
+  zW8SceneQQQQQQQQQQ.add(zW8MeshPantaiBaru);
+ {
+      const zW8PasangOverlayZona = (zW8ZonaX, zW8ZonaZ, zW8MatZona) => {
+      const zW8MeshOverlayZona = new THREE.Mesh(new THREE.PlaneGeometry(660, 660), zW8MatZona); zW8MeshOverlayZona.rotation.x = - Math.PI / 2;
+      zW8MeshOverlayZona.position.set (zW8ZonaX, 0.018, zW8ZonaZ); zW8MeshOverlayZona.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshOverlayZona); };
+
+    const zW8ZonaPaveA = zW8BuildPavingTexture(); zW8ZonaPaveA.repeat.set (66, 66); if (G.maxAniso) zW8ZonaPaveA.anisotropy = G.maxAniso;
+      zW8PasangOverlayZona(330, 330, new THREE.MeshStandardMaterial({
+      map : zW8ZonaPaveA, roughness : 1
+    })); const zW8ZonaPaveB = zW8BuildPavingTexture(); zW8ZonaPaveB.repeat.set (66, 66); if (G.maxAniso) zW8ZonaPaveB.anisotropy = G.maxAniso;
+      zW8PasangOverlayZona(330, - 330, new THREE.MeshStandardMaterial({
+      map : zW8ZonaPaveB, roughness : 1
+    })); const zW8ZonaPaveC = zW8BuildPavingTexture(); zW8ZonaPaveC.repeat.set (66, 66); if (G.maxAniso) zW8ZonaPaveC.anisotropy = G.maxAniso;
+      zW8PasangOverlayZona(- 330, 330, new THREE.MeshStandardMaterial({
+      map : zW8ZonaPaveC, roughness : 1
+    }));
+ }
+
+    const zW8TexAspalJalan = zW8MakeCanvasTexture(64, 256, (zW8KuasQQQQQQQQQQQ, zW8LebarValQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQ) => {
+    zW8KuasQQQQQQQQQQQ.fillStyle = '#33373c'; zW8KuasQQQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQ);
+      for (let zW8IdxBintikQQQ = 0; zW8IdxBintikQQQ < 700; ++ zW8IdxBintikQQQ) {
+      const zW8ShadeValQ = Math.floor(rnd() * 36) + 40;
+      zW8KuasQQQQQQQQQQQ.fillStyle = `rgba(${zW8ShadeValQ},${zW8ShadeValQ},${zW8ShadeValQ + 4},.18)`;
+      zW8KuasQQQQQQQQQQQ.fillRect(rnd() * zW8LebarValQQQQQQQQQ, rnd() * zW8TinggiValQQQQQQQQQQQQ, 2, 2); }
+      for (let zW8IdxKilau = 0; zW8IdxKilau < 130; ++ zW8IdxKilau) {
+      zW8KuasQQQQQQQQQQQ.fillStyle = 'rgba(255,255,255,.045)'; zW8KuasQQQQQQQQQQQ.fillRect(rnd() * zW8LebarValQQQQQQQQQ, rnd() * zW8TinggiValQQQQQQQQQQQQ, 2, 2); }
+    zW8KuasQQQQQQQQQQQ.strokeStyle = 'rgba(0,0,0,.16)'; zW8KuasQQQQQQQQQQQ.lineWidth = 1; for (let zW8IdxRetak = 0; zW8IdxRetak < 7; ++ zW8IdxRetak) {
+      zW8KuasQQQQQQQQQQQ.beginPath(); let zW8RetakX = rnd() * zW8LebarValQQQQQQQQQ, zW8RetakY = rnd() * zW8TinggiValQQQQQQQQQQQQ;
+      zW8KuasQQQQQQQQQQQ.moveTo(zW8RetakX, zW8RetakY); for (let zW8IdxSegQ = 0; zW8IdxSegQ < 3; ++ zW8IdxSegQ) {
+        zW8RetakX += rr(- 9, 9); zW8RetakY += rr(4, 14); zW8KuasQQQQQQQQQQQ.lineTo(zW8RetakX, zW8RetakY); }
+      zW8KuasQQQQQQQQQQQ.stroke(); }
+      const zW8LukisGarisJalan = (zW8PosisiU, zW8WarnaGaris, zW8FraksiLebar) => {
+      zW8KuasQQQQQQQQQQQ.fillStyle = zW8WarnaGaris; const zW8LebarGaris = Math.max(1, zW8LebarValQQQQQQQQQ * zW8FraksiLebar);
+      zW8KuasQQQQQQQQQQQ.fillRect((zW8LebarValQQQQQQQQQ * zW8PosisiU) - zW8LebarGaris / 2, 0, zW8LebarGaris, zW8TinggiValQQQQQQQQQQQQ);
+    }; zW8LukisGarisJalan(0.03, '#d8d8d2', 0.012); zW8LukisGarisJalan(0.97, '#d8d8d2', 0.012); zW8LukisGarisJalan(0.478, '#e8d9a0', 0.008);
+    zW8LukisGarisJalan(0.522, '#e8d9a0', 0.008); zW8KuasQQQQQQQQQQQ.fillStyle = '#ffffff'; [0.25, 0.75].forEach((zW8PosisiUQ) => {
+      const zW8LebarGarisQ = Math.max(1, zW8LebarValQQQQQQQQQ * 0.010);
+      zW8KuasQQQQQQQQQQQ.fillRect((zW8LebarValQQQQQQQQQ * zW8PosisiUQ) - zW8LebarGarisQ / 2, 0, zW8LebarGarisQ, zW8TinggiValQQQQQQQQQQQQ * 0.45); });
+  }); zW8TexAspalJalan.wrapS = zW8TexAspalJalan.wrapT = THREE.RepeatWrapping; if (G.maxAniso) zW8TexAspalJalan.anisotropy = G.maxAniso;
+    const zW8MatAspalPenuh = new THREE.MeshStandardMaterial({
+    map : zW8TexAspalJalan, roughness : 0.95
+  }); const zW8MatAspalDatar = new THREE.MeshStandardMaterial({
+    color : 0x33373d, roughness : 0.95 });
+
+  const zW8TexTrotoarVert = zW8BuildPavingTexture(); zW8TexTrotoarVert.repeat.set (1, 110); if (G.maxAniso) zW8TexTrotoarVert.anisotropy = G.maxAniso;
+    const zW8MatTrotoarVert = new THREE.MeshStandardMaterial({
+    map : zW8TexTrotoarVert, roughness : 1
+  }); const zW8TexTrotoarHorz = zW8BuildPavingTexture(); zW8TexTrotoarHorz.repeat.set (110, 1); if (G.maxAniso) zW8TexTrotoarHorz.anisotropy = G.maxAniso;
+    const zW8MatTrotoarHorz = new THREE.MeshStandardMaterial({
+    map : zW8TexTrotoarHorz, roughness : 1
+  }); G.roadX.forEach((zW8NilaiJalanX) => {
+    const zW8KlonTexJalan = zW8TexAspalJalan.clone(); zW8KlonTexJalan.needsUpdate = true; zW8KlonTexJalan.repeat.set (1, 44);
+      const zW8MeshJalanBaru = new THREE.Mesh(new THREE.PlaneGeometry(CFG.roadW, 1320), new THREE.MeshStandardMaterial({
+      map : zW8KlonTexJalan, roughness : 0.95
+    })); zW8MeshJalanBaru.rotation.x = - Math.PI / 2; zW8MeshJalanBaru.position.set (zW8NilaiJalanX, 0.05, 0); zW8MeshJalanBaru.receiveShadow = true;
+    zW8SceneQQQQQQQQQQ.add(zW8MeshJalanBaru); [- 1, 1].forEach((zW8TandaSisiQQQ) => {
+      const zW8MeshTrotoarBaru = new THREE.Mesh(new THREE.BoxGeometry(3, 0.12, 1320), zW8MatTrotoarVert);
+      zW8MeshTrotoarBaru.position.set (zW8TandaSisiQQQ * ((CFG.roadW / 2) + 1.5) + zW8NilaiJalanX, 0.06, 0); zW8MeshTrotoarBaru.receiveShadow = true;
+      zW8SceneQQQQQQQQQQ.add(zW8MeshTrotoarBaru); });
+  }); G.roadZ.forEach((zW8NilaiJalanZ) => {
+
+    const zW8KlonTexJalanQ = zW8TexAspalJalan.clone(); zW8KlonTexJalanQ.needsUpdate = true; zW8KlonTexJalanQ.center.set (0.5, 0.5);
+    zW8KlonTexJalanQ.rotation = Math.PI / 2; zW8KlonTexJalanQ.repeat.set (1, 44);
+      const zW8MeshJalanBaruQ = new THREE.Mesh(new THREE.PlaneGeometry(1320, CFG.roadW), new THREE.MeshStandardMaterial({
+      map : zW8KlonTexJalanQ, roughness : 0.95
+    })); zW8MeshJalanBaruQ.rotation.x = - Math.PI / 2; zW8MeshJalanBaruQ.position.set (0, 0.05, zW8NilaiJalanZ); zW8MeshJalanBaruQ.rotation.z = Math.PI / 2;
+    zW8MeshJalanBaruQ.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshJalanBaruQ); [- 1, 1].forEach((zW8TandaSisiQQQQ) => {
+      const zW8MeshTrotoarBaruQ = new THREE.Mesh(new THREE.BoxGeometry(1320, 0.12, 3), zW8MatTrotoarHorz);
+      zW8MeshTrotoarBaruQ.position.set (0, 0.06, zW8TandaSisiQQQQ * ((CFG.roadW / 2) + 1.5) + zW8NilaiJalanZ); zW8MeshTrotoarBaruQ.receiveShadow = true;
+      zW8SceneQQQQQQQQQQ.add(zW8MeshTrotoarBaruQ); });
+  }); void zW8MatAspalPenuh; void zW8MatAspalDatar;
+ {
+    const zW8BatangPerSisiZebra = 5; const zW8SisiPerSimpang = 4; const zW8TotalBatangZebra = G.roadX.length * G.roadZ.length * zW8SisiPerSimpang * zW8BatangPerSisiZebra;
+      const zW8InstZebraBaru = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({
+      color : 0xf2efe4, roughness : 0.9
+    }), zW8TotalBatangZebra);
+    const zW8Mat4Zebra = new THREE.Matrix4(), zW8QuatZebra = new THREE.Quaternion().setFromEuler(new THREE.Euler(- Math.PI / 2, 0, 0)), zW8VecZebra = new THREE.Vector3(), zW8SkalaZebra = new THREE.Vector3();
+    const zW8GeserSilangZebra = (CFG.roadW / 2) + 3.5; const zW8RentangSilangZebra = CFG.roadW / 6; let zW8PenandaBatang = 0; G.roadX.forEach((zW8SilangX) => {
+        G.roadZ.forEach((zW8SilangZ) => {
+          for (let zW8IdxGarisQ = 0; zW8IdxGarisQ < zW8BatangPerSisiZebra; ++ zW8IdxGarisQ) {
+          const zW8GeserGaris = (zW8IdxGarisQ * zW8RentangSilangZebra) - (2 * zW8RentangSilangZebra);
+          zW8VecZebra.set (zW8GeserGaris + zW8SilangX, 0.07, zW8SilangZ - zW8GeserSilangZebra); zW8SkalaZebra.set (2.4, 6, 1);
+          zW8InstZebraBaru.setMatrixAt(zW8PenandaBatang ++, zW8Mat4Zebra.compose(zW8VecZebra, zW8QuatZebra, zW8SkalaZebra));
+          zW8VecZebra.set (zW8GeserGaris + zW8SilangX, 0.07, zW8GeserSilangZebra + zW8SilangZ);
+          zW8InstZebraBaru.setMatrixAt(zW8PenandaBatang ++, zW8Mat4Zebra.compose(zW8VecZebra, zW8QuatZebra, zW8SkalaZebra));
+          zW8VecZebra.set (zW8SilangX - zW8GeserSilangZebra, 0.07, zW8GeserGaris + zW8SilangZ); zW8SkalaZebra.set (6, 2.4, 1);
+          zW8InstZebraBaru.setMatrixAt(zW8PenandaBatang ++, zW8Mat4Zebra.compose(zW8VecZebra, zW8QuatZebra, zW8SkalaZebra));
+          zW8VecZebra.set (zW8GeserSilangZebra + zW8SilangX, 0.07, zW8GeserGaris + zW8SilangZ);
+          zW8InstZebraBaru.setMatrixAt(zW8PenandaBatang ++, zW8Mat4Zebra.compose(zW8VecZebra, zW8QuatZebra, zW8SkalaZebra)); } });
+    }); zW8InstZebraBaru.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8InstZebraBaru); }
+ {
+    const zW8ParuhLebarJalan = CFG.roadW / 2; const zW8MatMarkaPutihBaru = new THREE.MeshStandardMaterial({
+      color : 0xf5f2e8, roughness : 0.85
+    }); const zW8MatMarkaKuningBaru = new THREE.MeshStandardMaterial({
+      color : 0xf7d154, roughness : 0.85
+    }); const zW8ListDashPusat = [], zW8ListDashLajur = [], zW8ListGarisTepi = []; const zW8ListGarisBerhenti = [], zW8ListDashTouge = [], zW8ListTepiTouge = [];
+    const zW8DekatSimpang = (zW8NilaiUji, zW8DaftarJalan) => zW8DaftarJalan.some((zW8NilaiJalanQQQQ) => Math.abs(zW8NilaiUji - (zW8NilaiJalanQQQQ)) < zW8ParuhLebarJalan + 9);
+      G.roadX.forEach((zW8NilaiJalanXQ) => {
+        for (let zW8DashZ = - 648; ! (zW8DashZ > 648); zW8DashZ += 12) {
+        if (zW8DekatSimpang(zW8DashZ, G.roadZ)) continue; zW8ListDashPusat.push({
+          x : zW8NilaiJalanXQ, z : zW8DashZ + 3, sx : 0.4, sy : 6
+        }); zW8ListDashLajur.push({
+          x : zW8NilaiJalanXQ - 7.5, z : zW8DashZ + 2, sx : 0.3, sy : 4.5
+        }); zW8ListDashLajur.push({
+          x : zW8NilaiJalanXQ + 7.5, z : zW8DashZ + 2, sx : 0.3, sy : 4.5 }); }
+        for (let zW8IdxSegQQ = 0; zW8IdxSegQQ < G.roadZ.length - 1; ++ zW8IdxSegQQ) {
+        const zW8SegAwalZ = G.roadZ[zW8IdxSegQQ] + zW8ParuhLebarJalan, zW8SegAkhirZ = G.roadZ[zW8IdxSegQQ + 1] - zW8ParuhLebarJalan; zW8ListGarisTepi.push({
+          x : (zW8NilaiJalanXQ - zW8ParuhLebarJalan) + 0.8, z : (zW8SegAwalZ + zW8SegAkhirZ) / 2, sx : 0.3, sy : zW8SegAkhirZ - zW8SegAwalZ
+        }); zW8ListGarisTepi.push({
+          x : (zW8NilaiJalanXQ + zW8ParuhLebarJalan) - 0.8, z : (zW8SegAwalZ + zW8SegAkhirZ) / 2, sx : 0.3, sy : zW8SegAkhirZ - zW8SegAwalZ }); }
+    }); G.roadZ.forEach((zW8NilaiJalanZQ) => {
+        for (let zW8DashX = - 648; ! (zW8DashX > 648); zW8DashX += 12) {
+        if (zW8DekatSimpang(zW8DashX, G.roadX)) continue; zW8ListDashPusat.push({
+          x : zW8DashX + 3, z : zW8NilaiJalanZQ, sx : 6, sy : 0.4
+        }); zW8ListDashLajur.push({
+          x : zW8DashX + 2, z : zW8NilaiJalanZQ - 7.5, sx : 4.5, sy : 0.3
+        }); zW8ListDashLajur.push({
+          x : zW8DashX + 2, z : zW8NilaiJalanZQ + 7.5, sx : 4.5, sy : 0.3 }); }
+        for (let zW8IdxSegQQQ = 0; zW8IdxSegQQQ < G.roadX.length - 1; ++ zW8IdxSegQQQ) {
+        const zW8SegAwalX = G.roadX[zW8IdxSegQQQ] + zW8ParuhLebarJalan, zW8SegAkhirX = G.roadX[zW8IdxSegQQQ + 1] - zW8ParuhLebarJalan; zW8ListGarisTepi.push({
+          x : (zW8SegAwalX + zW8SegAkhirX) / 2, z : (zW8NilaiJalanZQ - zW8ParuhLebarJalan) + 0.8, sx : zW8SegAkhirX - zW8SegAwalX, sy : 0.3
+        }); zW8ListGarisTepi.push({
+          x : (zW8SegAwalX + zW8SegAkhirX) / 2, z : (zW8NilaiJalanZQ + zW8ParuhLebarJalan) - 0.8, sx : zW8SegAkhirX - zW8SegAwalX, sy : 0.3 }); } });
+
+      G.roadX.forEach((zW8SilangXQ) => {
+        G.roadZ.forEach((zW8SilangZQ) => {
+        const zW8GeserBerhentiMarka = zW8ParuhLebarJalan + 8.5; zW8ListGarisBerhenti.push({
+          x : zW8SilangXQ - 7, z : zW8GeserBerhentiMarka + zW8SilangZQ, sx : 13, sy : 0.55
+        }); zW8ListGarisBerhenti.push({
+          x : zW8SilangXQ + 7, z : zW8SilangZQ - zW8GeserBerhentiMarka, sx : 13, sy : 0.55
+        }); zW8ListGarisBerhenti.push({
+          x : zW8GeserBerhentiMarka + zW8SilangXQ, z : zW8SilangZQ - 7, sx : 0.55, sy : 13
+        }); zW8ListGarisBerhenti.push({
+          x : zW8SilangXQ - zW8GeserBerhentiMarka, z : zW8SilangZQ + 7, sx : 0.55, sy : 13 }); }); });
+
+      for (let zW8IdxSegQQQQ = 0; zW8IdxSegQQQQ < G.touge.length - 1; ++ zW8IdxSegQQQQ) {
+      const zW8TitikSegA = G.touge[zW8IdxSegQQQQ], zW8TitikSegB = G.touge[zW8IdxSegQQQQ + 1];
+      const zW8DeltaSegXQ = zW8TitikSegB.x - zW8TitikSegA.x, zW8DeltaSegZQ = zW8TitikSegB.z - zW8TitikSegA.z;
+      const zW8PanjangSegTouge = Math.hypot(zW8DeltaSegXQ, zW8DeltaSegZQ) || 0.001;
+      const zW8SatuanSegX = zW8DeltaSegXQ / zW8PanjangSegTouge, zW8SatuanSegZ = zW8DeltaSegZQ / zW8PanjangSegTouge, zW8TegakSegX = - zW8SatuanSegZ, zW8TegakSegZ = zW8SatuanSegX;
+      const zW8RotSegTougeY = Math.atan2(- zW8SatuanSegX, - zW8SatuanSegZ); for (let zW8JarakDash = 4; zW8JarakDash < zW8PanjangSegTouge; zW8JarakDash += 9) {
+        const zW8FraksiDash = zW8JarakDash / zW8PanjangSegTouge, zW8DashTougeX = (zW8DeltaSegXQ * zW8FraksiDash) + zW8TitikSegA.x, zW8DashTougeZ = (zW8DeltaSegZQ * zW8FraksiDash) + zW8TitikSegA.z;
+          zW8ListDashTouge.push({
+          x : zW8DashTougeX, z : zW8DashTougeZ, ry : zW8RotSegTougeY, sx : 0.35, sy : 3.2, y : groundH(zW8DashTougeX, zW8DashTougeZ) + 0.12 }); }
+        [- 1, 1].forEach((zW8TandaSisiQQQQQ) => {
+        const zW8TengahTepiX = ((zW8TitikSegA.x + zW8TitikSegB.x) / 2) + (zW8TegakSegX * zW8TandaSisiQQQQQ * 4.05), zW8TengahTepiZ = ((zW8TitikSegA.z + zW8TitikSegB.z) / 2) + (zW8TegakSegZ * zW8TandaSisiQQQQQ * 4.05);
+        const zW8TinggiTepiTougeA = groundH(zW8TitikSegA.x + zW8TegakSegX * zW8TandaSisiQQQQQ * 4.05, zW8TitikSegA.z + zW8TegakSegZ * zW8TandaSisiQQQQQ * 4.05);
+        const zW8TinggiTepiTougeB = groundH(zW8TitikSegB.x + zW8TegakSegX * zW8TandaSisiQQQQQ * 4.05, zW8TitikSegB.z + zW8TegakSegZ * zW8TandaSisiQQQQQ * 4.05);
+          zW8ListTepiTouge.push({
+          x : zW8TengahTepiX, z : zW8TengahTepiZ, ry : Math.atan2(zW8SatuanSegX, zW8SatuanSegZ), sx : 0.28, sz : zW8PanjangSegTouge, y : Math.max(zW8TinggiTepiTougeA, zW8TinggiTepiTougeB) + 0.13
+        }); }); }
+    const zW8QuatDatarMarka = new THREE.Quaternion().setFromEuler(new THREE.Euler(- Math.PI / 2, 0, 0)); const zW8RakitInstBidang = (zW8DaftarEntri, zW8RefMat) => {
+      if (! zW8DaftarEntri.length) return; const zW8MeshInstBaru = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), zW8RefMat, zW8DaftarEntri.length);
+      const zW8Mat4Marka = new THREE.Matrix4(), zW8QuatMarka = new THREE.Quaternion(), zW8QuatYMarka = new THREE.Quaternion(), zW8VecMarka = new THREE.Vector3(), zW8SkalaMarka = new THREE.Vector3();
+        zW8DaftarEntri.forEach((zW8EntriObj, zW8IdxEntri) => {
+          if (zW8EntriObj.ry) {
+          zW8QuatYMarka.setFromEuler(new THREE.Euler(0, zW8EntriObj.ry, 0)); zW8QuatMarka.copy(zW8QuatYMarka).multiply(zW8QuatDatarMarka);
+        } else zW8QuatMarka.copy(zW8QuatDatarMarka);
+        zW8MeshInstBaru.setMatrixAt(zW8IdxEntri, zW8Mat4Marka.compose(zW8VecMarka.set (zW8EntriObj.x, zW8EntriObj.y || 0.08, zW8EntriObj.z), zW8QuatMarka, zW8SkalaMarka.set (zW8EntriObj.sx, zW8EntriObj.sy, 1)));
+      }); zW8MeshInstBaru.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8MeshInstBaru);
+    }; const zW8RakitInstKotak = (zW8DaftarEntriQ, zW8RefMatQ) => {
+      if (! zW8DaftarEntriQ.length) return; const zW8MeshInstBaruQ = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), zW8RefMatQ, zW8DaftarEntriQ.length);
+      const zW8Mat4MarkaQ = new THREE.Matrix4(), zW8QuatMarkaQ = new THREE.Quaternion(), zW8VecMarkaQ = new THREE.Vector3(), zW8SkalaMarkaQ = new THREE.Vector3();
+        zW8DaftarEntriQ.forEach((zW8EntriObjQ, zW8IdxEntriQ) => {
+        zW8QuatMarkaQ.setFromEuler(new THREE.Euler(0, zW8EntriObjQ.ry || 0, 0));
+        zW8MeshInstBaruQ.setMatrixAt(zW8IdxEntriQ, zW8Mat4MarkaQ.compose(zW8VecMarkaQ.set (zW8EntriObjQ.x, zW8EntriObjQ.y || 0.08, zW8EntriObjQ.z), zW8QuatMarkaQ, zW8SkalaMarkaQ.set (zW8EntriObjQ.sx, 0.05, zW8EntriObjQ.sz)));
+      }); zW8MeshInstBaruQ.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8MeshInstBaruQ);
+    }; zW8RakitInstBidang(zW8ListDashPusat, zW8MatMarkaKuningBaru); zW8RakitInstBidang(zW8ListDashLajur, zW8MatMarkaPutihBaru);
+    zW8RakitInstBidang(zW8ListGarisTepi, zW8MatMarkaPutihBaru); zW8RakitInstBidang(zW8ListGarisBerhenti, zW8MatMarkaPutihBaru);
+    zW8RakitInstBidang(zW8ListDashTouge, zW8MatMarkaPutihBaru); zW8RakitInstKotak(zW8ListTepiTouge, zW8MatMarkaPutihBaru); }
+ {
+      const zW8GabungkanGeometri = (zW8DaftarGeo) => {
+      let zW8JumlahTitikTotal = 0; let zW8JumlahIndeksTotal = 0; zW8DaftarGeo.forEach((zW8GeoObj) => {
+        zW8JumlahTitikTotal += zW8GeoObj.attributes.position.count; zW8JumlahIndeksTotal += zW8GeoObj.index.count; });
+      const zW8LarikPosisi = new Float32Array(zW8JumlahTitikTotal * 3), zW8LarikNormal = new Float32Array(zW8JumlahTitikTotal * 3), zW8LarikUv = new Float32Array(zW8JumlahTitikTotal * 2);
+      const zW8LarikIndeks = new Uint32Array(zW8JumlahIndeksTotal); let zW8PenandaTitik = 0; let zW8PenandaIndeks = 0; zW8DaftarGeo.forEach((zW8GeoObjQ) => {
+        zW8LarikPosisi.set (zW8GeoObjQ.attributes.position.array, zW8PenandaTitik * 3); zW8LarikNormal.set (zW8GeoObjQ.attributes.normal.array, zW8PenandaTitik * 3);
+        if (zW8GeoObjQ.attributes.uv) zW8LarikUv.set (zW8GeoObjQ.attributes.uv.array, zW8PenandaTitik * 2);
+        for (let zW8IdxElem = 0; zW8IdxElem < zW8GeoObjQ.index.count; zW8IdxElem ++) zW8LarikIndeks[zW8PenandaIndeks + zW8IdxElem] = zW8GeoObjQ.index.getX(zW8IdxElem) + zW8PenandaTitik;
+        zW8PenandaTitik += zW8GeoObjQ.attributes.position.count; zW8PenandaIndeks += zW8GeoObjQ.index.count;
+      }); const zW8GeoGabungBaru = new THREE.BufferGeometry(); zW8GeoGabungBaru.setAttribute('position', new THREE.BufferAttribute(zW8LarikPosisi, 3));
+      zW8GeoGabungBaru.setAttribute('normal', new THREE.BufferAttribute(zW8LarikNormal, 3));
+      zW8GeoGabungBaru.setAttribute('uv', new THREE.BufferAttribute(zW8LarikUv, 2)); zW8GeoGabungBaru.setIndex(new THREE.BufferAttribute(zW8LarikIndeks, 1));
+      return zW8GeoGabungBaru; };
+
+    const zW8GeoTiangSinyalBaru = zW8GabungkanGeometri([new THREE.CylinderGeometry(0.07, 0.09, 4.6, 8).translate(0, 2.3, 0), new THREE.BoxGeometry(0.12, 0.12, 1.0).translate(0, 4.5, 0.5), new THREE.BoxGeometry(0.34, 0.9, 0.3).translate(0, 4.15, 0.95),]);
+      const zW8MatTiangSinyalBaru = new THREE.MeshStandardMaterial({
+      color : 0x22262a, roughness : 0.6, metalness : 0.6
+    }); const zW8ListSimpang = []; G.roadX.forEach((zW8SilangXQQ) => {
+      G.roadZ.forEach((zW8SilangZQQ) => zW8ListSimpang.push([zW8SilangXQQ, zW8SilangZQQ]));
+    }); const zW8InstTiangSinyal = new THREE.InstancedMesh(zW8GeoTiangSinyalBaru, zW8MatTiangSinyalBaru, zW8ListSimpang.length * 2);
+    const zW8GeoMukaLampuBaru = new THREE.CircleGeometry(0.11, 12); const zW8PaletWarnaNyala = [0xff2a1e, 0xffb020, 0x2aff5a]; const zW8PetaLampuSinyal = {
+      x : [], z : []
+    }; ['x', 'z'].forEach((zW8KunciSumbu) => {
+        for (let zW8IdxWarna = 0; zW8IdxWarna < 3; ++ zW8IdxWarna) {
+          const zW8InstNyala = new THREE.InstancedMesh(zW8GeoMukaLampuBaru, new THREE.MeshBasicMaterial({
+          color : zW8PaletWarnaNyala[zW8IdxWarna]
+        }), zW8ListSimpang.length); const zW8InstMati = new THREE.InstancedMesh(zW8GeoMukaLampuBaru, new THREE.MeshBasicMaterial({
+          color : 0x1a1c1e
+        }), zW8ListSimpang.length); const zW8PasanganBaru = {
+        }; zW8PasanganBaru.on = zW8InstNyala; zW8PasanganBaru.off = zW8InstMati; zW8PetaLampuSinyal[zW8KunciSumbu].push(zW8PasanganBaru);
+        zW8SceneQQQQQQQQQQ.add(zW8InstNyala); zW8SceneQQQQQQQQQQ.add(zW8InstMati); } });
+    const zW8Mat4Sinyal = new THREE.Matrix4(), zW8QuatSinyal = new THREE.Quaternion(), zW8EulerSinyal = new THREE.Euler(), zW8VecSkalaSatu = new THREE.Vector3(1, 1, 1), zW8VecPosSinyal = new THREE.Vector3();
+    let zW8PenandaTiang = 0; zW8ListSimpang.forEach(([zW8SilangXQQQ, zW8SilangZQQQ], zW8IdxSilang) => {
+        [[zW8SilangXQQQ + 13, zW8SilangZQQQ + 13, Math.PI / 2, 'x'], [zW8SilangXQQQ - 13, zW8SilangZQQQ - 13, 0, 'z']].forEach(([zW8TiangX, zW8TiangZ, zW8RotTiangY, zW8SumbuTiang]) => {
+        zW8QuatSinyal.setFromEuler(zW8EulerSinyal.set (0, zW8RotTiangY, 0));
+        zW8InstTiangSinyal.setMatrixAt(zW8PenandaTiang ++, zW8Mat4Sinyal.compose(zW8VecPosSinyal.set (zW8TiangX, 0, zW8TiangZ), zW8QuatSinyal, zW8VecSkalaSatu));
+        const zW8KosinusRot = Math.cos(zW8RotTiangY), zW8SinusRot = Math.sin(zW8RotTiangY); for (let zW8IdxWarnaQ = 0; zW8IdxWarnaQ < 3; ++ zW8IdxWarnaQ) {
+          const zW8LampuPosY = [0.28, 0, - 0.28][zW8IdxWarnaQ] + 4.15, zW8GeserMukaZ = 1.11;
+          const zW8LampuDuniaX = (zW8GeserMukaZ * zW8SinusRot) + zW8TiangX, zW8LampuDuniaZ = (zW8GeserMukaZ * zW8KosinusRot) + zW8TiangZ;
+          const zW8MatriksLampuBaru = zW8Mat4Sinyal.compose(zW8VecPosSinyal.set (zW8LampuDuniaX, zW8LampuPosY, zW8LampuDuniaZ), zW8QuatSinyal, zW8VecSkalaSatu);
+          zW8PetaLampuSinyal[zW8SumbuTiang][zW8IdxWarnaQ].on.setMatrixAt(zW8IdxSilang, zW8MatriksLampuBaru);
+          zW8PetaLampuSinyal[zW8SumbuTiang][zW8IdxWarnaQ].off.setMatrixAt(zW8IdxSilang, zW8MatriksLampuBaru); } });
+    }); zW8InstTiangSinyal.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8InstTiangSinyal); ['x', 'z'].forEach((zW8KunciSumbuQ) => {
+        zW8PetaLampuSinyal[zW8KunciSumbuQ].forEach((zW8PasanganBaruQ) => {
+        zW8PasanganBaruQ.on.instanceMatrix.needsUpdate = true; zW8PasanganBaruQ.off.instanceMatrix.needsUpdate = true; }); });
+
+    let zW8JamSiklusSinyal = 0, zW8FaseSinyal = - 1, zW8StatusSumbuX = 'red', zW8StatusSumbuZ = 'green'; const zW8PasangStatusSinyal = () => {
+        [['x', zW8StatusSumbuX], ['z', zW8StatusSumbuZ]].forEach(([zW8KunciSumbuQQ, zW8NilaiStatus]) => {
+        const zW8IdxWarnaAktif = zW8NilaiStatus === 'red' ? 0 : zW8NilaiStatus === 'yellow' ? 1 : 2;
+          zW8PetaLampuSinyal[zW8KunciSumbuQQ].forEach((zW8PasanganBaruQQ, zW8IdxWarnaQQ) => {
+          zW8PasanganBaruQQ.on.visible = zW8IdxWarnaQQ === zW8IdxWarnaAktif; zW8PasanganBaruQQ.off.visible = zW8IdxWarnaQQ !== zW8IdxWarnaAktif; }); });
+    }; zW8PasangStatusSinyal(); G.lightState = (zW8KunciSumbuQQQ) => (zW8KunciSumbuQQQ === 'x' ? zW8StatusSumbuX : zW8StatusSumbuZ);
+      G.updaters.push((zW8GInner, zW8DtInner) => {
+      zW8JamSiklusSinyal = (zW8JamSiklusSinyal + zW8DtInner) % 15.5; let zW8FaseBerikutnya; let zW8StatusBaruX = 'red', zW8StatusBaruZ = 'red';
+        if (zW8JamSiklusSinyal < 5.5) {
+        zW8FaseBerikutnya = 0; zW8StatusBaruZ = 'green';
+        } else if (zW8JamSiklusSinyal < 7) {
+        zW8FaseBerikutnya = 1; zW8StatusBaruZ = 'yellow';
+        } else if (zW8JamSiklusSinyal < 7.75) {
+        zW8FaseBerikutnya = 2;
+        } else if (zW8JamSiklusSinyal < 13.25) {
+        zW8FaseBerikutnya = 3; zW8StatusBaruX = 'green';
+        } else if (zW8JamSiklusSinyal < 14.75) {
+        zW8FaseBerikutnya = 4; zW8StatusBaruX = 'yellow'; } else {
+        zW8FaseBerikutnya = 5; }
+        if (zW8FaseBerikutnya !== zW8FaseSinyal) {
+        zW8FaseSinyal = zW8FaseBerikutnya; zW8StatusSumbuX = zW8StatusBaruX; zW8StatusSumbuZ = zW8StatusBaruZ; zW8PasangStatusSinyal(); } }); }
+
+  const zW8PaletCadangan = ['#8d99ae', '#a39a8b', '#b08968', '#94867a', '#9c7bb5', '#6d8ea0']; const zW8PastelPantai = VICE.coralPastels;
+
+    const zW8PetaPaletDistrik = {
+    neon : VICE.downtown, coral : VICE.coralPastels, port : ['#8a7f6a', '#6b7a72', '#a08a68', '#5f8d7d', '#94867a', '#7f9bb3',], hoshino : ['#9aa0a6', '#a39a8b', '#7d9a7a', '#b09872', '#6d8ea0', '#9a8a72',],
+  }; let zW8WarnaDasarTerakhir = null, zW8WarnaDasarSebelumnya = null;
+  const zW8OpsiTandaGedung = [['RAMEN', '#ff5c39'], ['CLUB NEON', '#e879ff'], ['TURBO PARTS', '#57b7ff'], ['HOTEL CORAL', '#ffb35c'], ['PAWN', '#ffe14d'], ['SUSHI-GO', '#7dffb0'], ['ARCADE', '#ff7ab0'],];
+  const zW8OpsiTeksPoster = ['RONIN KAI', 'TURBO MAX', 'BAY COLA',]; for (let zW8BlokX = 0; zW8BlokX < 8; zW8BlokX ++)
+    for (let zW8BlokZ = 0; zW8BlokZ < 8; ++ zW8BlokZ) {
+    const zW8PusatBlokX = (zW8BlokX * 165) - 577.5, zW8PusatBlokZ = (zW8BlokZ * 165) - 577.5;
+    const zW8DistrikBlok = DISTRICTS.reduce((zW8Terbaik, zW8Kandidat) => ((zW8PusatBlokX - zW8Kandidat.cx) ** 2 + (zW8PusatBlokZ - zW8Kandidat.cz) ** 2 < (zW8PusatBlokX - zW8Terbaik.cx) ** 2 + (zW8PusatBlokZ - zW8Terbaik.cz) ** 2 ? zW8Kandidat : zW8Terbaik), DISTRICTS[0]);
+
+      if (zW8DistrikBlok.id === 'hoshino' && Math.hypot(zW8PusatBlokX - zW8DistrikBlok.cx, zW8PusatBlokZ - zW8DistrikBlok.cz) < 250) {
+      zW8ConstructResidentialBlock(G, zW8SceneQQQQQQQQQQ, zW8PusatBlokX, zW8PusatBlokZ); continue; }
+    const zW8IalahPantai = zW8PusatBlokZ > 500; const zW8JumlahGedungBlok = ri(2, 4); for (let zW8IdxGedung = 0; zW8IdxGedung < zW8JumlahGedungBlok; ++ zW8IdxGedung) {
+      const zW8BentangLebar = rr(22, 44); const zW8BentangDalam = rr(22, 44);
+      const zW8BentangTinggi = zW8IalahPantai ? rr(8, 20) : zW8DistrikBlok.id === 'neon' ? rr(24, 60) : zW8DistrikBlok.id === 'hoshino' ? rr(8, 22) : zW8DistrikBlok.id === 'port' ? rr(8, 20) : rr(10, 28);
+      const zW8GedungX = rr(- 48, 48) + zW8PusatBlokX, zW8GedungZ = rr(- 48, 48) + zW8PusatBlokZ;
+      if (Math.abs(zW8GedungX + 412.5) < 60 && Math.abs(zW8GedungZ - 412.5) < 60) continue;
+      if (Math.abs(zW8GedungX - zW8MARKET.x) < 54 && Math.abs(zW8GedungZ - zW8MARKET.z) < 76) continue;
+      const zW8DaftarPalet = zW8IalahPantai ? zW8PastelPantai : (zW8PetaPaletDistrik[zW8DistrikBlok.id] || zW8PaletCadangan); let zW8WarnaGedung = pick(zW8DaftarPalet);
+      if (zW8WarnaGedung === zW8WarnaDasarTerakhir) zW8WarnaGedung = zW8DaftarPalet[(zW8DaftarPalet.indexOf(zW8WarnaGedung) + 1) % zW8DaftarPalet.length];
+      if ((zW8DistrikBlok.id === 'coral' || zW8IalahPantai) && zW8WarnaGedung === zW8WarnaDasarSebelumnya) zW8WarnaGedung = zW8DaftarPalet[(zW8DaftarPalet.indexOf(zW8WarnaGedung) + 1) % zW8DaftarPalet.length];
+      zW8WarnaDasarSebelumnya = zW8WarnaDasarTerakhir; zW8WarnaDasarTerakhir = zW8WarnaGedung;
+      const zW8TexFasadGedung = zW8BuildBuildingTexture(zW8WarnaGedung, rr(0.18, 0.42)); zW8TexFasadGedung.wrapS = zW8TexFasadGedung.wrapT = THREE.RepeatWrapping;
+        const zW8MatFasadGedung = new THREE.MeshStandardMaterial({
+        map : zW8TexFasadGedung, emissive : 0xffc873, emissiveMap : zW8TexFasadGedung, emissiveIntensity : 0, roughness : 0.9
+      }); zW8MatFasadGedung.color.setRGB(rr(0.92, 1), rr(0.9, 1), rr(0.87, 0.98));
+      const zW8MeshGedungBaru = new THREE.Mesh(new THREE.BoxGeometry(zW8BentangLebar, zW8BentangTinggi, zW8BentangDalam), zW8MatFasadGedung);
+      zW8MeshGedungBaru.position.set (zW8GedungX, (zW8BentangTinggi / 2) + groundH(zW8GedungX, zW8GedungZ), zW8GedungZ); zW8MeshGedungBaru.castShadow = true;
+      zW8MeshGedungBaru.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshGedungBaru); if (! G.buildingMats) G.buildingMats = [];
+      G.buildingMats.push(zW8MatFasadGedung); G.addCollider(zW8GedungX, zW8GedungZ, zW8BentangLebar / 2, zW8BentangDalam / 2, zW8BentangTinggi); if (zW8IalahPantai) {
+        const zW8TinggiUndakGedung = rr(1.6, 3);
+        const zW8MeshUndakGedung = new THREE.Mesh(new THREE.BoxGeometry(zW8BentangLebar * 0.62, zW8TinggiUndakGedung, zW8BentangDalam * 0.62), zW8MatFasadGedung);
+        zW8MeshUndakGedung.position.set (zW8GedungX, (zW8BentangTinggi + (zW8TinggiUndakGedung / 2)) + groundH(zW8GedungX, zW8GedungZ), zW8GedungZ);
+        zW8MeshUndakGedung.castShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshUndakGedung); }
+        if (zW8IalahPantai || zW8DistrikBlok.id === 'coral') {
+        const zW8WarnaNeonGedung = pick(VICE.neonTrim); const zW8MatTrimGedung = new THREE.MeshStandardMaterial({
+          color : zW8WarnaNeonGedung, emissive : zW8WarnaNeonGedung, emissiveIntensity : 0, roughness : 0.6
+        }); const zW8MeshTrimGedung = new THREE.Mesh(new THREE.BoxGeometry(zW8BentangLebar + 0.35, 0.3, zW8BentangDalam + 0.35), zW8MatTrimGedung);
+        zW8MeshTrimGedung.position.set (zW8GedungX, (zW8BentangTinggi * 0.84) + groundH(zW8GedungX, zW8GedungZ), zW8GedungZ); zW8MeshTrimGedung.castShadow = true;
+        zW8SceneQQQQQQQQQQ.add(zW8MeshTrimGedung); if (! G.neonTrimMats) G.neonTrimMats = []; G.neonTrimMats.push(zW8MatTrimGedung);
+        const zW8PijarTrimGedung = glowSprite(new THREE.Color(zW8WarnaNeonGedung), 12);
+        zW8PijarTrimGedung.position.set (zW8GedungX, (zW8BentangTinggi * 0.84) + groundH(zW8GedungX, zW8GedungZ), zW8GedungZ); zW8PijarTrimGedung.material.opacity = 0;
+        zW8SceneQQQQQQQQQQ.add(zW8PijarTrimGedung); zW8DaftarSpritePijar.push(zW8PijarTrimGedung); }
+        if (rnd() < 0.3) {
+          const zW8MeshPropAtap = new THREE.Mesh(new THREE.BoxGeometry(rr(2, 4), rr(1, 2), rr(2, 4)), new THREE.MeshStandardMaterial({
+          color : 0x555a60
+        })); zW8MeshPropAtap.position.set (rr(- 6, 6) + zW8GedungX, zW8BentangTinggi + 0.8, rr(- 6, 6) + zW8GedungZ); zW8SceneQQQQQQQQQQ.add(zW8MeshPropAtap); }
+        if (rnd() < 0.22) {
+        const zW8TexPosterGedung = zW8BuildSignTexture(pick(zW8OpsiTeksPoster), '#14161c', '#ffb35c');
+
+        const zW8GeoPapanPoster = new THREE.PlaneGeometry(14, 4); const zW8MatPapanPoster = new THREE.MeshBasicMaterial({
+          map : zW8TexPosterGedung, side : THREE.FrontSide
+        }); const zW8RotPapanY = rr(0, Math.PI); const zW8MeshPapanDepan = new THREE.Mesh(zW8GeoPapanPoster, zW8MatPapanPoster);
+        zW8MeshPapanDepan.position.set (zW8GedungX, zW8BentangTinggi + 4, zW8GedungZ); zW8MeshPapanDepan.rotation.y = zW8RotPapanY;
+        zW8SceneQQQQQQQQQQ.add(zW8MeshPapanDepan); const zW8MeshPapanBelakang = new THREE.Mesh(zW8GeoPapanPoster, zW8MatPapanPoster);
+        zW8MeshPapanBelakang.position.set (zW8GedungX - Math.sin(zW8RotPapanY) * 0.06, zW8BentangTinggi + 4, zW8GedungZ - Math.cos(zW8RotPapanY) * 0.06);
+        zW8MeshPapanBelakang.rotation.y = zW8RotPapanY + Math.PI; zW8SceneQQQQQQQQQQ.add(zW8MeshPapanBelakang); }
+
+        if ((zW8DistrikBlok.id === 'neon' || zW8DistrikBlok.id === 'coral' || zW8IalahPantai) && rnd() < (zW8IalahPantai ? 0.75 : 0.6)) {
+        const[zW8TeksTandaToko, zW8WarnaTandaToko] = pick(zW8OpsiTandaGedung);
+        const zW8TexTandaToko = zW8BuildSignTexture(zW8TeksTandaToko, '#101018', zW8WarnaTandaToko);
+          const zW8MeshTandaToko = new THREE.Mesh(new THREE.PlaneGeometry(14, 3.4), new THREE.MeshBasicMaterial({
+          map : zW8TexTandaToko
+        })); zW8MeshTandaToko.position.set (zW8GedungX, 4.6, (zW8BentangDalam / 2) + 0.1 + zW8GedungZ); zW8SceneQQQQQQQQQQ.add(zW8MeshTandaToko);
+        const zW8PijarTandaToko = glowSprite(new THREE.Color(zW8WarnaTandaToko), 13);
+        zW8PijarTandaToko.position.set (zW8GedungX, 4.6, (zW8BentangDalam / 2) + 0.02 + zW8GedungZ); zW8PijarTandaToko.material.opacity = 0;
+        zW8SceneQQQQQQQQQQ.add(zW8PijarTandaToko); zW8DaftarSpritePijar.push(zW8PijarTandaToko);
+          const zW8MeshTendaToko = new THREE.Mesh(new THREE.BoxGeometry(15, 0.15, 2.2), new THREE.MeshStandardMaterial({
+          color : new THREE.Color(zW8WarnaTandaToko)
+        })); zW8MeshTendaToko.position.set (zW8GedungX, 3.6, (zW8BentangDalam / 2) + 1 + zW8GedungZ); zW8MeshTendaToko.rotation.x = 0.3;
+        zW8SceneQQQQQQQQQQ.add(zW8MeshTendaToko); } } }
+ {
+    const zW8ListTitikLampu = [];
+    const zW8UjiLewatiSimpang = (zW8NilaiUjiQ, zW8DaftarJalanQ) => zW8DaftarJalanQ.some((zW8NilaiJalanQQQQQ) => Math.abs(zW8NilaiUjiQ - (zW8NilaiJalanQQQQQ)) < 21);
+    const zW8LampuKenaGedung = (x, z) => G.colliders.some((zW8ObjKolQQQ) => Math.abs(x - (zW8ObjKolQQQ.x)) < zW8ObjKolQQQ.hw + 1 && Math.abs(z - (zW8ObjKolQQQ.z)) < zW8ObjKolQQQ.hd + 1);
+      G.roadX.forEach((zW8NilaiJalanXQQ) => {
+      const zW8IalahUtama = zW8NilaiJalanXQQ === 0 || zW8NilaiJalanXQQ === 330; let zW8IdxSelang = 0;
+        for (let zW8LampuZQ = - 615; ! (zW8LampuZQ > 615); zW8LampuZQ += zW8IalahUtama ? 45 : 55, ++ zW8IdxSelang) {
+        if (zW8UjiLewatiSimpang(zW8LampuZQ, G.roadZ)) continue; if (zW8IalahUtama) {
+            zW8ListTitikLampu.push({
+            x : zW8NilaiJalanXQQ - 17, z : zW8LampuZQ, glow : 1
+          }); zW8ListTitikLampu.push({
+            x : zW8NilaiJalanXQQ + 17, z : zW8LampuZQ + 22, glow : 1 });
+          } else zW8ListTitikLampu.push({
+          x : zW8NilaiJalanXQQ + (zW8IdxSelang % 2 === 0 ? 17 : - 17), z : zW8LampuZQ, glow : 0 }); }
+    }); G.roadZ.forEach((zW8NilaiJalanZQQ) => {
+      const zW8IalahUtamaQ = zW8NilaiJalanZQQ === 0 || zW8NilaiJalanZQQ === 495; let zW8IdxSelangQ = 0;
+        for (let zW8LampuXQ = - 615; ! (zW8LampuXQ > 615); zW8LampuXQ += zW8IalahUtamaQ ? 45 : 55, ++ zW8IdxSelangQ) {
+        if (zW8UjiLewatiSimpang(zW8LampuXQ, G.roadX)) continue; if (zW8IalahUtamaQ) {
+            zW8ListTitikLampu.push({
+            x : zW8LampuXQ, z : zW8NilaiJalanZQQ - 17, glow : 1
+          }); zW8ListTitikLampu.push({
+            x : zW8LampuXQ + 22, z : zW8NilaiJalanZQQ + 17, glow : 1 });
+          } else zW8ListTitikLampu.push({
+          x : zW8LampuXQ, z : zW8NilaiJalanZQQ + (zW8IdxSelangQ % 2 === 0 ? 17 : - 17), glow : 0 }); }
+    }); for (let zW8PapanXQ = - 440; ! (zW8PapanXQ > 640); zW8PapanXQ += 55) {
+      if (zW8LampuKenaGedung(zW8PapanXQ, 552)) continue; zW8ListTitikLampu.push({
+        x : zW8PapanXQ, z : 552, glow : 2 }); }
+    const zW8TotalTitikLampu = zW8ListTitikLampu.length; const zW8MatTiangLampuJalan = new THREE.MeshStandardMaterial({
+      color : 0x3a3f45, roughness : 0.8, metalness : 0.5
+    }); const zW8Mat4Lampu = new THREE.Matrix4();
+    const zW8InstTiangLampu = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, 6, 6), zW8MatTiangLampuJalan, zW8TotalTitikLampu);
+      zW8ListTitikLampu.forEach((zW8TitikObjQ, zW8IdxLampu) => {
+      zW8Mat4Lampu.makeTranslation(zW8TitikObjQ.x, 3, zW8TitikObjQ.z); zW8InstTiangLampu.setMatrixAt(zW8IdxLampu, zW8Mat4Lampu);
+    }); zW8InstTiangLampu.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8InstTiangLampu); const zW8MatKepalaLampu = new THREE.MeshStandardMaterial({
+      color : 0xffd9a0, emissive : 0xffc98a, emissiveIntensity : 0.15, roughness : 0.5
+    }); const zW8InstKepalaLampu = new THREE.InstancedMesh(new THREE.SphereGeometry(0.22, 8, 6), zW8MatKepalaLampu, zW8TotalTitikLampu);
+      zW8ListTitikLampu.forEach((zW8TitikObjQQ, zW8IdxLampuQ) => {
+      zW8Mat4Lampu.makeTranslation(zW8TitikObjQQ.x, 6.02, zW8TitikObjQQ.z); zW8InstKepalaLampu.setMatrixAt(zW8IdxLampuQ, zW8Mat4Lampu);
+    }); zW8InstKepalaLampu.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8InstKepalaLampu); const zW8MatKolamLampu = new THREE.MeshBasicMaterial({
+      color : 0xffc98a, transparent : true, opacity : 0, blending : THREE.AdditiveBlending, depthWrite : false
+    }); const zW8InstKolamLampu = new THREE.InstancedMesh(new THREE.CircleGeometry(5.5, 20), zW8MatKolamLampu, zW8TotalTitikLampu);
+    const zW8QuatDatarLampu = new THREE.Quaternion().setFromEuler(new THREE.Euler(- Math.PI / 2, 0, 0));
+    const zW8VecLampu = new THREE.Vector3(), zW8VecSkalaSatuLampu = new THREE.Vector3(1, 1, 1); zW8ListTitikLampu.forEach((zW8TitikObjQQQ, zW8IdxLampuQQ) => {
+      zW8InstKolamLampu.setMatrixAt(zW8IdxLampuQQ, zW8Mat4Lampu.compose(zW8VecLampu.set (zW8TitikObjQQQ.x, 0.09, zW8TitikObjQQQ.z), zW8QuatDatarLampu, zW8VecSkalaSatuLampu));
+    }); zW8InstKolamLampu.instanceMatrix.needsUpdate = true; zW8SceneQQQQQQQQQQ.add(zW8InstKolamLampu); zW8ListTitikLampu.forEach((zW8TitikObjQQQQ) => {
+      if (! zW8TitikObjQQQQ.glow) return; const zW8PijarLampuBaru = glowSprite(zW8TitikObjQQQQ.glow === 2 ? 0xcfe6ff : 0xffd9a0, zW8TitikObjQQQQ.glow === 2 ? 5 : 5.5);
+      zW8PijarLampuBaru.position.set (zW8TitikObjQQQQ.x, 6, zW8TitikObjQQQQ.z); zW8PijarLampuBaru.material.opacity = 0; zW8SceneQQQQQQQQQQ.add(zW8PijarLampuBaru);
+      zW8DaftarPijarLampuJalan.push(zW8PijarLampuBaru);
+    }); G.lampHeadMat = zW8MatKepalaLampu; G.lampPoolMat = zW8MatKolamLampu; }
+  G.streetlightGlows = zW8DaftarPijarLampuJalan; G.signGlows = zW8DaftarSpritePijar;
+
+  zW8ConstructHQ(G, zW8SceneQQQQQQQQQQ);
+
+  zW8ConstructMarket(G, zW8SceneQQQQQQQQQQ); zW8ConstructBeachStrip(G, zW8SceneQQQQQQQQQQ); const zW8RekamanLandmark = {
+  }; const zW8RekamanMarket = {
+  }; zW8RekamanMarket.x = zW8MARKET.x; zW8RekamanMarket.z = zW8MARKET.z; zW8RekamanMarket.name = zW8MARKET.name; zW8RekamanLandmark.market = zW8RekamanMarket;
+    const zW8RekamanGarasi = {
+  }; zW8RekamanGarasi.x = G.hq.x; zW8RekamanGarasi.z = G.hq.garage.z; zW8RekamanGarasi.name = 'RONIN KAI HQ'; zW8RekamanLandmark.garage = zW8RekamanGarasi;
+    zW8RekamanLandmark.districts = [{
+    name : 'Downtown', x : 0, z : 0 }, {
+    name : 'Portside', x : - 330, z : 330 }, {
+    name : 'Coral Strip', x : 330, z : 330 }, {
+    name : 'Neon Mile', x : 330, z : - 330 }, {
+    name : 'Hoshino Heights', x : - 330, z : - 330 }, {
+    name : 'Touge', x : - 330, z : - 470
+  },]; G.landmarks = zW8RekamanLandmark;
+
+  zW8ConstructHarbor(G, zW8SceneQQQQQQQQQQ);
+
+  zW8ConstructTouge(G, zW8SceneQQQQQQQQQQ);
+
+  let zW8HitungPohonSebar = 0; for (let zW8IdxCobaQ = 0; zW8IdxCobaQ < 400 && zW8HitungPohonSebar < 250; ++ zW8IdxCobaQ) {
+    const zW8SebarX = rr(- 640, 640), zW8SebarZ = rr(- 640, 640);
+    if (G.roadX.some((zW8NilaiJalanQQQQQQ) => Math.abs(zW8SebarX - (zW8NilaiJalanQQQQQQ)) < 22) || G.roadZ.some((zW8NilaiJalanQQQQQQQ) => Math.abs(zW8SebarZ - (zW8NilaiJalanQQQQQQQ)) < 22)) continue;
+    if (Math.abs(zW8SebarX + 412.5) < 55 && Math.abs(zW8SebarZ - 412.5) < 55) continue;
+    if (Math.abs(zW8SebarX - zW8MARKET.x) < 58 && Math.abs(zW8SebarZ - zW8MARKET.z) < 78) continue;
+    const zW8DistrikSebar = DISTRICTS.reduce((zW8TerbaikQ, zW8KandidatQ) => ((zW8SebarX - zW8KandidatQ.cx) ** 2 + (zW8SebarZ - zW8KandidatQ.cz) ** 2 < (zW8SebarX - zW8TerbaikQ.cx) ** 2 + (zW8SebarZ - zW8TerbaikQ.cz) ** 2 ? zW8KandidatQ : zW8TerbaikQ), DISTRICTS[0]);
+    let zW8PohonSebar; if (zW8DistrikSebar.id === 'coral' || zW8SebarZ > 520 || zW8DistrikSebar.id === 'neon') zW8PohonSebar = makePalm(rr(4.5, 6.5));
+    else if (zW8DistrikSebar.id === 'hoshino') zW8PohonSebar = makeShadeTree(rr(3.5, 5), rnd() < 0.3 ? 0xe8a0bf : 0x3d8b4f);
+    else zW8PohonSebar = makeShadeTree(rr(3.5, 5.5), 0x3d8b4f); zW8PohonSebar.position.set (zW8SebarX, groundH(zW8SebarX, zW8SebarZ), zW8SebarZ);
+    zW8PohonSebar.rotation.y = rr(0, 6.28); zW8SceneQQQQQQQQQQ.add(zW8PohonSebar); ++ zW8HitungPohonSebar; }
+ {
+    const zW8GeserPalemTepi = (CFG.roadW / 2) + 3.8; let zW8HitungPalemTepi = 0;
+      for (let zW8PalemXQQ = - 600; ! (zW8PalemXQQ > 600) && zW8HitungPalemTepi < 72; zW8PalemXQQ += 40) {
+        [- 1, 1].forEach((zW8TandaSisiQQQQQQ) => {
+        const zW8PalemTepi = makePalm(rr(4.5, 6.5));
+        zW8PalemTepi.position.set (rr(- 2, 2) + zW8PalemXQQ, groundH(zW8PalemXQQ, (zW8TandaSisiQQQQQQ * zW8GeserPalemTepi) + 495), (zW8TandaSisiQQQQQQ * zW8GeserPalemTepi) + 495);
+        zW8PalemTepi.rotation.y = rr(0, 6.28); zW8SceneQQQQQQQQQQ.add(zW8PalemTepi); ++ zW8HitungPalemTepi; }); }
+      for (let zW8PalemZ = - 595; ! (zW8PalemZ > 95) && zW8HitungPalemTepi < 82; zW8PalemZ += 70) {
+      const zW8PalemTepiQ = makePalm(rr(4.5, 6.5));
+      zW8PalemTepiQ.position.set (zW8GeserPalemTepi + 330, groundH(zW8GeserPalemTepi + 330, zW8PalemZ), rr(- 2, 2) + zW8PalemZ); zW8PalemTepiQ.rotation.y = rr(0, 6.28);
+      zW8SceneQQQQQQQQQQ.add(zW8PalemTepiQ); ++ zW8HitungPalemTepi; }
+
+      const zW8TexBahayaPeti = zW8MakeCanvasTexture(128, 128, (zW8KuasQQQQQQQQQQQQ, zW8LebarValQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQ) => {
+      zW8KuasQQQQQQQQQQQQ.fillStyle = '#8a7a3a'; zW8KuasQQQQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQ);
+      zW8KuasQQQQQQQQQQQQ.fillStyle = '#2b2b2b'; for (let zW8IdxGarisQQ = - 2; zW8IdxGarisQQ < 8; ++ zW8IdxGarisQQ) {
+        zW8KuasQQQQQQQQQQQQ.save(); zW8KuasQQQQQQQQQQQQ.translate(zW8IdxGarisQQ * 32, 0); zW8KuasQQQQQQQQQQQQ.rotate(0.6);
+        zW8KuasQQQQQQQQQQQQ.fillRect(0, - 40, 14, zW8TinggiValQQQQQQQQQQQQQ + 80); zW8KuasQQQQQQQQQQQQ.restore(); }
+      zW8KuasQQQQQQQQQQQQ.fillStyle = 'rgba(255,255,255,.75)'; zW8KuasQQQQQQQQQQQQ.fillRect(14, 44, 100, 40); zW8KuasQQQQQQQQQQQQ.fillStyle = '#333';
+      zW8KuasQQQQQQQQQQQQ.font = 'bold 22px sans-serif'; zW8KuasQQQQQQQQQQQQ.textAlign = 'center'; zW8KuasQQQQQQQQQQQQ.fillText('CARGO', 64, 72);
+    }); const zW8MatPetiPelabuhan = new THREE.MeshStandardMaterial({
+      map : zW8TexBahayaPeti, roughness : 0.9
+    }); const zW8GeoPetiPelabuhan = new THREE.BoxGeometry(2.2, 2.2, 2.2); for (let zW8IdxPetiQQ = 0; zW8IdxPetiQQ < 12; ++ zW8IdxPetiQQ) {
+      const zW8PetiX = ((zW8IdxPetiQQ % 4) * 36) + rr(- 3, 3) - 625, zW8PetiZ = (Math.floor(zW8IdxPetiQQ / 4) * 30) + rr(- 3, 3) + 532;
+      const zW8MeshPetiBaru = new THREE.Mesh(zW8GeoPetiPelabuhan, zW8MatPetiPelabuhan); zW8MeshPetiBaru.position.set (zW8PetiX, 1.1, zW8PetiZ);
+      zW8MeshPetiBaru.rotation.y = rr(0, 0.6); zW8SceneQQQQQQQQQQ.add(zW8MeshPetiBaru); if (zW8IdxPetiQQ % 3 === 0) {
+        const zW8MeshPetiAtas = new THREE.Mesh(zW8GeoPetiPelabuhan, zW8MatPetiPelabuhan); zW8MeshPetiAtas.position.set (zW8PetiX, 3.3, zW8PetiZ);
+        zW8MeshPetiAtas.rotation.y = rr(0, 0.6); zW8SceneQQQQQQQQQQ.add(zW8MeshPetiAtas); } }
+
+      const zW8TexPenghalang = zW8MakeCanvasTexture(128, 32, (zW8KuasQQQQQQQQQQQQQ, zW8LebarValQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQ) => {
+      zW8KuasQQQQQQQQQQQQQ.fillStyle = '#b8b4a8'; zW8KuasQQQQQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQ);
+      zW8KuasQQQQQQQQQQQQQ.fillStyle = '#e8762a'; zW8KuasQQQQQQQQQQQQQ.fillRect(0, 12, zW8LebarValQQQQQQQQQQQ, 8);
+    }); const zW8MatPenghalang = new THREE.MeshStandardMaterial({
+      map : zW8TexPenghalang, roughness : 0.95
+    }); for (let zW8IdxPenghalang = 0; zW8IdxPenghalang < 6; ++ zW8IdxPenghalang) {
+      const zW8MeshPenghalang = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 0.5), zW8MatPenghalang);
+      zW8MeshPenghalang.position.set ((zW8IdxPenghalang * 40) - 560, 0.5, 472); zW8SceneQQQQQQQQQQ.add(zW8MeshPenghalang); }
+
+      const zW8MatBakSampah = new THREE.MeshStandardMaterial({
+      color : 0x2e4a34, roughness : 0.85, metalness : 0.2
+    }); const zW8MatTutupSampah = new THREE.MeshStandardMaterial({
+      color : 0x223828, roughness : 0.8, metalness : 0.2
+    }); [[270, - 40], [390, 40], [270, - 200], [390, - 260]].forEach(([zW8SampahX, zW8SampahZ]) => {
+      const zW8MeshBakSampah = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.4, 1.4), zW8MatBakSampah); zW8MeshBakSampah.position.set (zW8SampahX, 0.7, zW8SampahZ);
+      zW8SceneQQQQQQQQQQ.add(zW8MeshBakSampah); const zW8MeshTutupSampah = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.12, 1.5), zW8MatTutupSampah);
+      zW8MeshTutupSampah.position.set (zW8SampahX, 1.46, zW8SampahZ); zW8SceneQQQQQQQQQQ.add(zW8MeshTutupSampah); }); }
+
+  zW8ConstructBoulevardFrontage(G, zW8SceneQQQQQQQQQQ); zW8ConstructBoulevardPalms(G, zW8SceneQQQQQQQQQQ); zW8ConstructGatherSpots(G, zW8SceneQQQQQQQQQQ);
+  zW8ConstructHoshinoRows(G, zW8SceneQQQQQQQQQQ); zW8ConstructBoulevardPlanters(G, zW8SceneQQQQQQQQQQ);
+
+    [[412, 412], [- 412, - 80]].forEach(([zW8LotX, zW8LotZ]) => {
+    const zW8MeshLotPlaza = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), zW8MakePavingMat(15, 15)); zW8MeshLotPlaza.rotation.x = - Math.PI / 2;
+    zW8MeshLotPlaza.position.set (zW8LotX, 0.04, zW8LotZ); zW8MeshLotPlaza.receiveShadow = true; zW8SceneQQQQQQQQQQ.add(zW8MeshLotPlaza);
+      for (let zW8IdxBangkuLot = 0; zW8IdxBangkuLot < 4; ++ zW8IdxBangkuLot) {
+        const zW8MeshBangkuLot = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.5, 0.6), new THREE.MeshStandardMaterial({
+        color : 0x7a5a38
+      })); zW8MeshBangkuLot.position.set (rr(- 35, 35) + zW8LotX, 0.3, rr(- 35, 35) + zW8LotZ); zW8SceneQQQQQQQQQQ.add(zW8MeshBangkuLot); }
+      for (let zW8IdxPenanamLot = 0; zW8IdxPenanamLot < 4; ++ zW8IdxPenanamLot) {
+        const zW8MeshPenanamLot = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, 1.8), new THREE.MeshStandardMaterial({
+        color : 0x9a8a72, roughness : 1
+      })); zW8MeshPenanamLot.position.set (rr(- 38, 38) + zW8LotX, 0.3, rr(- 38, 38) + zW8LotZ); zW8SceneQQQQQQQQQQ.add(zW8MeshPenanamLot);
+        const zW8MeshSemakLot = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8, 1), new THREE.MeshStandardMaterial({
+        color : 0x3d8b4f, roughness : 1, flatShading : true
+      })); zW8MeshSemakLot.position.set (zW8MeshPenanamLot.position.x, 0.95, zW8MeshPenanamLot.position.z); zW8SceneQQQQQQQQQQ.add(zW8MeshSemakLot); }
+
+    const zW8BangkuPlazaA = zW8MakeBenchUnit(); zW8BangkuPlazaA.position.set (zW8LotX - 12, groundH(zW8LotX - 12, zW8LotZ + 10), zW8LotZ + 10);
+    zW8BangkuPlazaA.rotation.y = 0.4; zW8SceneQQQQQQQQQQ.add(zW8BangkuPlazaA); const zW8BangkuPlazaB = zW8MakeBenchUnit();
+    zW8BangkuPlazaB.position.set (zW8LotX + 14, groundH(zW8LotX + 14, zW8LotZ - 8), zW8LotZ - 8); zW8BangkuPlazaB.rotation.y = - 0.7;
+    zW8SceneQQQQQQQQQQ.add(zW8BangkuPlazaB); const zW8PenanamPlaza = zW8MakePlanterUnit();
+    zW8PenanamPlaza.position.set (zW8LotX + 4, groundH(zW8LotX + 4, zW8LotZ + 16), zW8LotZ + 16); zW8SceneQQQQQQQQQQ.add(zW8PenanamPlaza); });
+
+  zW8ConstructPark(G, zW8SceneQQQQQQQQQQ); }
+
+const zW8GARAGE_ROT_Y = Math.PI; function zW8ConstructHQ(G, zW8SceneQQQQQQQQQQQ) {
+  const zW8PosisiHqX = - 412.5; const zW8PosisiHqZ = 412.5;
+
+  const zW8GrupHq = new THREE.Group(); zW8SceneQQQQQQQQQQQ.add(zW8GrupHq); const zW8MatDindingHq = new THREE.MeshStandardMaterial({
+    color : 0x4a4038, roughness : 0.9
+  }); const zW8MeshBlokHq = new THREE.Mesh(new THREE.BoxGeometry(70, 10, 34), zW8MatDindingHq); zW8MeshBlokHq.position.set (zW8PosisiHqX, 5, zW8PosisiHqZ);
+  zW8GrupHq.add(zW8MeshBlokHq);
+
+  G.addCollider(zW8PosisiHqX, zW8PosisiHqZ, 15, 15, 10); const zW8MatPintuHq = new THREE.MeshStandardMaterial({
+    color : 0x707880, roughness : 0.6, metalness : 0.6
+  }); for (let zW8IdxPintu = - 1; ! (zW8IdxPintu > 1); ++ zW8IdxPintu) {
+    const zW8MeshPintuHq = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), zW8MatPintuHq);
+    zW8MeshPintuHq.position.set ((zW8IdxPintu * 20) + zW8PosisiHqX, 3, zW8PosisiHqZ + 17.2); zW8GrupHq.add(zW8MeshPintuHq); }
+    const zW8TexTandaHq = (() => {
+    const zW8LembarTanda = document.createElement('canvas'); zW8LembarTanda.width = 512; zW8LembarTanda.height = 96; const zW8KuasTanda = zW8LembarTanda.getContext('2d');
+    zW8KuasTanda.fillStyle = '#14100c'; zW8KuasTanda.fillRect(0, 0, 512, 96); zW8KuasTanda.font = 'bold 58px sans-serif'; zW8KuasTanda.textAlign = 'center';
+    zW8KuasTanda.shadowColor = '#ff7a1a'; zW8KuasTanda.shadowBlur = 16; zW8KuasTanda.fillStyle = '#ff7a1a'; zW8KuasTanda.fillText('RONIN KAI', 256, 66);
+    const zW8TexTanda = new THREE.CanvasTexture(zW8LembarTanda); zW8TexTanda.colorSpace = THREE.SRGBColorSpace; return zW8TexTanda;
+  })(); const zW8MeshTandaHq = new THREE.Mesh(new THREE.PlaneGeometry(40, 7.5), new THREE.MeshBasicMaterial({
+    map : zW8TexTandaHq
+  })); zW8MeshTandaHq.position.set (zW8PosisiHqX, 8.6, zW8PosisiHqZ + 17.3); zW8GrupHq.add(zW8MeshTandaHq); const zW8MatJendelaHq = new THREE.MeshStandardMaterial({
+    color : 0xffd9a0, emissive : 0xffb35c, emissiveIntensity : 0.6
+  }); for (let zW8IdxJendela = 0; zW8IdxJendela < 5; ++ zW8IdxJendela) {
+    const zW8MeshJendelaHq = new THREE.Mesh(new THREE.PlaneGeometry(5, 2.4), zW8MatJendelaHq);
+    zW8MeshJendelaHq.position.set ((zW8IdxJendela * 14) + zW8PosisiHqX - 28, 7.6, zW8PosisiHqZ - 17.2); zW8MeshJendelaHq.rotation.y = Math.PI;
+    zW8GrupHq.add(zW8MeshJendelaHq); }
+
+    const zW8TexApronHq = zW8MakeCanvasTexture(1024, 384, (zW8KuasQQQQQQQQQQQQQQ, zW8LebarValQQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQQ) => {
+    zW8KuasQQQQQQQQQQQQQQ.fillStyle = '#6a6d70'; zW8KuasQQQQQQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQQ);
+      for (let zW8IdxBintikQQQQ = 0; zW8IdxBintikQQQQ < 5200; ++ zW8IdxBintikQQQQ) {
+      const zW8ShadeValQQ = Math.floor(rnd() * 48) + 96;
+      zW8KuasQQQQQQQQQQQQQQ.fillStyle = `rgba(${zW8ShadeValQQ},${zW8ShadeValQQ},${zW8ShadeValQQ + 4},.14)`;
+      zW8KuasQQQQQQQQQQQQQQ.fillRect(rnd() * zW8LebarValQQQQQQQQQQQQ, rnd() * zW8TinggiValQQQQQQQQQQQQQQQ, 2, 2); }
+      [[210, 120, 58, 20], [560, 210, 74, 26], [790, 90, 46, 16], [390, 290, 52, 18]].forEach(([zW8NodaX, zW8NodaY, zW8NodaRx, zW8NodaRy]) => {
+      zW8KuasQQQQQQQQQQQQQQ.fillStyle = 'rgba(18,18,20,.20)'; zW8KuasQQQQQQQQQQQQQQ.beginPath();
+      zW8KuasQQQQQQQQQQQQQQ.ellipse(zW8NodaX, zW8NodaY, zW8NodaRx, zW8NodaRy, 0.4, 0, 2 * Math.PI); zW8KuasQQQQQQQQQQQQQQ.fill();
+      zW8KuasQQQQQQQQQQQQQQ.fillStyle = 'rgba(18,18,20,.12)'; zW8KuasQQQQQQQQQQQQQQ.beginPath();
+      zW8KuasQQQQQQQQQQQQQQ.ellipse(zW8NodaX + 14, zW8NodaY + 6, zW8NodaRx * 0.6, zW8NodaRy * 0.6, 0.4, 0, 2 * Math.PI); zW8KuasQQQQQQQQQQQQQQ.fill(); });
+
+    zW8KuasQQQQQQQQQQQQQQ.strokeStyle = 'rgba(245,245,240,.88)'; zW8KuasQQQQQQQQQQQQQQ.lineWidth = 5; zW8KuasQQQQQQQQQQQQQQ.beginPath();
+    zW8KuasQQQQQQQQQQQQQQ.moveTo(0, zW8TinggiValQQQQQQQQQQQQQQQ - 108); zW8KuasQQQQQQQQQQQQQQ.lineTo(zW8LebarValQQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQQ - 108);
+    zW8KuasQQQQQQQQQQQQQQ.stroke(); for (let zW8PetakXQ = 32; ! (zW8PetakXQ > zW8LebarValQQQQQQQQQQQQ - 32); zW8PetakXQ += 96) {
+      zW8KuasQQQQQQQQQQQQQQ.beginPath(); zW8KuasQQQQQQQQQQQQQQ.moveTo(zW8PetakXQ, zW8TinggiValQQQQQQQQQQQQQQQ - 108);
+      zW8KuasQQQQQQQQQQQQQQ.lineTo(zW8PetakXQ, zW8TinggiValQQQQQQQQQQQQQQQ - 6); zW8KuasQQQQQQQQQQQQQQ.stroke(); }
+  }); zW8TexApronHq.wrapS = zW8TexApronHq.wrapT = THREE.ClampToEdgeWrapping;
+    const zW8MeshApronHq = new THREE.Mesh(new THREE.PlaneGeometry(80, 30), new THREE.MeshStandardMaterial({
+    map : zW8TexApronHq, roughness : 1
+  })); zW8MeshApronHq.rotation.x = - Math.PI / 2; zW8MeshApronHq.position.set (zW8PosisiHqX, 0.04, 455); zW8SceneQQQQQQQQQQQ.add(zW8MeshApronHq); const zW8RekamanHq = {
+  }; zW8RekamanHq.x = zW8PosisiHqX; zW8RekamanHq.z = zW8PosisiHqZ; const zW8TitikGarasiHq = {
+  }; zW8TitikGarasiHq.x = zW8PosisiHqX; zW8TitikGarasiHq.z = 455; zW8RekamanHq.garage = zW8TitikGarasiHq; G.hq = zW8RekamanHq;
+
+    const zW8CobaTukarGarasi = (zW8SisaPercobaan) => {
+      loadHeroAsset('garage').then((zW8BungkusDimuat) => {
+        try {
+          if (! zW8BungkusDimuat) {
+          if (zW8SisaPercobaan > 0) setTimeout(() => zW8CobaTukarGarasi(zW8SisaPercobaan - 1), 1500); return; }
+        zW8SceneQQQQQQQQQQQ.remove(zW8GrupHq); const zW8GrupPenempatan = new THREE.Group();
+        zW8GrupPenempatan.position.set (zW8PosisiHqX, groundH(zW8PosisiHqX, zW8PosisiHqZ), zW8PosisiHqZ); zW8GrupPenempatan.rotation.y = zW8GARAGE_ROT_Y;
+        zW8GrupPenempatan.add(zW8BungkusDimuat.clone ? zW8BungkusDimuat.clone(true) : zW8BungkusDimuat);
+
+          const zW8TexSeniNeon = (() => {
+          const zW8LembarNeon = document.createElement('canvas'); zW8LembarNeon.width = 1024; zW8LembarNeon.height = 192;
+          const zW8KuasNeon = zW8LembarNeon.getContext('2d'); zW8KuasNeon.clearRect(0, 0, 1024, 192); zW8KuasNeon.font = 'italic bold 118px sans-serif';
+          zW8KuasNeon.textAlign = 'center'; zW8KuasNeon.shadowColor = '#ff4fd8'; zW8KuasNeon.shadowBlur = 34; zW8KuasNeon.fillStyle = '#ff4fd8';
+          zW8KuasNeon.fillText('RONIN KAI', 512, 122); zW8KuasNeon.shadowBlur = 18; zW8KuasNeon.fillStyle = '#ff7a1a'; zW8KuasNeon.fillRect(212, 148, 600, 14);
+          const zW8TexNeon = new THREE.CanvasTexture(zW8LembarNeon); zW8TexNeon.colorSpace = THREE.SRGBColorSpace; return zW8TexNeon;
+        })(); const zW8MeshTandaNeon = new THREE.Mesh(new THREE.PlaneGeometry(14, 2.6), new THREE.MeshBasicMaterial({
+          map : zW8TexSeniNeon, transparent : true
+        })); zW8MeshTandaNeon.position.set (0, 10.8, - 15.15); zW8MeshTandaNeon.rotation.y = Math.PI; zW8GrupPenempatan.add(zW8MeshTandaNeon);
+          const zW8MatStripNeon = new THREE.MeshBasicMaterial({
+          color : 0x39d5ff
+        }); [- 13.5, 13.5].forEach((zW8StripX) => {
+          const zW8MeshStripNeon = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 8), zW8MatStripNeon); zW8MeshStripNeon.position.set (zW8StripX, 6, - 15.15);
+          zW8MeshStripNeon.rotation.y = Math.PI; zW8GrupPenempatan.add(zW8MeshStripNeon);
+        }); const zW8PijarNeonHq = glowSprite(0xff4fd8, 16); zW8PijarNeonHq.position.set (0, 10.8, - 15.35); zW8PijarNeonHq.material.opacity = 0.35;
+        zW8GrupPenempatan.add(zW8PijarNeonHq); zW8SceneQQQQQQQQQQQ.add(zW8GrupPenempatan); } catch (e) {
+ }
+      }).catch (() => {
+      if (zW8SisaPercobaan > 0) setTimeout(() => zW8CobaTukarGarasi(zW8SisaPercobaan - 1), 1500); });
+  }; try {
+    zW8CobaTukarGarasi(3); } catch (e) {
+ } }
+  function zW8ConstructHarbor(G, zW8SceneQQQQQQQQQQQQ) {
+  const zW8PaletKontainer = [0xc0392b, 0x2471a3, 0x229954, 0xd4ac0d, 0x7d3c98, 0xca6f1e]; Array.from ({
+    length : 26
+    }).forEach((zW8NilaiTakPakai, zW8IdxKontainer) => {
+    const zW8KontainerX = rr(- 620, - 480), zW8KontainerZ = rr(480, 620);
+      const zW8MeshKontainer = new THREE.Mesh(new THREE.BoxGeometry(12, 2.6, 2.4), new THREE.MeshStandardMaterial({
+      color : pick(zW8PaletKontainer), roughness : 0.8
+    })); zW8MeshKontainer.position.set (zW8KontainerX, ((zW8IdxKontainer % 3) * 2.6) + 1.3, zW8KontainerZ); zW8MeshKontainer.rotation.y = rnd() < 0.5 ? 0 : Math.PI / 2;
+    zW8SceneQQQQQQQQQQQQ.add(zW8MeshKontainer); if (zW8IdxKontainer % 4 === 0) G.addCollider(zW8KontainerX, zW8KontainerZ, 6, 2, 3);
+  }); const zW8MatDerek = new THREE.MeshStandardMaterial({
+    color : 0xd97c2b, roughness : 0.7, metalness : 0.4
+  }); [- 560, - 480].forEach((zW8DerekX) => {
+    const zW8GrupDerek = new THREE.Group(); [- 1, 1].forEach((zW8TandaSisiQQQQQQQ) => {
+      const zW8MeshKakiDerek = new THREE.Mesh(new THREE.BoxGeometry(1.2, 26, 1.2), zW8MatDerek); zW8MeshKakiDerek.position.set (zW8TandaSisiQQQQQQQ * 8, 13, 0);
+      zW8GrupDerek.add(zW8MeshKakiDerek);
+    }); const zW8MeshBoomDerek = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 34), zW8MatDerek); zW8MeshBoomDerek.position.set (0, 26, 6);
+    zW8GrupDerek.add(zW8MeshBoomDerek); const zW8MeshPalangAtasDerek = new THREE.Mesh(new THREE.BoxGeometry(17.4, 1.4, 1.4), zW8MatDerek);
+    zW8MeshPalangAtasDerek.position.y = 26; zW8GrupDerek.add(zW8MeshPalangAtasDerek); zW8GrupDerek.position.set (zW8DerekX, 0, 540);
+    zW8SceneQQQQQQQQQQQQ.add(zW8GrupDerek); G.addCollider(zW8DerekX, 540, 9, 3, 26);
+  }); const zW8MatBollard = new THREE.MeshStandardMaterial({
+    color : 0x333333
+  }); for (let zW8IdxBollard = 0; zW8IdxBollard < 10; ++ zW8IdxBollard) {
+    const zW8MeshBollard = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, 0.8, 8), zW8MatBollard);
+    zW8MeshBollard.position.set ((zW8IdxBollard * 16) - 640, 0.4, 648); zW8SceneQQQQQQQQQQQQ.add(zW8MeshBollard); } }
+  function zW8ConstructTouge(G, zW8SceneQQQQQQQQQQQQQ) {
+
+    const zW8TitikRuteMentah = TOUGE_POINTS.map((zW8TitikObjQQQQQ) => ({
+    x : zW8TitikObjQQQQQ[0], z : zW8TitikObjQQQQQ[1]
+  })); const zW8LebarPita = 9, zW8PusatLoopTouge = {
+    x : - 330, z : - 470
+  }; const zW8TexPitaTouge = zW8MakeCanvasTexture(128, 128, (zW8KuasQQQQQQQQQQQQQQQ, zW8LebarValQQQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQQQ) => {
+    zW8KuasQQQQQQQQQQQQQQQ.fillStyle = '#33373d'; zW8KuasQQQQQQQQQQQQQQQ.fillRect(0, 0, zW8LebarValQQQQQQQQQQQQQ, zW8TinggiValQQQQQQQQQQQQQQQQ);
+      for (let zW8IdxBintikQQQQQ = 0; zW8IdxBintikQQQQQ < 260; ++ zW8IdxBintikQQQQQ) {
+      zW8KuasQQQQQQQQQQQQQQQ.fillStyle = 'rgba(255,255,255,.05)';
+      zW8KuasQQQQQQQQQQQQQQQ.fillRect(rnd() * zW8LebarValQQQQQQQQQQQQQ, rnd() * zW8TinggiValQQQQQQQQQQQQQQQQ, 2, 2); }
+    zW8KuasQQQQQQQQQQQQQQQ.fillStyle = '#f0ead0'; zW8KuasQQQQQQQQQQQQQQQ.fillRect(zW8LebarValQQQQQQQQQQQQQ * 0.03, 0, 3, zW8TinggiValQQQQQQQQQQQQQQQQ);
+    zW8KuasQQQQQQQQQQQQQQQ.fillRect((zW8LebarValQQQQQQQQQQQQQ * 0.97) - 3, 0, 3, zW8TinggiValQQQQQQQQQQQQQQQQ);
+    zW8KuasQQQQQQQQQQQQQQQ.fillRect((zW8LebarValQQQQQQQQQQQQQ / 2) - 2, 10, 4, 44);
+  }); zW8TexPitaTouge.wrapS = THREE.ClampToEdgeWrapping; zW8TexPitaTouge.wrapT = THREE.RepeatWrapping; const zW8MatPitaTouge = new THREE.MeshStandardMaterial({
+    map : zW8TexPitaTouge, roughness : 0.95, polygonOffset : true, polygonOffsetFactor : - 1, polygonOffsetUnits : - 1
+  }); const zW8MatRelPengaman = new THREE.MeshStandardMaterial({
+    color : 0xb0b6bc, metalness : 0.7, roughness : 0.4
+  }); const zW8LarikPosPita = [], zW8LarikUvPita = [], zW8LarikIdxPita = [], zW8TitikTiangRel = []; let zW8PanjangKumulatif = 0;
+    for (let zW8IdxSegQQQQQ = 0; zW8IdxSegQQQQQ < zW8TitikRuteMentah.length - 1; ++ zW8IdxSegQQQQQ) {
+    const zW8SegTitikA = zW8TitikRuteMentah[zW8IdxSegQQQQQ], zW8SegTitikB = zW8TitikRuteMentah[zW8IdxSegQQQQQ + 1];
+    const zW8DeltaSegXQQ = zW8SegTitikB.x - zW8SegTitikA.x, zW8DeltaSegZQQ = zW8SegTitikB.z - zW8SegTitikA.z;
+    const zW8PanjangSegPita = Math.hypot(zW8DeltaSegXQQ, zW8DeltaSegZQQ) || 0.001;
+    const zW8SatuanPitaX = zW8DeltaSegXQQ / zW8PanjangSegPita, zW8SatuanPitaZ = zW8DeltaSegZQQ / zW8PanjangSegPita, zW8TegakPitaX = - zW8SatuanPitaZ, zW8TegakPitaZ = zW8SatuanPitaX;
+      const zW8TitikSudutPada = (zW8TitikObjQQQQQQ, zW8TandaSisiQQQQQQQQ) => {
+      const zW8SudutXQ = (zW8TegakPitaX * zW8TandaSisiQQQQQQQQ * (zW8LebarPita / 2)) + zW8TitikObjQQQQQQ.x, zW8SudutZQ = (zW8TegakPitaZ * zW8TandaSisiQQQQQQQQ * (zW8LebarPita / 2)) + zW8TitikObjQQQQQQ.z;
+        return {
+        x : zW8SudutXQ, z : zW8SudutZQ, y : groundH(zW8SudutXQ, zW8SudutZQ) + 0.07 }; };
+    const zW8Sudut00 = zW8TitikSudutPada(zW8SegTitikA, 1), zW8Sudut01 = zW8TitikSudutPada(zW8SegTitikA, - 1), zW8Sudut10 = zW8TitikSudutPada(zW8SegTitikB, 1), zW8Sudut11 = zW8TitikSudutPada(zW8SegTitikB, - 1);
+    const zW8DasarVerteks = zW8LarikPosPita.length / 3;
+    [zW8Sudut00, zW8Sudut01, zW8Sudut10, zW8Sudut11].forEach((zW8SudutObj) => zW8LarikPosPita.push(zW8SudutObj.x, zW8SudutObj.y, zW8SudutObj.z));
+    zW8LarikUvPita.push(0, zW8PanjangKumulatif / 8, 1, zW8PanjangKumulatif / 8, 0, (zW8PanjangKumulatif + zW8PanjangSegPita) / 8, 1, (zW8PanjangKumulatif + zW8PanjangSegPita) / 8);
+    zW8LarikIdxPita.push(zW8DasarVerteks, zW8DasarVerteks + 2, zW8DasarVerteks + 1, zW8DasarVerteks + 1, zW8DasarVerteks + 2, zW8DasarVerteks + 3);
+
+    const zW8TengahSegX = (zW8SegTitikA.x + zW8SegTitikB.x) / 2, zW8TengahSegZ = (zW8SegTitikA.z + zW8SegTitikB.z) / 2;
+    const zW8JarakSisiPlus = Math.hypot((zW8TengahSegX + zW8TegakPitaX * 5) - zW8PusatLoopTouge.x, (zW8TengahSegZ + zW8TegakPitaZ * 5) - zW8PusatLoopTouge.z);
+    const zW8JarakSisiMinus = Math.hypot((zW8TengahSegX - zW8TegakPitaX * 5) - zW8PusatLoopTouge.x, (zW8TengahSegZ - zW8TegakPitaZ * 5) - zW8PusatLoopTouge.z);
+    const zW8TandaSisiLuar = zW8JarakSisiPlus >= zW8JarakSisiMinus ? 1 : - 1;
+    const zW8TitikLuar0 = zW8TandaSisiLuar > 0 ? zW8Sudut00 : zW8Sudut01, zW8TitikLuar1 = zW8TandaSisiLuar > 0 ? zW8Sudut10 : zW8Sudut11;
+    const zW8MeshRelBaruQ = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.18, zW8PanjangSegPita), zW8MatRelPengaman);
+    zW8MeshRelBaruQ.position.set ((zW8TitikLuar0.x + zW8TitikLuar1.x) / 2, ((zW8TitikLuar0.y + zW8TitikLuar1.y) / 2) + 0.55, (zW8TitikLuar0.z + zW8TitikLuar1.z) / 2);
+    zW8MeshRelBaruQ.lookAt(zW8TitikLuar1.x, zW8TitikLuar1.y + 0.55, zW8TitikLuar1.z); zW8SceneQQQQQQQQQQQQQ.add(zW8MeshRelBaruQ);
+      for (let zW8JarakTiang = 0; ! (zW8JarakTiang > zW8PanjangSegPita); zW8JarakTiang += 8) {
+      const zW8FraksiTiang = zW8JarakTiang / zW8PanjangSegPita;
+      const zW8TiangXQ = (zW8DeltaSegXQQ * zW8FraksiTiang) + zW8SegTitikA.x + zW8TegakPitaX * zW8TandaSisiLuar * ((zW8LebarPita / 2) + 0.3), zW8TiangZQ = (zW8DeltaSegZQQ * zW8FraksiTiang) + zW8SegTitikA.z + zW8TegakPitaZ * zW8TandaSisiLuar * ((zW8LebarPita / 2) + 0.3);
+        zW8TitikTiangRel.push({
+        x : zW8TiangXQ, z : zW8TiangZQ, y : groundH(zW8TiangXQ, zW8TiangZQ) }); }
+    zW8PanjangKumulatif += zW8PanjangSegPita; }
+  const zW8GeoPitaTouge = new THREE.BufferGeometry(); zW8GeoPitaTouge.setAttribute('position', new THREE.Float32BufferAttribute(zW8LarikPosPita, 3));
+  zW8GeoPitaTouge.setAttribute('uv', new THREE.Float32BufferAttribute(zW8LarikUvPita, 2)); zW8GeoPitaTouge.setIndex(zW8LarikIdxPita);
+  zW8GeoPitaTouge.computeVertexNormals(); zW8SceneQQQQQQQQQQQQQ.add(new THREE.Mesh(zW8GeoPitaTouge, zW8MatPitaTouge));
+
+  const zW8InstTiangRel = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06, 0.06, 0.62, 6), zW8MatRelPengaman, Math.max(1, zW8TitikTiangRel.length)); {
+    const zW8Mat4Tiang = new THREE.Matrix4(); zW8TitikTiangRel.forEach((zW8TiangObj, zW8IdxTiang) => {
+      zW8Mat4Tiang.makeTranslation(zW8TiangObj.x, zW8TiangObj.y + 0.31, zW8TiangObj.z); zW8InstTiangRel.setMatrixAt(zW8IdxTiang, zW8Mat4Tiang);
+    }); zW8InstTiangRel.instanceMatrix.needsUpdate = true; }
+  zW8SceneQQQQQQQQQQQQQ.add(zW8InstTiangRel);
+
+    for (let zW8IdxPohonQ = 0; zW8IdxPohonQ < 12; ++ zW8IdxPohonQ) {
+    const zW8TitikRute = zW8TitikRuteMentah[zW8IdxPohonQ % zW8TitikRuteMentah.length];
+    const zW8TitikBerikut = zW8TitikRuteMentah[Math.min(zW8IdxPohonQ + 1, zW8TitikRuteMentah.length - 1)];
+    const zW8DeltaPohonX = zW8TitikBerikut.x - zW8TitikRute.x, zW8DeltaPohonZ = zW8TitikBerikut.z - zW8TitikRute.z, zW8PanjangPohon = Math.hypot(zW8DeltaPohonX, zW8DeltaPohonZ) || 1;
+    const zW8TandaSisiPohon = zW8IdxPohonQ % 2 === 0 ? 1 : - 1;
+    const zW8PohonX = ((- zW8DeltaPohonZ / zW8PanjangPohon) * zW8TandaSisiPohon * rr(10, 13)) + zW8TitikRute.x, zW8PohonZ = ((zW8DeltaPohonX / zW8PanjangPohon) * zW8TandaSisiPohon * rr(10, 13)) + zW8TitikRute.z;
+    const zW8PohonCeri = makeShadeTree(rr(3, 4.5), 0xe8a0bf); zW8PohonCeri.position.set (zW8PohonX, groundH(zW8PohonX, zW8PohonZ), zW8PohonZ);
+    zW8PohonCeri.rotation.y = rr(0, 6.28); zW8SceneQQQQQQQQQQQQQ.add(zW8PohonCeri); } }
+  export function roadRoute(G, zW8TitikAsal, zW8TitikTujuan) {
+  const zW8JepretKoordinat = (zW8NilaiUjiQQ, zW8DaftarJalanQQ) => zW8DaftarJalanQQ.reduce((zW8KandidatA, zW8KandidatB) => Math.abs(zW8KandidatB - zW8NilaiUjiQQ) < Math.abs(zW8KandidatA - zW8NilaiUjiQQ) ? zW8KandidatB : zW8KandidatA, zW8DaftarJalanQQ[0]);
+  const zW8AsalJepretX = zW8JepretKoordinat(zW8TitikAsal.x, G.roadX), zW8AsalJepretZ = zW8JepretKoordinat(zW8TitikAsal.z, G.roadZ);
+  const zW8TujuanJepretX = zW8JepretKoordinat(zW8TitikTujuan.x, G.roadX), zW8TujuanJepretZ = zW8JepretKoordinat(zW8TitikTujuan.z, G.roadZ); const zW8DaftarTitikRute = [{
+    x : zW8TitikAsal.x, z : zW8TitikAsal.z }, {
+    x : zW8AsalJepretX, z : zW8TitikAsal.z }, {
+    x : zW8AsalJepretX, z : zW8AsalJepretZ
+  }];
+
+    const zW8TitikSudutA = {
+    x : zW8TujuanJepretX, z : zW8AsalJepretZ
+    }, titikSudutB = {
+    x : zW8AsalJepretX, z : zW8TujuanJepretZ
+  }; const zW8JarakKakiA = Math.abs(zW8TujuanJepretX - zW8AsalJepretX) + Math.abs(zW8TujuanJepretZ - zW8AsalJepretZ), jarakKakiB = zW8JarakKakiA; void jarakKakiB;
+    zW8DaftarTitikRute.push(zW8TitikSudutA, {
+    x : zW8TujuanJepretX, z : zW8TujuanJepretZ }, {
+    x : zW8TitikTujuan.x, z : zW8TitikTujuan.z
+  }); void titikSudutB;
+
+  return zW8DaftarTitikRute.filter((zW8TitikObjQQQQQQQ, zW8IdxTitikQQ) => zW8IdxTitikQQ === 0 || Math.hypot(zW8TitikObjQQQQQQQ.x - zW8DaftarTitikRute[zW8IdxTitikQQ - 1].x, zW8TitikObjQQQQQQQ.z - zW8DaftarTitikRute[zW8IdxTitikQQ - 1].z) > 1);
+}
+  function zW8TerapkanPijarSenja(G, zW8NilaiNeon, zW8NilaiGabungan, zW8NilaiGelapTanda) {
+    if (G.buildingMats) G.buildingMats.forEach((zW8MatRef) => {
+    zW8MatRef.emissiveIntensity = zW8NilaiGabungan * 0.7;
+  }); if (G.neonTrimMats) G.neonTrimMats.forEach((zW8MatRefQ) => {
+    zW8MatRefQ.emissiveIntensity = zW8NilaiNeon * 2.4;
+  }); if (G.streetlightGlows) G.streetlightGlows.forEach((zW8SpriteObj) => {
+    zW8SpriteObj.material.opacity = zW8NilaiGabungan * 0.85;
+  }); if (G.lampHeadMat) G.lampHeadMat.emissiveIntensity = 0.15 + (zW8NilaiGabungan * 3.0); if (G.lampPoolMat) G.lampPoolMat.opacity = zW8NilaiGabungan * 0.3;
+    zW8DaftarSpritePijar.forEach((zW8SpriteObjQ) => {
+    zW8SpriteObjQ.material.opacity = zW8NilaiGelapTanda * 0.9; }); }
+  export function updateWorld(G, zW8Dt) {
+  const zW8JamSekarang = G.timeOfDay; const zW8LevelSiang = Math.max(0, Math.min(1, Math.sin(((zW8JamSekarang - 6) / 12) * Math.PI)));
+  const zW8NilaiSenja = (Math.max(0, 1 - Math.abs(zW8JamSekarang - 18.2) / 1.6) * (zW8JamSekarang > 12 ? 1 : 0)) + (Math.max(0, 1 - Math.abs(zW8JamSekarang - 6.2) / 1.2) * 0.6);
+  zW8ComputeSkyColors(zW8JamSekarang); if (zW8KubahLangit) {
+      if (Math.abs(zW8JamSekarang - zW8JamLangitTerakhir) > 0.05) {
+      zW8PaintSkyDome(); zW8JamLangitTerakhir = zW8JamSekarang; } } else {
+    G.scene.background = zW8WarnaLangitHor; }
+    if (G.scene.fog) {
+    G.scene.fog.color.copy(zW8WarnaKabutLangit); }
+    if (G.sun) {
+    G.sun.intensity = (zW8LevelSiang * 1.27) + 0.25; G.sun.color.set (0xffd9b0); const zW8SudutMatahari = ((zW8JamSekarang - 6) / 12) * Math.PI;
+    G.sun.position.set (Math.cos(zW8SudutMatahari) * 300, Math.max(20, Math.sin(zW8SudutMatahari) * 300), 120); }
+    if (G.hemi) {
+    G.hemi.intensity = (zW8LevelSiang * 0.65) + 0.25; if (G.hemi.color) G.hemi.color.copy(zW8WarnaLangitAtas).lerp(zW8WarnaLangitHangat, 0.3);
+    if (G.hemi.groundColor) G.hemi.groundColor.set (0xb09a7a); }
+  const zW8NilaiMalam = 1 - zW8LevelSiang;
+
+  const zW8RampaAntara = (zW8BatasAwal, zW8BatasAkhir) => Math.max(0, Math.min(1, (zW8JamSekarang - zW8BatasAwal) / Math.max(0.001, zW8BatasAkhir - zW8BatasAwal)));
+  const zW8PijarSenjaAmt = zW8JamSekarang >= VICE.dusk.onset && zW8JamSekarang < 24 ? Math.max(zW8RampaAntara(VICE.dusk.onset, VICE.dusk.full), zW8NilaiMalam) : zW8NilaiMalam;
+  const zW8PijarNeonAmt = zW8JamSekarang >= VICE.dusk.neonOnset && zW8JamSekarang < 24 ? Math.max(zW8RampaAntara(VICE.dusk.neonOnset, VICE.dusk.full), zW8NilaiMalam) : zW8NilaiMalam;
+  const zW8PijarGabungan = Math.max(zW8NilaiMalam, zW8PijarSenjaAmt);
+  const zW8GelapTandaAmt = Math.min(1, (zW8PijarGabungan * 0.9) + (Math.min(1, Math.max(0, zW8NilaiSenja)) * 0.35));
+  zW8TerapkanPijarSenja(G, zW8PijarNeonAmt, zW8PijarGabungan, zW8GelapTandaAmt); if (G.water) {
+  const zW8AyunAir = Math.sin(G.elapsed || 0) * 0.03; G.water.position.y = zW8AyunAir - 0.4; } }

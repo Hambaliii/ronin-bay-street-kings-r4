@@ -1,30 +1,47 @@
-// Seeded sequence source shared by the whole game
-// A single module word advances every draw
-let seqWord = 1;
-function loadSeedWord(incomingSeed) {
-  seqWord = (incomingSeed >>> 0) || 1; }
-export function srand(seedValue) { loadSeedWord(seedValue); }
+// Seeded draws for the whole game flow through this one module
+// A lone cell carries the chain forward between successive calls
+let cellHeld = 1;
+export function srand(seedGiven) {
+  const maskedGiven = (seedGiven >>> 0);
+  cellHeld = maskedGiven ? maskedGiven : 1; }
+function advanceCell() {
+  cellHeld = (cellHeld | 0);
+  const steppedCell = ((cellHeld + 0x6D2B79F5) | 0);
+  cellHeld = steppedCell;
+  return steppedCell; }
+function mixWord(wordGiven) {
+  const pairLeft = (wordGiven | 1);
+  const pairRight = (wordGiven ^ (wordGiven >>> 15));
+  const prodFirst = Math.imul(pairLeft, pairRight);
+  const prodSecond = Math.imul((prodFirst | 61), (prodFirst ^ (prodFirst >>> 7)));
+  const foldedMix = ((prodFirst + prodSecond) ^ prodFirst);
+  const cleanedMix = ((foldedMix ^ (foldedMix >>> 14)) >>> 0);
+  return cleanedMix; }
 export function rnd() {
-  seqWord |= 0;
-  seqWord = (seqWord + 0x6D2B79F5) | 0;
-  const firstMix = Math.imul(seqWord | 1, seqWord ^ (seqWord >>> 15));
-  let mixedWord = firstMix;
-  const secondMix = Math.imul(mixedWord | 61, mixedWord ^ (mixedWord >>> 7));
-  mixedWord = (mixedWord + secondMix) ^ mixedWord;
-  const topSlice = (mixedWord ^ (mixedWord >>> 14)) >>> 0;
-  return topSlice / 4294967296; }
-export function rr(lowEnd, highEnd) {
-  const spanWidth = highEnd - lowEnd;
-  return lowEnd + (rnd() * spanWidth); }
-export function ri(lowEnd, highEnd) {
-  const spanCount = (highEnd - lowEnd) + 1;
-  return lowEnd + Math.floor(spanCount * rnd()); }
-export function pick(listIn) {
-  // Empty or missing input yields undefined
-  // Any real list spends exactly one draw
-  if (!listIn || !(listIn.length > 0)) return undefined;
-  const chosenIdx = Math.floor(rnd() * listIn.length) % listIn.length;
-  return listIn[chosenIdx]; }
-export function chance(probValue) {
-  const drawnValue = rnd();
-  return probValue > drawnValue; }
+  const mixedNow = mixWord(advanceCell());
+  const unitNow = (mixedNow / 4294967296);
+  return unitNow; }
+function drawBetween(loGiven, hiGiven, wholeFlag) {
+  const spanBase = (hiGiven + (-loGiven));
+  const reachNow = wholeFlag ? (spanBase + 1) : spanBase;
+  const placedNow = (loGiven + (rnd() * reachNow));
+  const resultNow = wholeFlag ? Math.floor(placedNow) : placedNow;
+  return resultNow; }
+export function rr(loGiven, hiGiven) {
+  const drawnNow = drawBetween(loGiven, hiGiven, false);
+  return drawnNow; }
+export function ri(loGiven, hiGiven) {
+  const drawnNow = drawBetween(loGiven, hiGiven, true);
+  return drawnNow; }
+export function pick(listGiven) {
+  const listMissing = (!listGiven);
+  const listEmpty = listMissing ? true : !(listGiven.length > 0);
+  if (listMissing || listEmpty) return undefined;
+  const idxRaw = Math.floor(rnd() * listGiven.length);
+  const idxSafe = (idxRaw % listGiven.length);
+  const pickedNow = listGiven[idxSafe];
+  return pickedNow; }
+export function chance(oddsGiven) {
+  const [drawnNow] = [rnd()];
+  const beatenNow = (oddsGiven > drawnNow);
+  return beatenNow; }

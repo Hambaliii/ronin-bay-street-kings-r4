@@ -1,568 +1,505 @@
-// hud.js — the whole 2D layer over the 3D world: figure readouts, the
-// job panel, crew and cop panels, the GTA-style mini-map, the paused
-// large map, the speed dial, the workshop panel, briefings, toasts
-// and banners.
+// Heads-up layer: every 2D readout sits here — wallet and rank,
+// heat stars, map pair, dial, garage list, briefs and popups.
 import { CLUB_RANKS, CAST, DISTRICTS, CFG, MISSIONS } from './config.js';
 import { roadRoute } from './world.js';
 import { districtAt } from './police.js';
-const grabEl = (id) => document.getElementById(id);
-const GROUP_LOCALE = 'en-US';
-function moneyText(amount) { const wholeAmt = Math.round(amount || 0); const pieces = ['$', wholeAmt.toLocaleString(GROUP_LOCALE)]; return pieces.join(''); }
+function grabW(nodeIdW) { return document.getElementById(nodeIdW); }
+const LOCALE_W = 'en-US';
+function moneyTextW(amountW) { const wholeW = Math.round(amountW || 0); const partsW = ['$']; partsW.push(wholeW.toLocaleString(LOCALE_W)); return partsW.join(''); }
 export function initHUD(G) {
-  const els = {};
-  els.objective = grabEl('objective'); els.money = grabEl('money'); els.rep = grabEl('rep'); els.rank = grabEl('rank');
-  els.stars = grabEl('stars'); els.healthBar = grabEl('healthBar'); els.carBar = grabEl('carBar'); els.card = grabEl('missionCard');
-  els.cardPortrait = grabEl('cardPortrait'); els.cardGiver = grabEl('cardGiver'); els.cardText = grabEl('cardText'); els.cardProg = grabEl('cardProg');
-  els.copPanel = grabEl('copPanel'); els.copRows = grabEl('copRows'); els.briefing = grabEl('briefing'); els.banner = grabEl('banner');
-  els.toast = grabEl('toast'); els.pauseMenu = grabEl('pauseMenu'); els.bigmap = grabEl('bigmap'); els.mapLegend = grabEl('mapLegend');
-  els.minimap = grabEl('minimap'); els.speedo = grabEl('speedoCanvas'); els.wasted = grabEl('wasted'); els.busted = grabEl('busted');
-  els.garagePanel = grabEl('garagePanel'); els.mapWrap = grabEl('mapWrap');
-  // Radio chip: created here because the page carries no static node
-  // for it — a pill near the top centre, under the banner strip and
-  // clear of the mini-map (top-left) and the speedo cluster
-  // (bottom-right). It appears only while seated in a car with the
-  // radio playing, and its label goes through the text memo helper.
-  let chipEl = grabEl('radioChip');
-  if (!chipEl && typeof document !== 'undefined' && document.body) {
-    chipEl = document.createElement('div'); chipEl.id = 'radioChip';
-    chipEl.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:none;display:none;padding:5px 14px;border-radius:999px;background:rgba(10,12,18,0.72);border:1px solid rgba(255,122,26,0.65);color:#ffd9ae;font:bold 13px Arial,sans-serif;letter-spacing:1px;white-space:nowrap;';
-    document.body.appendChild(chipEl);
-  }
-  els.radioChip = chipEl;
-  // Vitality and dispatch UI. G.playerHealth is the single real
-  // health value. Neither the ticker nor the bust bar exists in the
-  // page, so both are created here just like the radio chip.
-  if (G.playerHealth == null) G.playerHealth = 100; if (G.bustMeter == null) G.bustMeter = 0; if (G._lastDamageAt == null) G._lastDamageAt = -99;
-  let dispEl = grabEl('dispatchLine');
-  if (!dispEl && typeof document !== 'undefined' && document.body) {
-    dispEl = document.createElement('div'); dispEl.id = 'dispatchLine';
-    dispEl.style.cssText = 'position:fixed;top:172px;left:16px;z-index:30;pointer-events:none;display:none;max-width:430px;padding:4px 10px;background:rgba(8,10,14,0.66);border-left:3px solid #57b7ff;color:#cfe6ff;font:12px "Courier New",monospace;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;';
-    document.body.appendChild(dispEl);
-  }
-  els.dispatch = dispEl;
-  let bustWrapEl = grabEl('bustWrap');
-  if (!bustWrapEl && typeof document !== 'undefined' && document.body) {
-    bustWrapEl = document.createElement('div'); bustWrapEl.id = 'bustWrap';
-    bustWrapEl.style.cssText = 'position:fixed;top:64px;right:16px;z-index:30;pointer-events:none;display:none;width:190px;';
-    bustWrapEl.innerHTML = '<div id="bustLabel" style="color:#ffd23f;font:bold 13px Arial,sans-serif;letter-spacing:3px;text-align:right;text-shadow:0 1px 3px #000;">BUSTED</div>' + '<div style="height:7px;margin-top:3px;background:rgba(255,255,255,0.18);border:1px solid rgba(0,0,0,0.6);"><div id="bustFill" style="height:100%;width:0%;background:#57b7ff;"></div></div>';
-    document.body.appendChild(bustWrapEl);
-  }
-  els.bustWrap = bustWrapEl;
-  els.bustFill = bustWrapEl ? bustWrapEl.querySelector('#bustFill') : null;
-  els.bustLabel = bustWrapEl ? bustWrapEl.querySelector('#bustLabel') : null;
-  let dispTimer = 0;
-  G.dispatch = (line) => { G.lastDispatch = line; if (!els.dispatch) return; els.dispatch.textContent = line; els.dispatch.style.display = 'block'; els.dispatch.style.opacity = '1'; dispTimer = 5; };
-  // WASTED / BUSTED overlays: every element is rebuilt with the
-  // classic full-screen framing — vignette, huge letterspaced title,
-  // and a sub-line underneath.
-  function makeOverlayScreen(node, title, bg, titleCol) {
-    if (!node) return null;
-    node.innerHTML = '';
-    node.style.cssText = `position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;flex-direction:column;background:${bg};pointer-events:none;`;
-    const headEl = document.createElement('div'); headEl.className = 's26Title'; headEl.textContent = title;
-    headEl.style.cssText = `color:${titleCol};font:bold 104px Arial,sans-serif;letter-spacing:22px;text-shadow:0 4px 22px rgba(0,0,0,0.85);`;
-    const subEl = document.createElement('div'); subEl.className = 's26Sub';
-    subEl.style.cssText = 'color:#e8e8e8;font:17px Arial,sans-serif;letter-spacing:2px;margin-top:16px;text-shadow:0 2px 8px #000;';
-    node.appendChild(headEl); node.appendChild(subEl);
-    const pairObj = { title: headEl, sub: subEl };
-    return pairObj;
-  }
-  const ovWasted = makeOverlayScreen(els.wasted, 'WASTED', 'radial-gradient(ellipse at center, rgba(74,4,4,0.55) 0%, rgba(16,0,0,0.94) 100%)', '#c9c9c9');
-  const ovBusted = makeOverlayScreen(els.busted, 'BUSTED', 'radial-gradient(ellipse at center, rgba(24,38,58,0.55) 0%, rgba(4,8,16,0.94) 100%)', '#dfe9f5');
-  // Overlay flow state. staging = shot mode: display only, with NO
-  // respawn timer and NO freeze, so a staged dossier frame stays
-  // exactly as it was set up.
-  let flowState = null;
-  const isStagedShot = () => !!(G.shot || G.shotMode);
-  function actorXY() { const ptObj = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player?.x || 0, z: G.player?.z || 0 }; return ptObj; }
-  function moveCarTo(car, px, pz, health) {
-    if (!car) return;
-    car.x = px; car.z = pz; car.speed = 0; car.angle = 0; car.health = health;
-    if (car.mesh) { car.mesh.position.set(px, car.mesh.position.y, pz); car.mesh.rotation.y = 0; }
-  }
-  function movePlayerTo(px, pz) {
-    const fig = G.player; if (!fig) return;
-    fig.x = px; fig.z = pz;
-    if (fig.fig) { fig.fig.visible = true; fig.fig.position.set(px, fig.fig.position.y, pz); }
-  }
-  function resolveOverlay() {
-    const kind = flowState.kind; const savedCar = flowState.car;
-    if (G.car) { try { G.exitCar?.(); } catch (err) {} }
-    if (kind === 'wasted') {
-      G.money = Math.max(0, (G.money || 0) - 150);
-      moveCarTo(savedCar, (G.hq && G.hq.garage && G.hq.garage.x) || -412.5, (G.hq && G.hq.garage && G.hq.garage.z) || 452, 60);
-      movePlayerTo(330, -330);
-      G.timeOfDay = ((G.timeOfDay || 12) + 2) % 24; G.flags.wasted = false; G.toast?.('Wasted — hospital bill $150');
-    } else {
-      G.money = Math.max(0, (G.money || 0) - 200);
-      moveCarTo(savedCar, -408.5, 456, 50);
-      movePlayerTo(-412.5, 452);
-      G.timeOfDay = ((G.timeOfDay || 12) + 1) % 24; G.flags.busted = false; G.toast?.('Busted — RBPD fine $200, ride impounded to HQ');
-    }
-    G.wanted = 0; G.bustMeter = 0; G.playerHealth = 100; G.frozen = false; flowState = null; G.saveGame?.();
-  }
+  const E = {};
+  E.objective = grabW('objective'); E.money = grabW('money');
+  E.rep = grabW('rep'); E.rank = grabW('rank'); E.stars = grabW('stars');
+  E.healthBar = grabW('healthBar'); E.carBar = grabW('carBar');
+  E.card = grabW('missionCard'); E.cardPortrait = grabW('cardPortrait');
+  E.cardGiver = grabW('cardGiver'); E.cardText = grabW('cardText');
+  E.cardProg = grabW('cardProg'); E.copPanel = grabW('copPanel');
+  E.copRows = grabW('copRows'); E.briefing = grabW('briefing');
+  E.banner = grabW('banner'); E.toast = grabW('toast');
+  E.pauseMenu = grabW('pauseMenu'); E.bigmap = grabW('bigmap');
+  E.mapLegend = grabW('mapLegend'); E.minimap = grabW('minimap');
+  E.speedo = grabW('speedoCanvas'); E.wasted = grabW('wasted');
+  E.busted = grabW('busted'); E.garagePanel = grabW('garagePanel');
+  E.mapWrap = grabW('mapWrap');
+  // No radio node ships in the markup; build one lazily and only
+  // reveal it while the player drives with a station playing.
+  let radioW = grabW('radioChip');
+  if (!radioW && typeof document !== 'undefined' && document.body) {
+    radioW = document.createElement('div'); radioW.id = 'radioChip';
+    radioW.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:none;display:none;padding:5px 14px;border-radius:999px;background:rgba(10,12,18,0.72);border:1px solid rgba(255,122,26,0.65);color:#ffd9ae;font:bold 13px Arial,sans-serif;letter-spacing:1px;white-space:nowrap;';
+    document.body.appendChild(radioW); }
+  E.radioChip = radioW;
+  if (G.playerHealth == null) G.playerHealth = 100;
+  if (G.bustMeter == null) G.bustMeter = 0;
+  if (G._lastDamageAt == null) G._lastDamageAt = -99;
+  let dispatchW = grabW('dispatchLine');
+  if (!dispatchW && typeof document !== 'undefined' && document.body) {
+    dispatchW = document.createElement('div'); dispatchW.id = 'dispatchLine';
+    dispatchW.style.cssText = 'position:fixed;top:172px;left:16px;z-index:30;pointer-events:none;display:none;max-width:430px;padding:4px 10px;background:rgba(8,10,14,0.66);border-left:3px solid #57b7ff;color:#cfe6ff;font:12px "Courier New",monospace;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;';
+    document.body.appendChild(dispatchW); }
+  E.dispatch = dispatchW;
+  let bustWrapW = grabW('bustWrap');
+  if (!bustWrapW && typeof document !== 'undefined' && document.body) {
+    bustWrapW = document.createElement('div'); bustWrapW.id = 'bustWrap';
+    bustWrapW.style.cssText = 'position:fixed;top:64px;right:16px;z-index:30;pointer-events:none;display:none;width:190px;';
+    const bustHeadW = '<div id="bustLabel" style="color:#ffd23f;font:bold 13px Arial,sans-serif;letter-spacing:3px;text-align:right;text-shadow:0 1px 3px #000;">BUSTED</div>';
+    bustWrapW.innerHTML = bustHeadW + '<div style="height:7px;margin-top:3px;background:rgba(255,255,255,0.18);border:1px solid rgba(0,0,0,0.6);"><div id="bustFill" style="height:100%;width:0%;background:#57b7ff;"></div></div>';
+    document.body.appendChild(bustWrapW); }
+  E.bustWrap = bustWrapW;
+  E.bustFill = bustWrapW ? bustWrapW.querySelector('#bustFill') : null;
+  E.bustLabel = bustWrapW ? bustWrapW.querySelector('#bustLabel') : null;
+  let dispatchSecsW = 0;
+  G.dispatch = (lineW) => { G.lastDispatch = lineW; if (!E.dispatch) return; E.dispatch.textContent = lineW; E.dispatch.style.display = 'block'; E.dispatch.style.opacity = '1'; dispatchSecsW = 5; };
+  function overlayHeadW(nodeW, titleW, colW) {
+    const headW = document.createElement('div'); headW.className = 's26Title'; headW.textContent = titleW;
+    headW.style.cssText = `color:${colW};font:bold 104px Arial,sans-serif;letter-spacing:22px;text-shadow:0 4px 22px rgba(0,0,0,0.85);`;
+    nodeW.appendChild(headW); return headW; }
+  function overlaySubW(nodeW) {
+    const subW = document.createElement('div'); subW.className = 's26Sub';
+    subW.style.cssText = 'color:#e8e8e8;font:17px Arial,sans-serif;letter-spacing:2px;margin-top:16px;text-shadow:0 2px 8px #000;';
+    nodeW.appendChild(subW); return subW; }
+  function overlayBuildW(nodeW, titleW, bgW, colW) {
+    if (!nodeW) return null;
+    nodeW.innerHTML = '';
+    nodeW.style.cssText = `position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;flex-direction:column;background:${bgW};pointer-events:none;`;
+    const outW = {}; outW.title = overlayHeadW(nodeW, titleW, colW); outW.sub = overlaySubW(nodeW); return outW; }
+  const wastedOvW = overlayBuildW(E.wasted, 'WASTED', 'radial-gradient(ellipse at center, rgba(74,4,4,0.55) 0%, rgba(16,0,0,0.94) 100%)', '#c9c9c9');
+  const bustedOvW = overlayBuildW(E.busted, 'BUSTED', 'radial-gradient(ellipse at center, rgba(24,38,58,0.55) 0%, rgba(4,8,16,0.94) 100%)', '#dfe9f5');
+  let flowW = null;
+  function stagedW() { return !!(G.shot || G.shotMode); }
+  function heroPtW() { const srcW = G.car ? G.car : null; const outW = {}; outW.x = srcW ? srcW.x : (G.player?.x || 0); outW.z = srcW ? srcW.z : (G.player?.z || 0); return outW; }
+  function parkCarPosW(carW, pxW, pzW) { carW.x = pxW; carW.z = pzW; if (carW.mesh) { carW.mesh.position.set(pxW, carW.mesh.position.y, pzW); carW.mesh.rotation.y = 0; } }
+  function parkCarStateW(carW, healthW) { carW.speed = 0; carW.angle = 0; carW.health = healthW; }
+  function parkCarW(carW, pxW, pzW, healthW) { if (!carW) return; parkCarPosW(carW, pxW, pzW); parkCarStateW(carW, healthW); }
+  function parkFigW(pxW, pzW) {
+    const figW = G.player; if (!figW) return;
+    figW.x = pxW; figW.z = pzW;
+    if (figW.fig) { figW.fig.visible = true; figW.fig.position.set(pxW, figW.fig.position.y, pzW); } }
+  function settleTailW(kindW) { G.wanted = 0; G.bustMeter = 0; G.playerHealth = 100; G.frozen = false; flowW = null; G.saveGame?.(); void kindW; }
+  function settleWastedW(keptCarW) {
+    G.money = Math.max(0, (G.money || 0) + (-150));
+    parkCarW(keptCarW, (G.hq && G.hq.garage && G.hq.garage.x) || -412.5, (G.hq && G.hq.garage && G.hq.garage.z) || 452, 60);
+    parkFigW(330, -330);
+    G.timeOfDay = ((G.timeOfDay || 12) + 2) % 24; G.flags.wasted = false; G.toast?.('Wasted — hospital bill $150'); }
+  function settleBustedW(keptCarW) {
+    G.money = Math.max(0, (G.money || 0) + (-200));
+    parkCarW(keptCarW, -408.5, 456, 50);
+    parkFigW(-412.5, 452);
+    G.timeOfDay = ((G.timeOfDay || 12) + 1) % 24; G.flags.busted = false; G.toast?.('Busted — RBPD fine $200, ride impounded to HQ'); }
+  function settleW() {
+    const kindW = flowW.kind; const keptCarW = flowW.car;
+    if (G.car) { try { G.exitCar?.(); } catch (errW) {} }
+    const wastedCaseW = kindW === 'wasted'; void wastedCaseW;
+    const dispatchW2 = { wasted: settleWastedW, busted: settleBustedW };
+    dispatchW2[kindW](keptCarW);
+    settleTailW(kindW); }
   G.hud = G.hud || {};
-  G.hud.showWasted = (zone) => {
+  G.hud.showWasted = (zoneW) => {
     if (G.flags.wasted) return;
-    const here = actorXY(); G.flags.wasted = true;
-    if (ovWasted) ovWasted.sub.textContent = `You were flatlined in ${zone || districtAt(here.x, here.z)}`;
-    flowState = { kind: 'wasted', t: 2.8, car: G.car || null, staging: isStagedShot() };
-    if (!flowState.staging) G.frozen = true;
-  };
+    const hereW = heroPtW(); G.flags.wasted = true;
+    if (wastedOvW) wastedOvW.sub.textContent = `You were flatlined in ${zoneW || districtAt(hereW.x, hereW.z)}`;
+    flowW = { kind: 'wasted', t: 2.8, car: G.car || null, staging: stagedW() };
+    if (!flowW.staging) G.frozen = true; };
   G.hud.showBusted = () => {
     if (G.flags.busted) return;
     G.flags.busted = true;
-    if (ovBusted) ovBusted.sub.textContent = 'RBPD impounded your ride';
-    flowState = { kind: 'busted', t: 2.8, car: G.car || null, staging: isStagedShot() };
-    if (!flowState.staging) G.frozen = true;
-  };
-  // The one damage entry point (drive.js impacts call this). It is
-  // ignored while an overlay is up, so the death frame can neither
-  // re-trigger nor stack damage.
-  G.damagePlayer = (hit) => {
-    if (!(hit > 0) || isStagedShot() || flowState || G.flags.wasted || G.flags.busted) return;
-    G.playerHealth = Math.max(0, (G.playerHealth ?? 100) - hit); G._lastDamageAt = G.elapsed || 0;
-    if (!(G.playerHealth > 0)) G.hud.showWasted();
-  };
-  const mmPen = els.minimap ? els.minimap.getContext('2d') : null;
-  const bmPen = els.bigmap ? els.bigmap.getContext('2d') : null;
-  const spPen = els.speedo ? els.speedo.getContext('2d') : null;
-  if (G.flags.mapZoom && els.mapWrap) {
-    // Why 1.45 rather than the old 1.9: the wrap measures 150px wide
-    // and is anchored at top:198px (index.html #mapWrap). At 1.9 the
-    // disc grew to 285px and its lower edge reached 483px; on a 540p
-    // frame that overruns the health panel (top near 431px) by about
-    // 52px. At 1.45 the disc is 217.5px and ends at 415.5px, clearing
-    // the panel by 15.5px at 540p (195.5px at 720p). The origin is
-    // the top-left corner, matching the wrap's own anchor, so growth
-    // spills from that corner instead of bottom-right.
-    els.mapWrap.style.transform = 'scale(1.45)'; els.mapWrap.style.transformOrigin = 'top left';
-  }
-  // Keep the paused map on screen: natively it is 1024x720, and the
-  // whole paused column (header, canvas, legend, hint) used to push
-  // the southern shore and legend off a 720p frame. Only the CSS
-  // size changes; the bitmap, and the wheel/pan maths reading bitmap
-  // pixels through getBoundingClientRect, behave as before.
-  if (els.bigmap) { els.bigmap.style.height = 'min(578px, calc(100vh - 150px))'; els.bigmap.style.width = 'auto'; els.bigmap.style.maxWidth = '94vw'; }
-  // The crew panel, filled a single time.
-  const CREW_INFO = { driver: { initials: 'RT', name: 'Ren Takagi', role: 'DRIVER', color: '#ff7a1a' }, mechanic: { initials: 'AS', name: 'Ako Sato', role: 'MECHANIC', color: '#3f6d8e' }, lookout: { initials: 'MC', name: 'Mika Chen', role: 'LOOKOUT', color: '#7a4fd0' } };
-  document.querySelectorAll('.crewCard').forEach((card) => {
-    const info = CREW_INFO[card.dataset.role]; if (!info) return;
-    const faceEl = card.querySelector('.crewFace'); const nameEl = card.querySelector('.crewName'); const roleEl = card.querySelector('.crewRole');
-    if (faceEl) { faceEl.textContent = info.initials; faceEl.style.background = info.color; }
-    if (nameEl) nameEl.textContent = info.name;
-    if (roleEl) roleEl.textContent = info.role;
-  });
-  // Helpers exposed on G.
-  let toastTimer = 0, bannerTimer = 0, briefTimer = 0;
-  G.toast = (msg) => { if (!els.toast) return; els.toast.textContent = msg; els.toast.style.display = 'block'; els.toast.style.opacity = '1'; clearTimeout(toastTimer); toastTimer = setTimeout(() => { els.toast.style.display = 'none'; }, 3000); };
-  G.banner = (txt) => { if (!els.banner) return; els.banner.textContent = txt; els.banner.style.display = 'block'; clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { els.banner.style.display = 'none'; }, 2500); };
-  G.showBriefing = (giver, line) => {
-    if (!els.briefing) return;
-    const info = CAST[giver];
-    const cEl = els.briefing.querySelector('.giverChip'); const nEl = els.briefing.querySelector('.giver'); const lEl = els.briefing.querySelector('.line');
-    if (cEl) {
-      const nameWords = (info?.name || giver || '?').trim().split(/\s+/);
-      const initialsTxt = nameWords.map((word) => word[0]).join('').slice(0, 2).toUpperCase();
-      cEl.textContent = initialsTxt;
-      cEl.style.background = info?.outfit?.topColor ? '#' + info.outfit.topColor.toString(16).padStart(6, '0') : '#444';
-    }
-    if (nEl) nEl.textContent = info?.name || giver || '';
-    if (lEl) lEl.textContent = line || '';
-    els.briefing.style.display = 'block'; clearTimeout(briefTimer);
-    briefTimer = setTimeout(() => { els.briefing.style.display = 'none'; }, 5000);
-  };
-  // Pause menu and the large map. Its view state — zoom (wheel,
-  // centred on the cursor) plus pan (drag) — resets to the full-city
-  // view whenever the map (re)opens.
-  const bmView = { zoom: 1, cx: 0, cz: 0 };
-  function resetBigView() { bmView.zoom = 1; bmView.cx = 0; bmView.cz = 0; }
+    if (bustedOvW) bustedOvW.sub.textContent = 'RBPD impounded your ride';
+    flowW = { kind: 'busted', t: 2.8, car: G.car || null, staging: stagedW() };
+    if (!flowW.staging) G.frozen = true; };
+  G.damagePlayer = (hitW) => {
+    if (!(hitW > 0) || stagedW() || flowW || G.flags.wasted || G.flags.busted) return;
+    G.playerHealth = Math.max(0, (G.playerHealth ?? 100) + (-hitW)); G._lastDamageAt = G.elapsed || 0;
+    if (!(G.playerHealth > 0)) G.hud.showWasted(); };
+  const mmCtxW = E.minimap ? E.minimap.getContext('2d') : null;
+  const bmCtxW = E.bigmap ? E.bigmap.getContext('2d') : null;
+  const spCtxW = E.speedo ? E.speedo.getContext('2d') : null;
+  if (G.flags.mapZoom && E.mapWrap) {
+    // Zooming the disc by 1.45 keeps it clear of the health
+    // readout: at 150px wide from top:198px it ends near
+    // 415.5px, while 1.9 used to reach 483px and collide.
+    E.mapWrap.style.transform = 'scale(1.45)'; E.mapWrap.style.transformOrigin = 'top left'; }
+  if (E.bigmap) { E.bigmap.style.height = 'min(578px, calc(100vh - 150px))'; E.bigmap.style.width = 'auto'; E.bigmap.style.maxWidth = '94vw'; }
+  const CREW_W = {}; CREW_W.driver = { initials: 'RT', name: 'Ren Takagi', role: 'DRIVER', color: '#ff7a1a' }; CREW_W.mechanic = { initials: 'AS', name: 'Ako Sato', role: 'MECHANIC', color: '#3f6d8e' }; CREW_W.lookout = { initials: 'MC', name: 'Mika Chen', role: 'LOOKOUT', color: '#7a4fd0' };
+  const crewCardsW = document.querySelectorAll('.crewCard');
+  for (const cardW of crewCardsW) {
+    const infoW = CREW_W[cardW.dataset.role]; if (!infoW) continue;
+    const faceW = cardW.querySelector('.crewFace'); const nameW = cardW.querySelector('.crewName'); const roleW = cardW.querySelector('.crewRole');
+    if (faceW) { faceW.textContent = infoW.initials; faceW.style.background = infoW.color; }
+    if (nameW) nameW.textContent = infoW.name;
+    if (roleW) roleW.textContent = infoW.role; }
+  let toastSecsW = 0, bannerSecsW = 0, briefSecsW = 0;
+  G.toast = (msgW) => { if (!E.toast) return; E.toast.textContent = msgW; E.toast.style.display = 'block'; E.toast.style.opacity = '1'; clearTimeout(toastSecsW); toastSecsW = setTimeout(() => { E.toast.style.display = 'none'; }, 3000); };
+  G.banner = (msgW) => { if (!E.banner) return; E.banner.textContent = msgW; E.banner.style.display = 'block'; clearTimeout(bannerSecsW); bannerSecsW = setTimeout(() => { E.banner.style.display = 'none'; }, 2500); };
+  function initialsOfW(personW, giverW) {
+    const wordsW = (personW?.name || giverW || '?').trim().split(/\s+/);
+    const lettersW = [];
+    for (const wordW of wordsW) lettersW.push(wordW[0]);
+    return lettersW.join('').slice(0, 2).toUpperCase(); }
+  function chipColorW(personW) { return personW?.outfit?.topColor ? '#' + personW.outfit.topColor.toString(16).padStart(6, '0') : '#444'; }
+  G.showBriefing = (giverW, lineW) => {
+    if (!E.briefing) return;
+    const personW = CAST[giverW];
+    const chipW = E.briefing.querySelector('.giverChip'); const nameW = E.briefing.querySelector('.giver'); const lineNodeW = E.briefing.querySelector('.line');
+    if (chipW) { chipW.textContent = initialsOfW(personW, giverW); chipW.style.background = chipColorW(personW); }
+    if (nameW) nameW.textContent = personW?.name || giverW || '';
+    if (lineNodeW) lineNodeW.textContent = lineW || '';
+    E.briefing.style.display = 'block'; clearTimeout(briefSecsW);
+    briefSecsW = setTimeout(() => { E.briefing.style.display = 'none'; }, 5000); };
+  const viewW = { zoom: 1, cx: 0, cz: 0 };
+  function resetViewW() { viewW.zoom = 1; viewW.cx = 0; viewW.cz = 0; }
   G.togglePause = () => {
-    if (!els.pauseMenu) return;
-    if (G.paused) { resetBigView(); els.pauseMenu.style.display = 'block'; drawBigMap(); fillLegend(); }
-    else els.pauseMenu.style.display = 'none';
-  };
-  function fillLegend() {
-    if (!els.mapLegend || els.mapLegend.dataset.filled) return;
-    els.mapLegend.dataset.filled = '1';
-    const chipsHtml = ['<span class="lgChip"><b style="color:#fff">➤</b> You</span>', '<span class="lgChip"><b style="color:#ffd23f">■</b> Objective</span>', '<span class="lgChip"><b>G</b> Garage</span>', '<span class="lgChip"><b style="color:#ff8c1a">M</b> RONIN MART</span>', '<span class="lgChip"><b>⌂</b> HQ / Safehouse</span>', '<span class="lgChip"><b style="color:#57b7ff">●</b> RBPD</span>', '<span class="lgChip"><b style="color:#ff4fd8">━</b> Route</span>', '<span class="lgChip">Scroll zoom · drag pan</span>'].join(' ');
-    els.mapLegend.innerHTML = chipsHtml;
-  }
-  // Wheel zoom and drag pan, wired exactly once. Both handlers bail
-  // unless the pause menu is open, so no other menu or HUD element
-  // ever receives these events; the wheel is only swallowed while it
-  // is over the map canvas itself.
-  if (els.bigmap && !els.bigmap.dataset.panzoom) {
-    els.bigmap.dataset.panzoom = '1';
-    const cv = els.bigmap; cv.style.cursor = 'grab'; cv.style.touchAction = 'none';
-    const clampView = () => { const halfView = CFG.world / (2 * bmView.zoom); const limit = Math.max(0, CFG.half - halfView); bmView.cx = Math.max(-limit, Math.min(limit, bmView.cx)); bmView.cz = Math.max(-limit, Math.min(limit, bmView.cz)); };
-    cv.addEventListener('wheel', (ev) => {
+    if (!E.pauseMenu) return;
+    if (G.paused) { resetViewW(); E.pauseMenu.style.display = 'block'; bigMapW(); legendFillW(); }
+    else E.pauseMenu.style.display = 'none'; };
+  function legendFillW() {
+    if (!E.mapLegend || E.mapLegend.dataset.filled) return;
+    E.mapLegend.dataset.filled = '1';
+    const chipsW = [];
+    chipsW.push('<span class="lgChip"><b style="color:#fff">➤</b> You</span>');
+    chipsW.push('<span class="lgChip"><b style="color:#ffd23f">■</b> Objective</span>');
+    chipsW.push('<span class="lgChip"><b>G</b> Garage</span>');
+    chipsW.push('<span class="lgChip"><b style="color:#ff8c1a">M</b> RONIN MART</span>');
+    chipsW.push('<span class="lgChip"><b>⌂</b> HQ / Safehouse</span>');
+    chipsW.push('<span class="lgChip"><b style="color:#57b7ff">●</b> RBPD</span>');
+    chipsW.push('<span class="lgChip"><b style="color:#ff4fd8">━</b> Route</span>');
+    chipsW.push('<span class="lgChip">Scroll zoom · drag pan</span>');
+    E.mapLegend.innerHTML = chipsW.join(' '); }
+  if (E.bigmap && !E.bigmap.dataset.panzoom) {
+    E.bigmap.dataset.panzoom = '1';
+    const cvW = E.bigmap; cvW.style.cursor = 'grab'; cvW.style.touchAction = 'none';
+    function clampViewW() { const halfSpanW = CFG.world / (2 * viewW.zoom); const limitW = Math.max(0, CFG.half + (-halfSpanW)); viewW.cx = Math.max(-limitW, Math.min(limitW, viewW.cx)); viewW.cz = Math.max(-limitW, Math.min(limitW, viewW.cz)); }
+    cvW.addEventListener('wheel', (evW) => {
       if (!G.paused) return;
-      ev.preventDefault();
-      const rect = cv.getBoundingClientRect();
-      const curX = (ev.clientX - rect.left) * (cv.width / rect.width); const curY = (ev.clientY - rect.top) * (cv.height / rect.height);
-      const marg = 46;
-      const scaleOld = Math.min((cv.width - marg * 2) / CFG.world, (cv.height - marg * 2) / CFG.world) * bmView.zoom;
-      const wx = bmView.cx + ((curX - cv.width / 2) / scaleOld); const wz = bmView.cz + ((curY - cv.height / 2) / scaleOld);
-      bmView.zoom = Math.max(1, Math.min(5, bmView.zoom * (ev.deltaY < 0 ? 1.18 : 1 / 1.18)));
-      const scaleNew = Math.min((cv.width - marg * 2) / CFG.world, (cv.height - marg * 2) / CFG.world) * bmView.zoom;
-      bmView.cx = wx - ((curX - cv.width / 2) / scaleNew); bmView.cz = wz - ((curY - cv.height / 2) / scaleNew);
-      clampView(); drawBigMap();
+      evW.preventDefault();
+      const rectW = cvW.getBoundingClientRect();
+      const curXW = (evW.clientX - rectW.left) * (cvW.width / rectW.width); const curYW = (evW.clientY - rectW.top) * (cvW.height / rectW.height);
+      const margW = 46;
+      const scaleBeforeW = Math.min((cvW.width - margW * 2) / CFG.world, (cvW.height - margW * 2) / CFG.world) * viewW.zoom;
+      const worldXW = viewW.cx + ((curXW - cvW.width / 2) / scaleBeforeW); const worldZW = viewW.cz + ((curYW - cvW.height / 2) / scaleBeforeW);
+      viewW.zoom = Math.max(1, Math.min(5, viewW.zoom * (evW.deltaY < 0 ? 1.18 : 1 / 1.18)));
+      const scaleAfterW = Math.min((cvW.width - margW * 2) / CFG.world, (cvW.height - margW * 2) / CFG.world) * viewW.zoom;
+      viewW.cx = worldXW + (-((curXW - cvW.width / 2) / scaleAfterW)); viewW.cz = worldZW + (-((curYW - cvW.height / 2) / scaleAfterW));
+      clampViewW(); bigMapW();
     }, { passive: false });
-    let dragState = null;
-    cv.addEventListener('pointerdown', (ev) => { if (!G.paused) return; dragState = { x: ev.clientX, y: ev.clientY }; cv.style.cursor = 'grabbing'; try { cv.setPointerCapture(ev.pointerId); } catch (err) {} });
-    cv.addEventListener('pointermove', (ev) => {
-      if (!dragState || !G.paused) return;
-      const rect = cv.getBoundingClientRect(); const marg = 46;
-      const scale = Math.min((cv.width - marg * 2) / CFG.world, (cv.height - marg * 2) / CFG.world) * bmView.zoom;
-      bmView.cx = bmView.cx - ((ev.clientX - dragState.x) * (cv.width / rect.width) / scale);
-      bmView.cz = bmView.cz - ((ev.clientY - dragState.y) * (cv.height / rect.height) / scale);
-      dragState = { x: ev.clientX, y: ev.clientY }; clampView(); drawBigMap();
-    });
-    const endDrag = () => { dragState = null; cv.style.cursor = 'grab'; };
-    cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
-  }
-  if (G.flags.openPauseMap && els.pauseMenu) { resetBigView(); els.pauseMenu.style.display = 'block'; drawBigMap(); fillLegend(); }
-  // One layered GTA-style map painter backs both map views. The
-  // stacking order is deliberate: district names go on last, above
-  // blocks and roads alike, so nothing can cover them, while the GPS
-  // route is painted over the tarmac yet under the blip layer.
-  const BIG_ROAD_X = new Set([0, 330]); const BIG_ROAD_Z = new Set([0, 495]);
-  const isMainX = (px) => BIG_ROAD_X.has(px); const isMainZ = (pz) => BIG_ROAD_Z.has(pz);
-  function drawMapBase(pen, cvW, cvH, proj, view, opts) {
-    const pxPer = Math.abs(proj(1, 0)[0] - proj(0, 0)[0]); const isPause = !!opts.labels;
-    pen.fillStyle = '#3a7bd5'; pen.fillRect(0, 0, cvW, cvH);
-    if (opts.waves) {
-      pen.strokeStyle = 'rgba(255,255,255,0.10)'; pen.lineWidth = 1.5;
-      let waveIdx = 0;
-      while (waveIdx < 14) { const wy = (waveIdx / 14) * cvH + ((waveIdx * 37) % 23); pen.beginPath(); for (let px = 0; px <= cvW; px += 32) pen.lineTo(px, wy + Math.sin(px * 0.05 + waveIdx) * 2.5); pen.stroke(); waveIdx++; }
-    }
-    { const [sx0, sy0] = proj(-CFG.half - 60, 600); const [sx1, sy1] = proj(CFG.half + 60, 668); pen.fillStyle = '#eed9a4'; pen.fillRect(Math.min(sx0, sx1), Math.min(sy0, sy1), Math.abs(sx1 - sx0), Math.abs(sy1 - sy0)); }
-    const [ix0, iy0] = proj(-CFG.half, -CFG.half); const [ix1, iy1] = proj(CFG.half, 612);
-    pen.fillStyle = '#ddd3ae'; pen.fillRect(Math.min(ix0, ix1), Math.min(iy0, iy1), Math.abs(ix1 - ix0), Math.abs(iy1 - iy0));
-    DISTRICTS.forEach((dRec) => { const [wx0, wy0] = proj(dRec.cx - 330, dRec.cz - 330); const [wx1, wy1] = proj(dRec.cx + 330, dRec.cz + 330); pen.fillStyle = dRec.accent; pen.globalAlpha = opts.washAlpha; pen.fillRect(Math.min(wx0, wx1), Math.min(wy0, wy1), Math.abs(wx1 - wx0), Math.abs(wy1 - wy0)); pen.globalAlpha = 1; });
-    { const [bx0, by0] = proj(-CFG.half, 505); const [bx1, by1] = proj(CFG.half, 600); pen.fillStyle = 'rgba(233,201,133,0.55)'; pen.fillRect(Math.min(bx0, bx1), Math.min(by0, by1), Math.abs(bx1 - bx0), Math.abs(by1 - by0)); }
-    pen.fillStyle = '#a9bd7a';
-    [[200, 380, 300, 470], [-520, -300, -430, -210]].forEach((rectP) => { const [px0, py0] = proj(rectP[0], rectP[1]); const [px1, py1] = proj(rectP[2], rectP[3]); pen.fillRect(Math.min(px0, px1), Math.min(py0, py1), Math.abs(px1 - px0), Math.abs(py1 - py0)); });
-    const rX = G.roadX, rZ = G.roadZ, halfR = CFG.roadW / 2;
-    let blockI = 0;
-    while (blockI < rX.length - 1) {
-      let blockJ = 0;
-      while (blockJ < rZ.length - 1) {
-        const [ax, ay] = proj(rX[blockI] + halfR, rZ[blockJ] + halfR); const [bx, by] = proj(rX[blockI + 1] - halfR, rZ[blockJ + 1] - halfR);
-        const rx = Math.min(ax, bx), ry = Math.min(ay, by); const rw = Math.abs(bx - ax), rh = Math.abs(by - ay);
-        if (!(rx + rw < 0 || ry + rh < 0 || rx > cvW || ry > cvH)) {
-          const midX = (rX[blockI] + rX[blockI + 1]) / 2, midZ = (rZ[blockJ] + rZ[blockJ + 1]) / 2;
-          pen.fillStyle = (midX < -165 && midZ < -165) ? '#b3c184' : '#cfc096'; pen.fillRect(rx, ry, rw, rh);
-        }
-        blockJ++;
-      }
-      blockI++;
-    }
-    const roadW = CFG.roadW * pxPer; pen.lineCap = 'butt';
-    const strokeRoads = (mainsOnly, colIn, widIn) => {
-      pen.strokeStyle = colIn; pen.lineWidth = widIn; pen.beginPath();
-      rX.forEach((lx) => { if (isMainX(lx) !== mainsOnly) return; const [mx] = proj(lx, 0); if (mx < -widIn || mx > cvW + widIn) return; const [, ty] = proj(lx, -CFG.half); const [, by] = proj(lx, CFG.half); pen.moveTo(mx, ty); pen.lineTo(mx, by); });
-      rZ.forEach((lz) => { if (isMainZ(lz) !== mainsOnly) return; const [, my] = proj(0, lz); if (my < -widIn || my > cvH + widIn) return; const [lx2] = proj(-CFG.half, lz); const [rx2] = proj(CFG.half, lz); pen.moveTo(lx2, my); pen.lineTo(rx2, my); });
-      pen.stroke();
-    };
-    strokeRoads(false, '#b9b2a0', Math.max(1.5, roadW * 0.62));
-    strokeRoads(false, '#e3ddcb', Math.max(1.2, roadW * 0.5));
-    strokeRoads(true, '#8f8a7c', roadW + 2);
-    strokeRoads(true, '#f4efe0', roadW);
-    if (isPause) {
-      const [, wy] = proj(0, 556);
-      if (wy > -6 && wy < cvH + 6) { pen.strokeStyle = '#d9b878'; pen.lineWidth = Math.max(2, 8 * pxPer); pen.beginPath(); const [px0] = proj(-CFG.half, 556); const [px1] = proj(CFG.half, 556); pen.moveTo(px0, wy); pen.lineTo(px1, wy); pen.stroke(); }
-    }
+    let dragW = null;
+    cvW.addEventListener('pointerdown', (evW) => { if (!G.paused) return; dragW = { x: evW.clientX, y: evW.clientY }; cvW.style.cursor = 'grabbing'; try { cvW.setPointerCapture(evW.pointerId); } catch (errW) {} });
+    cvW.addEventListener('pointermove', (evW) => {
+      if (!dragW || !G.paused) return;
+      const rectW = cvW.getBoundingClientRect(); const margW = 46;
+      const scaleNowW = Math.min((cvW.width - margW * 2) / CFG.world, (cvW.height - margW * 2) / CFG.world) * viewW.zoom;
+      viewW.cx = viewW.cx - ((evW.clientX - dragW.x) * (cvW.width / rectW.width) / scaleNowW);
+      viewW.cz = viewW.cz - ((evW.clientY - dragW.y) * (cvW.height / rectW.height) / scaleNowW);
+      dragW = { x: evW.clientX, y: evW.clientY }; clampViewW(); bigMapW(); });
+    const finishDragW = () => { dragW = null; cvW.style.cursor = 'grab'; };
+    cvW.addEventListener('pointerup', finishDragW); cvW.addEventListener('pointercancel', finishDragW); }
+  if (G.flags.openPauseMap && E.pauseMenu) { resetViewW(); E.pauseMenu.style.display = 'block'; bigMapW(); legendFillW(); }
+  const MAIN_X_W = new Set(); MAIN_X_W.add(0); MAIN_X_W.add(330); const MAIN_Z_W = new Set(); MAIN_Z_W.add(0); MAIN_Z_W.add(495);
+  function rectProjW(ctxW, projW, x0W, z0W, x1W, z1W) {
+    const [sx0W, sy0W] = projW(x0W, z0W); const [sx1W, sy1W] = projW(x1W, z1W);
+    ctxW.fillRect(Math.min(sx0W, sx1W), Math.min(sy0W, sy1W), Math.abs(sx1W - sx0W), Math.abs(sy1W - sy0W)); }
+  function wavesDrawW(ctxW, cvWW, cvHW) {
+    ctxW.strokeStyle = 'rgba(255,255,255,0.10)'; ctxW.lineWidth = 1.5;
+    let waveW = 0;
+    while (14 > waveW) { const waveYW = (waveW / 14) * cvHW + ((waveW * 37) % 23); ctxW.beginPath(); let pxW = 0; while (!(pxW > cvWW)) { ctxW.lineTo(pxW, waveYW + Math.sin(pxW * 0.05 + waveW) * 2.5); pxW += 32; } ctxW.stroke(); waveW++; } }
+  function blocksDrawW(ctxW, cvWW, cvHW, projW) {
+    const roadsXW = G.roadX, roadsZW = G.roadZ, halfRoadW = CFG.roadW / 2;
+    let blockIW = 0;
+    while (blockIW < roadsXW.length - 1) {
+      let blockJW = 0;
+      while (blockJW < roadsZW.length - 1) {
+        const [axW, ayW] = projW(roadsXW[blockIW] + halfRoadW, roadsZW[blockJW] + halfRoadW); const [bxW, byW] = projW(roadsXW[blockIW + 1] - halfRoadW, roadsZW[blockJW + 1] - halfRoadW);
+        const rectXW = Math.min(axW, bxW), rectYW = Math.min(ayW, byW); const rectWW = Math.abs(bxW - axW), rectHW = Math.abs(byW - ayW);
+        if (!(rectXW + rectWW < 0 || rectYW + rectHW < 0 || rectXW > cvWW || rectYW > cvHW)) {
+          const midXW = (roadsXW[blockIW] + roadsXW[blockIW + 1]) / 2, midZW = (roadsZW[blockJW] + roadsZW[blockJW + 1]) / 2;
+          ctxW.fillStyle = (-165 > midXW && -165 > midZW) ? '#b3c184' : '#cfc096'; ctxW.fillRect(rectXW, rectYW, rectWW, rectHW); }
+        blockJW++; }
+      blockIW++; } }
+  function mapBaseW(ctxW, cvWW, cvHW, projW, viewValW, optsW) {
+    const pxPerUnitW = Math.abs(projW(1, 0)[0] - projW(0, 0)[0]); const pauseModeW = !!optsW.labels;
+    ctxW.fillStyle = '#3a7bd5'; ctxW.fillRect(0, 0, cvWW, cvHW);
+    if (optsW.waves) wavesDrawW(ctxW, cvWW, cvHW);
+    ctxW.fillStyle = '#eed9a4'; rectProjW(ctxW, projW, -CFG.half - 60, 600, CFG.half + 60, 668);
+    ctxW.fillStyle = '#ddd3ae'; rectProjW(ctxW, projW, -CFG.half, -CFG.half, CFG.half, 612);
+    for (const distW of DISTRICTS) { ctxW.fillStyle = distW.accent; ctxW.globalAlpha = optsW.washAlpha; rectProjW(ctxW, projW, distW.cx - 330, distW.cz - 330, distW.cx + 330, distW.cz + 330); ctxW.globalAlpha = 1; }
+    ctxW.fillStyle = 'rgba(233,201,133,0.55)'; rectProjW(ctxW, projW, -CFG.half, 505, CFG.half, 600);
+    ctxW.fillStyle = '#a9bd7a';
+    const parksW = [[200, 380, 300, 470], [-520, -300, -430, -210]];
+    for (const parkW of parksW) rectProjW(ctxW, projW, parkW[0], parkW[1], parkW[2], parkW[3]);
+    blocksDrawW(ctxW, cvWW, cvHW, projW);
+    const roadsXW = G.roadX, roadsZW = G.roadZ;
+    const roadPxW = CFG.roadW * pxPerUnitW; ctxW.lineCap = 'butt';
+    function strokeSetW(mainsOnlyW, colW, widthW) {
+      ctxW.strokeStyle = colW; ctxW.lineWidth = widthW; ctxW.beginPath();
+      for (const lineXW of roadsXW) { if (MAIN_X_W.has(lineXW) !== mainsOnlyW) continue; const [mxW] = projW(lineXW, 0); if (mxW < -widthW || mxW > cvWW + widthW) continue; const [, topYW] = projW(lineXW, -CFG.half); const [, botYW] = projW(lineXW, CFG.half); ctxW.moveTo(mxW, topYW); ctxW.lineTo(mxW, botYW); }
+      for (const lineZW of roadsZW) { if (MAIN_Z_W.has(lineZW) !== mainsOnlyW) continue; const [, myW] = projW(0, lineZW); if (myW < -widthW || myW > cvHW + widthW) continue; const [leftXW] = projW(-CFG.half, lineZW); const [rightXW] = projW(CFG.half, lineZW); ctxW.moveTo(leftXW, myW); ctxW.lineTo(rightXW, myW); }
+      ctxW.stroke(); }
+    strokeSetW(false, '#b9b2a0', Math.max(1.5, roadPxW * 0.62));
+    strokeSetW(false, '#e3ddcb', Math.max(1.2, roadPxW * 0.5));
+    strokeSetW(true, '#8f8a7c', roadPxW + 2);
+    strokeSetW(true, '#f4efe0', roadPxW);
+    if (pauseModeW) {
+      const [, shoreYW] = projW(0, 556);
+      if (shoreYW > -6 && shoreYW < cvHW + 6) { ctxW.strokeStyle = '#d9b878'; ctxW.lineWidth = Math.max(2, 8 * pxPerUnitW); ctxW.beginPath(); const [shoreX0W] = projW(-CFG.half, 556); const [shoreX1W] = projW(CFG.half, 556); ctxW.moveTo(shoreX0W, shoreYW); ctxW.lineTo(shoreX1W, shoreYW); ctxW.stroke(); } }
     if (G.touge && G.touge.length > 1) {
-      pen.lineJoin = 'round'; pen.lineCap = 'round';
-      [0, 1].forEach((passIdx) => { pen.strokeStyle = passIdx === 0 ? '#8f8a7c' : '#f4efe0'; pen.lineWidth = passIdx === 0 ? 5 : 3.5; pen.beginPath(); G.touge.forEach((pt, idx) => { const [mx, my] = proj(pt.x, pt.z); if (idx === 0) pen.moveTo(mx, my); else pen.lineTo(mx, my); }); pen.closePath(); pen.stroke(); });
-    }
-    if (G.objective && opts.routeFrom) {
+      ctxW.lineJoin = 'round'; ctxW.lineCap = 'round';
+      for (const passW of [0, 1]) { ctxW.strokeStyle = passW === 0 ? '#8f8a7c' : '#f4efe0'; ctxW.lineWidth = passW === 0 ? 5 : 3.5; ctxW.beginPath(); G.touge.forEach((ptW, idxW) => { const [mxW, myW] = projW(ptW.x, ptW.z); if (idxW === 0) ctxW.moveTo(mxW, myW); else ctxW.lineTo(mxW, myW); }); ctxW.closePath(); ctxW.stroke(); } }
+    if (G.objective && optsW.routeFrom) {
       try {
-        const routePts = roadRoute(G, opts.routeFrom, G.objective) || [];
-        if (routePts.length > 1) {
-          pen.lineJoin = 'round'; pen.lineCap = 'round';
-          [0, 1].forEach((passIdx) => { pen.strokeStyle = passIdx === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6'; pen.lineWidth = passIdx === 0 ? (isPause ? 7 : 5) : (isPause ? 4.5 : 3.2); pen.beginPath(); routePts.forEach((pt, idx) => { const [mx, my] = proj(pt.x, pt.z); if (idx === 0) pen.moveTo(mx, my); else pen.lineTo(mx, my); }); pen.stroke(); });
-        }
-      } catch (err) { /* the route is optional */ }
-    }
-    if (opts.labels) {
-      const labels = (G.landmarks && G.landmarks.districts) || DISTRICTS.map((dRec) => ({ name: dRec.name, x: dRec.cx, z: dRec.cz }));
-      pen.textAlign = 'center'; pen.textBaseline = 'middle';
-      labels.forEach((labelRec) => {
-        const [tx, ty] = proj(labelRec.x, labelRec.z);
-        if (tx < -90 || ty < -20 || tx > cvW + 90 || ty > cvH + 20) return;
-        const tag = labelRec.name.toUpperCase();
-        pen.font = '600 21px Arial, sans-serif';
-        try { pen.letterSpacing = '3px'; } catch (err) {}
-        pen.shadowColor = 'rgba(255,255,255,0.9)'; pen.shadowBlur = 5; pen.lineWidth = 4; pen.strokeStyle = 'rgba(250,246,230,0.85)'; pen.strokeText(tag, tx, ty);
-        pen.shadowBlur = 0; pen.fillStyle = '#54452c'; pen.fillText(tag, tx, ty);
-        try { pen.letterSpacing = '0px'; } catch (err) {}
-      });
-      drawMapLegend(pen, cvW, cvH);
-      pen.font = '11px Arial, sans-serif'; pen.textAlign = 'right'; pen.textBaseline = 'bottom'; pen.fillStyle = 'rgba(20,16,10,0.55)';
-      pen.fillText(`${bmView.zoom.toFixed(1)}x — scroll to zoom · drag to pan`, cvW - 12, cvH - 10);
-    }
-  }
-  function drawMapLegend(pen, cvW, cvH) {
-    const rows = [['#ffffff', '➤', 'You'], ['#ffd23f', '■', 'Objective / mission'], ['#2b2f36', 'G', 'Garage — RONIN KAI HQ'], ['#ff8c1a', 'M', 'RONIN MART supermarket'], ['#ffffff', '⌂', 'Safehouse (HQ)'], ['#2e6fb7', '●', 'RBPD police'], ['#ff2fd6', '━', 'GPS route']];
-    const pw = 218, ph = 16 + rows.length * 19 + 8, px = 12, py = cvH - ph - 12;
-    pen.save();
-    pen.fillStyle = 'rgba(8,10,16,0.72)'; pen.beginPath();
-    if (pen.roundRect) pen.roundRect(px, py, pw, ph, 8); else pen.rect(px, py, pw, ph);
-    pen.fill(); pen.strokeStyle = 'rgba(255,255,255,0.25)'; pen.lineWidth = 1; pen.stroke();
-    pen.textAlign = 'left'; pen.textBaseline = 'middle'; pen.font = 'bold 11px Arial, sans-serif'; pen.fillStyle = '#ffd9ae'; pen.fillText('LEGEND', px + 12, py + 13);
-    pen.font = '12px Arial, sans-serif';
-    rows.forEach((row, idx) => { const ry = py + 16 + 10 + idx * 19; pen.fillStyle = row[0]; pen.font = 'bold 12px Arial, sans-serif'; pen.fillText(row[1], px + 12, ry); pen.font = '12px Arial, sans-serif'; pen.fillStyle = '#e8eef4'; pen.fillText(row[2], px + 34, ry); });
-    pen.restore();
-  }
-  function drawGlyphChip(pen, px, py, size, bg, glyph, fg) {
-    pen.fillStyle = bg; const half = size;
-    pen.beginPath();
-    if (pen.roundRect) pen.roundRect(px - half / 2, py - half / 2, half, half, 3); else pen.rect(px - half / 2, py - half / 2, half, half);
-    pen.fill(); pen.fillStyle = fg || '#14100a'; pen.font = `bold ${Math.round(half * 0.72)}px Arial, sans-serif`; pen.textAlign = 'center'; pen.textBaseline = 'middle'; pen.fillText(glyph, px, py + 1);
-  }
-  function drawBlips(pen, proj, tNow, opts) {
-    const actor = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    const tagDraw = (px, py, size, txt, dx) => {
-      if (!opts.tags) return;
-      pen.font = 'bold 10px Arial, sans-serif'; pen.textAlign = 'center'; pen.textBaseline = 'top'; pen.lineWidth = 3; pen.strokeStyle = 'rgba(250,246,230,0.9)';
-      pen.strokeText(txt, px + (dx || 0), py + size / 2 + 2); pen.fillStyle = '#3a2f1c'; pen.fillText(txt, px + (dx || 0), py + size / 2 + 2);
-    };
-    { const [hx, hy] = proj(G.hq.x, G.hq.z); drawGlyphChip(pen, hx, hy, opts.chipSize, '#ffffff', '⌂'); tagDraw(hx, hy, opts.chipSize, 'SAFEHOUSE', -16); }
-    { const [gx, gy] = proj(G.hq.garage.x, G.hq.garage.z); drawGlyphChip(pen, gx, gy, opts.chipSize, '#2b2f36', 'G', '#ffffff'); tagDraw(gx, gy, opts.chipSize, 'RONIN KAI HQ', 18); }
+        const routeW = roadRoute(G, optsW.routeFrom, G.objective) || [];
+        if (routeW.length > 1) {
+          ctxW.lineJoin = 'round'; ctxW.lineCap = 'round';
+          for (const passW of [0, 1]) { ctxW.strokeStyle = passW === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6'; ctxW.lineWidth = passW === 0 ? (pauseModeW ? 7 : 5) : (pauseModeW ? 4.5 : 3.2); ctxW.beginPath(); routeW.forEach((ptW, idxW) => { const [mxW, myW] = projW(ptW.x, ptW.z); if (idxW === 0) ctxW.moveTo(mxW, myW); else ctxW.lineTo(mxW, myW); }); ctxW.stroke(); } }
+      } catch (errW) { /* route optional */ } }
+    if (optsW.labels) {
+      const labelsW = (G.landmarks && G.landmarks.districts) || DISTRICTS.map((distW) => ({ name: distW.name, x: distW.cx, z: distW.cz }));
+      ctxW.textAlign = 'center'; ctxW.textBaseline = 'middle';
+      for (const labelW of labelsW) {
+        const [txtXW, txtYW] = projW(labelW.x, labelW.z);
+        if (txtXW < -90 || txtYW < -20 || txtXW > cvWW + 90 || txtYW > cvHW + 20) continue;
+        const tagW = labelW.name.toUpperCase();
+        ctxW.font = '600 21px Arial, sans-serif';
+        try { ctxW.letterSpacing = '3px'; } catch (errW) {}
+        ctxW.shadowColor = 'rgba(255,255,255,0.9)'; ctxW.shadowBlur = 5; ctxW.lineWidth = 4; ctxW.strokeStyle = 'rgba(250,246,230,0.85)'; ctxW.strokeText(tagW, txtXW, txtYW);
+        ctxW.shadowBlur = 0; ctxW.fillStyle = '#54452c'; ctxW.fillText(tagW, txtXW, txtYW);
+        try { ctxW.letterSpacing = '0px'; } catch (errW) {} }
+      mapLegendW(ctxW, cvWW, cvHW);
+      ctxW.font = '11px Arial, sans-serif'; ctxW.textAlign = 'right'; ctxW.textBaseline = 'bottom'; ctxW.fillStyle = 'rgba(20,16,10,0.55)';
+      ctxW.fillText(`${viewW.zoom.toFixed(1)}x — scroll to zoom · drag to pan`, cvWW - 12, cvHW - 10); } }
+  function mapLegendW(ctxW, cvWW, cvHW) {
+    const rowsW = []; rowsW.push(['#ffffff', '➤', 'You']); rowsW.push(['#ffd23f', '■', 'Objective / mission']); rowsW.push(['#2b2f36', 'G', 'Garage — RONIN KAI HQ']); rowsW.push(['#ff8c1a', 'M', 'RONIN MART supermarket']); rowsW.push(['#ffffff', '⌂', 'Safehouse (HQ)']); rowsW.push(['#2e6fb7', '●', 'RBPD police']); rowsW.push(['#ff2fd6', '━', 'GPS route']);
+    const panelWW = 218, panelHW = 16 + rowsW.length * 19 + 8, panelXW = 12, panelYW = cvHW - panelHW - 12;
+    ctxW.save();
+    ctxW.fillStyle = 'rgba(8,10,16,0.72)'; ctxW.beginPath();
+    if (ctxW.roundRect) ctxW.roundRect(panelXW, panelYW, panelWW, panelHW, 8); else ctxW.rect(panelXW, panelYW, panelWW, panelHW);
+    ctxW.fill(); ctxW.strokeStyle = 'rgba(255,255,255,0.25)'; ctxW.lineWidth = 1; ctxW.stroke();
+    ctxW.textAlign = 'left'; ctxW.textBaseline = 'middle'; ctxW.font = 'bold 11px Arial, sans-serif'; ctxW.fillStyle = '#ffd9ae'; ctxW.fillText('LEGEND', panelXW + 12, panelYW + 13);
+    ctxW.font = '12px Arial, sans-serif';
+    rowsW.forEach((rowW, idxW) => { const rowYW = panelYW + 16 + 10 + idxW * 19; ctxW.fillStyle = rowW[0]; ctxW.font = 'bold 12px Arial, sans-serif'; ctxW.fillText(rowW[1], panelXW + 12, rowYW); ctxW.font = '12px Arial, sans-serif'; ctxW.fillStyle = '#e8eef4'; ctxW.fillText(rowW[2], panelXW + 34, rowYW); });
+    ctxW.restore(); }
+  function chipDrawW(ctxW, pxW, pyW, sizeW, bgW, glyphW, fgW) {
+    ctxW.fillStyle = bgW; const halfW = sizeW;
+    ctxW.beginPath();
+    if (ctxW.roundRect) ctxW.roundRect(pxW - halfW / 2, pyW - halfW / 2, halfW, halfW, 3); else ctxW.rect(pxW - halfW / 2, pyW - halfW / 2, halfW, halfW);
+    ctxW.fill(); ctxW.fillStyle = fgW || '#14100a'; ctxW.font = `bold ${Math.round(halfW * 0.72)}px Arial, sans-serif`; ctxW.textAlign = 'center'; ctxW.textBaseline = 'middle'; ctxW.fillText(glyphW, pxW, pyW + 1); }
+  function tagUnderW(ctxW, pxW, pyW, sizeW, txtW, dxW, optsW) {
+    if (!optsW.tags) return;
+    ctxW.font = 'bold 10px Arial, sans-serif'; ctxW.textAlign = 'center'; ctxW.textBaseline = 'top'; ctxW.lineWidth = 3; ctxW.strokeStyle = 'rgba(250,246,230,0.9)';
+    ctxW.strokeText(txtW, pxW + (dxW || 0), pyW + sizeW / 2 + 2); ctxW.fillStyle = '#3a2f1c'; ctxW.fillText(txtW, pxW + (dxW || 0), pyW + sizeW / 2 + 2); }
+  function blipsW(ctxW, projW, nowW, optsW) {
+    const heroW = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
+    { const [hqXW, hqYW] = projW(G.hq.x, G.hq.z); chipDrawW(ctxW, hqXW, hqYW, optsW.chipSize, '#ffffff', '⌂'); tagUnderW(ctxW, hqXW, hqYW, optsW.chipSize, 'SAFEHOUSE', -16, optsW); }
+    { const [garXW, garYW] = projW(G.hq.garage.x, G.hq.garage.z); chipDrawW(ctxW, garXW, garYW, optsW.chipSize, '#2b2f36', 'G', '#ffffff'); tagUnderW(ctxW, garXW, garYW, optsW.chipSize, 'RONIN KAI HQ', 18, optsW); }
     if (G.landmarks && G.landmarks.market) {
-      const mkt = G.landmarks.market; const [mx, my] = proj(mkt.x, mkt.z);
-      if (opts.tags) { drawGlyphChip(pen, mx, my, opts.chipSize, '#ff8c1a', 'M', '#ffffff'); tagDraw(mx, my, opts.chipSize, 'RONIN MART'); }
-      else if (mx > -14 && my > -14 && mx < 234 && my < 234) {
-        pen.beginPath(); pen.arc(mx, my, 6.5, 0, Math.PI * 2); pen.fillStyle = '#ff8c1a'; pen.fill();
-        pen.lineWidth = 2; pen.strokeStyle = '#ffffff'; pen.stroke(); pen.fillStyle = '#ffffff'; pen.font = 'bold 9px Arial, sans-serif'; pen.textAlign = 'center'; pen.textBaseline = 'middle'; pen.fillText('M', mx, my + 0.5);
-      }
-    }
+      const marketW = G.landmarks.market; const [mktXW, mktYW] = projW(marketW.x, marketW.z);
+      if (optsW.tags) { chipDrawW(ctxW, mktXW, mktYW, optsW.chipSize, '#ff8c1a', 'M', '#ffffff'); tagUnderW(ctxW, mktXW, mktYW, optsW.chipSize, 'RONIN MART', undefined, optsW); }
+      else if (mktXW > -14 && mktYW > -14 && mktXW < 234 && mktYW < 234) {
+        ctxW.beginPath(); ctxW.arc(mktXW, mktYW, 6.5, 0, Math.PI * 2); ctxW.fillStyle = '#ff8c1a'; ctxW.fill();
+        ctxW.lineWidth = 2; ctxW.strokeStyle = '#ffffff'; ctxW.stroke(); ctxW.fillStyle = '#ffffff'; ctxW.font = 'bold 9px Arial, sans-serif'; ctxW.textAlign = 'center'; ctxW.textBaseline = 'middle'; ctxW.fillText('M', mktXW, mktYW + 0.5); } }
     if (G.cops) {
-      G.cops.forEach((cop) => {
-        const [cx, cy] = proj(cop.x, cop.z);
-        pen.beginPath(); pen.arc(cx, cy, 4, 0, Math.PI * 2); pen.fillStyle = '#2e6fb7'; pen.fill();
-        const flash = 0.35 + (0.65 * Math.abs(Math.sin(tNow * 5)));
-        pen.beginPath(); pen.arc(cx, cy, 6.5, 0, Math.PI * 2); pen.strokeStyle = `rgba(255,60,60,${flash.toFixed(2)})`; pen.lineWidth = 2; pen.stroke();
-      });
-    }
+      for (const copW of G.cops) {
+        const [copXW, copYW] = projW(copW.x, copW.z);
+        ctxW.beginPath(); ctxW.arc(copXW, copYW, 4, 0, Math.PI * 2); ctxW.fillStyle = '#2e6fb7'; ctxW.fill();
+        const flashW = 0.35 + (0.65 * Math.abs(Math.sin(nowW * 5)));
+        ctxW.beginPath(); ctxW.arc(copXW, copYW, 6.5, 0, Math.PI * 2); ctxW.strokeStyle = `rgba(255,60,60,${flashW.toFixed(2)})`; ctxW.lineWidth = 2; ctxW.stroke(); } }
     if (G.heli?.group) {
-      const spot = G.heli.group.position; const [hx, hy] = proj(spot.x, spot.z);
-      pen.beginPath(); pen.arc(hx, hy, 5, 0, Math.PI * 2); pen.fillStyle = '#2e6fb7'; pen.fill();
-      pen.fillStyle = '#ffffff'; pen.font = 'bold 8px Arial, sans-serif'; pen.textAlign = 'center'; pen.textBaseline = 'middle'; pen.fillText('H', hx, hy + 0.5);
-    }
-    if (G.objective) { const [ox, oy] = proj(G.objective.x, G.objective.z); drawGlyphChip(pen, ox, oy, opts.chipSize + 2, '#ffd23f', G.objective.letter || '!'); }
-    const [ax, ay] = proj(actor.x, actor.z); const heading = G.car ? G.car.angle : G.player.angle;
-    pen.save(); pen.translate(ax, ay);
-    pen.rotate(Math.PI - heading); pen.beginPath();
-    const arrowLen = opts.arrowSize;
-    pen.moveTo(0, -arrowLen); pen.lineTo(arrowLen * 0.62, arrowLen * 0.75); pen.lineTo(0, arrowLen * 0.35); pen.lineTo(-arrowLen * 0.62, arrowLen * 0.75); pen.closePath();
-    pen.fillStyle = '#ffffff'; pen.fill(); pen.lineWidth = 2; pen.strokeStyle = '#14100a'; pen.stroke(); pen.restore();
-  }
-  // The mini-map's static layer (land/water/roads/blocks at world
-  // scale) is painted ONCE onto an offscreen canvas; each frame just
-  // blits the window centred on the player, then redraws only the
-  // cheap dynamic parts (route and blips) over it.
-  let staticCv = null;
-  function staticMinimap() {
-    if (staticCv) return staticCv;
-    const SIZE = 1320;
-    const cv = document.createElement('canvas'); cv.width = SIZE; cv.height = SIZE;
-    const pen = cv.getContext('2d'); const proj = (px, pz) => [px + CFG.half, pz + CFG.half];
-    drawMapBase(pen, SIZE, SIZE, proj, CFG.world, { washAlpha: 0.07, labels: false, waves: false, routeFrom: null });
-    staticCv = cv; return cv;
-  }
-  const HUB_RADIUS = 13; const HUB_FILL = 'rgba(10,12,16,0.55)'; const HUB_RING = 'rgba(255,255,255,0.85)'; const HUB_LINEW = 2;
-  function drawMinimap(tNow) {
-    if (!mmPen || !els.minimap) return;
-    const cvW = els.minimap.width, cvH = els.minimap.height;
-    const actor = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    const spanM = 340;
-    const pxPer = cvW / spanM; const proj = (px, pz) => [cvW / 2 + ((px - actor.x) * pxPer), cvH / 2 + ((pz - actor.z) * pxPer)];
-    mmPen.save();
-    mmPen.beginPath(); mmPen.arc(cvW / 2, cvH / 2, cvW / 2, 0, Math.PI * 2); mmPen.clip();
-    mmPen.fillStyle = '#3a7bd5'; mmPen.fillRect(0, 0, cvW, cvH);
-    const img = staticMinimap();
-    mmPen.imageSmoothingEnabled = true;
-    mmPen.drawImage(img, actor.x - spanM / 2 + CFG.half, actor.z - spanM / 2 + CFG.half, spanM, spanM, 0, 0, cvW, cvH);
-    if (G.objective) {
-      try {
-        const routePts = roadRoute(G, actor, G.objective) || [];
-        if (routePts.length > 1) {
-          mmPen.lineJoin = 'round'; mmPen.lineCap = 'round';
-          [0, 1].forEach((passIdx) => { mmPen.strokeStyle = passIdx === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6'; mmPen.lineWidth = passIdx === 0 ? 6.5 : 4.16; mmPen.beginPath(); routePts.forEach((pt, idx) => { const [mx, my] = proj(pt.x, pt.z); if (idx === 0) mmPen.moveTo(mx, my); else mmPen.lineTo(mx, my); }); mmPen.stroke(); });
-        }
-      } catch (err) { /* the route is optional */ }
-    }
-    mmPen.beginPath(); mmPen.arc(cvW / 2, cvH / 2, HUB_RADIUS, 0, Math.PI * 2); mmPen.fillStyle = HUB_FILL; mmPen.fill(); mmPen.lineWidth = HUB_LINEW; mmPen.strokeStyle = HUB_RING; mmPen.stroke();
-    drawBlips(mmPen, proj, tNow, { chipSize: 13 * 1.3, arrowSize: 8 * 1.3 });
-    mmPen.restore();
-    mmPen.beginPath(); mmPen.arc(cvW / 2, cvH / 2, cvW / 2 - 1.5, 0, Math.PI * 2); mmPen.lineWidth = 3; mmPen.strokeStyle = 'rgba(10,12,16,0.85)'; mmPen.stroke();
-    mmPen.fillStyle = '#ffffff'; mmPen.font = 'bold 13px Arial, sans-serif'; mmPen.textAlign = 'center'; mmPen.textBaseline = 'top'; mmPen.shadowColor = 'rgba(0,0,0,0.8)'; mmPen.shadowBlur = 3; mmPen.fillText('N', cvW / 2, 7); mmPen.shadowBlur = 0;
-  }
-  function drawBigMap() {
-    if (!bmPen || !els.bigmap) return;
-    const cvW = els.bigmap.width, cvH = els.bigmap.height; const marg = 46;
-    const scale = Math.min((cvW - marg * 2) / CFG.world, (cvH - marg * 2) / CFG.world) * bmView.zoom;
-    const orgX = cvW / 2, orgY = cvH / 2; const proj = (px, pz) => [orgX + ((px - bmView.cx) * scale), orgY + ((pz - bmView.cz) * scale)];
-    const actor = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    bmPen.save(); bmPen.beginPath(); bmPen.rect(0, 0, cvW, cvH); bmPen.clip();
-    drawMapBase(bmPen, cvW, cvH, proj, CFG.world / bmView.zoom, { washAlpha: 0.12, labels: true, waves: true, routeFrom: actor });
-    const nowT = performance.now() / 1000;
-    drawBlips(bmPen, proj, nowT, { chipSize: 20, arrowSize: 13, tags: true });
-    bmPen.restore();
-    bmPen.fillStyle = '#2c2114'; bmPen.font = 'bold 34px Arial, sans-serif'; bmPen.textAlign = 'left'; bmPen.textBaseline = 'top';
-    try { bmPen.letterSpacing = '6px'; } catch (err) {}
-    bmPen.fillText('STREET SAMURAI', 22, 16);
-    try { bmPen.letterSpacing = '0px'; } catch (err) {}
-  }
-  // Speedometer dial.
-  let nosAmt = 1;
-  function drawSpeedo(dt) {
-    if (!spPen || !els.speedo) return;
-    const cvW = els.speedo.width, cvH = els.speedo.height;
-    spPen.clearRect(0, 0, cvW, cvH);
-    const cxDial = cvW / 2, cyDial = 74, radDial = 56; const topSpeed = 280;
-    const angStart = Math.PI * 0.75, angEnd = Math.PI * 0.75 + Math.PI * 1.5;
-    spPen.beginPath(); spPen.arc(cxDial, cyDial, radDial + 8, 0, Math.PI * 2); spPen.fillStyle = 'rgba(10,12,18,0.72)'; spPen.fill();
-    spPen.beginPath(); spPen.arc(cxDial, cyDial, radDial, angStart + (220 / topSpeed) * (angEnd - angStart), angEnd); spPen.strokeStyle = '#e33b3b'; spPen.lineWidth = 5; spPen.stroke();
-    spPen.fillStyle = '#e8e8e8'; spPen.font = '9px Arial, sans-serif'; spPen.textAlign = 'center'; spPen.textBaseline = 'middle';
-    function paintOneTick(tickVal) {
-      const angTick = angStart + ((tickVal / topSpeed) * (angEnd - angStart));
-      const cosT = Math.cos(angTick); const sinT = Math.sin(angTick);
-      const inX = cxDial + (cosT * (radDial - 4)), inY = cyDial + (sinT * (radDial - 4));
-      const outX = cxDial + (cosT * radDial), outY = cyDial + (sinT * radDial);
-      spPen.beginPath(); spPen.moveTo(inX, inY); spPen.lineTo(outX, outY); spPen.strokeStyle = tickVal > 220 ? '#e33b3b' : '#cfcfcf'; spPen.lineWidth = 2; spPen.stroke();
-      if (tickVal % 40 === 0) { const labX = cxDial + (cosT * (radDial - 13)), labY = cyDial + (sinT * (radDial - 13)); spPen.fillText(String(tickVal), labX, labY); }
-    }
-    let tickVal = 0;
-    while (tickVal <= topSpeed) { paintOneTick(tickVal); tickVal += 20; }
-    const kmh = Math.min(topSpeed, Math.abs(G.speedKmh || 0)); const needleAng = angStart + ((kmh / topSpeed) * (angEnd - angStart));
-    spPen.beginPath(); spPen.moveTo(cxDial - Math.cos(needleAng) * 8, cyDial - Math.sin(needleAng) * 8); spPen.lineTo(cxDial + Math.cos(needleAng) * (radDial - 8), cyDial + Math.sin(needleAng) * (radDial - 8)); spPen.strokeStyle = '#ff7a1a'; spPen.lineWidth = 3; spPen.stroke();
-    spPen.beginPath(); spPen.arc(cxDial, cyDial, 4.5, 0, Math.PI * 2); spPen.fillStyle = '#f2f2f2'; spPen.fill();
-    spPen.fillStyle = '#ffffff'; spPen.font = 'bold 19px Arial, sans-serif'; spPen.fillText(String(Math.round(kmh)), cxDial, cyDial + 26);
-    spPen.font = '8px Arial, sans-serif'; spPen.fillStyle = '#aab'; spPen.fillText('km/h', cxDial, cyDial + 38);
-    if (G.flags.nosActive) nosAmt = Math.max(0, nosAmt - dt * 0.45); else nosAmt = Math.min(1, nosAmt + dt * 0.12);
-    const nosW = 74, nosX = cxDial - nosW / 2, nosY = cvH - 14;
-    spPen.fillStyle = 'rgba(255,255,255,0.18)'; spPen.fillRect(nosX, nosY, nosW, 6);
-    spPen.fillStyle = '#37c8ff'; spPen.fillRect(nosX, nosY, nosW * nosAmt, 6);
-    spPen.fillStyle = '#9adfff'; spPen.font = 'bold 8px Arial, sans-serif'; spPen.fillText('NOS', cxDial, nosY - 6);
+      const spotW = G.heli.group.position; const [heliXW, heliYW] = projW(spotW.x, spotW.z);
+      ctxW.beginPath(); ctxW.arc(heliXW, heliYW, 5, 0, Math.PI * 2); ctxW.fillStyle = '#2e6fb7'; ctxW.fill();
+      ctxW.fillStyle = '#ffffff'; ctxW.font = 'bold 8px Arial, sans-serif'; ctxW.textAlign = 'center'; ctxW.textBaseline = 'middle'; ctxW.fillText('H', heliXW, heliYW + 0.5); }
+    if (G.objective) { const [objXW, objYW] = projW(G.objective.x, G.objective.z); chipDrawW(ctxW, objXW, objYW, optsW.chipSize + 2, '#ffd23f', G.objective.letter || '!'); }
+    const [heroPxW, heroPyW] = projW(heroW.x, heroW.z); const headingW = G.car ? G.car.angle : G.player.angle;
+    ctxW.save(); ctxW.translate(heroPxW, heroPyW);
+    ctxW.rotate(Math.PI - headingW); ctxW.beginPath();
+    const arrowW = optsW.arrowSize;
+    ctxW.moveTo(0, -arrowW); ctxW.lineTo(arrowW * 0.62, arrowW * 0.75); ctxW.lineTo(0, arrowW * 0.35); ctxW.lineTo(-arrowW * 0.62, arrowW * 0.75); ctxW.closePath();
+    ctxW.fillStyle = '#ffffff'; ctxW.fill(); ctxW.lineWidth = 2; ctxW.strokeStyle = '#14100a'; ctxW.stroke(); ctxW.restore(); }
+  let cachedStaticW = null;
+  function staticMiniW() {
+    if (cachedStaticW) return cachedStaticW;
+    const SIZE_W = 1320;
+    const cvW = document.createElement('canvas'); cvW.width = SIZE_W; cvW.height = SIZE_W;
+    const ctxW = cvW.getContext('2d'); const projW = (pxW, pzW) => [pxW + CFG.half, pzW + CFG.half];
+    mapBaseW(ctxW, SIZE_W, SIZE_W, projW, CFG.world, { washAlpha: 0.07, labels: false, waves: false, routeFrom: null });
+    cachedStaticW = cvW; return cvW; }
+  const HUB_R_W = 13; const HUB_BG_W = 'rgba(10,12,16,0.55)'; const HUB_EDGE_W = 'rgba(255,255,255,0.85)'; const HUB_W_W = 2;
+  function routeStrokeW(ctxW, projW, heroW) {
+    try {
+      const routeW = roadRoute(G, heroW, G.objective) || [];
+      if (routeW.length > 1) {
+        ctxW.lineJoin = 'round'; ctxW.lineCap = 'round';
+        const passesW = [0, 1];
+        for (const passW of passesW) { ctxW.strokeStyle = passW === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6'; ctxW.lineWidth = passW === 0 ? 6.5 : 4.16; ctxW.beginPath(); routeW.forEach((ptW, idxW) => { const [mxW, myW] = projW(ptW.x, ptW.z); if (idxW === 0) ctxW.moveTo(mxW, myW); else ctxW.lineTo(mxW, myW); }); ctxW.stroke(); } }
+    } catch (errW) { /* route optional */ } }
+  function miniDrawW(nowW) {
+    if (!mmCtxW || !E.minimap) return;
+    const cvWW = E.minimap.width, cvHW = E.minimap.height;
+    const heroW = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
+    const spanW = 340;
+    const pxPerUnitW = cvWW / spanW; const projW = (pxW, pzW) => [cvWW / 2 + ((pxW - heroW.x) * pxPerUnitW), cvHW / 2 + ((pzW - heroW.z) * pxPerUnitW)];
+    mmCtxW.save();
+    mmCtxW.beginPath(); mmCtxW.arc(cvWW / 2, cvHW / 2, cvWW / 2, 0, Math.PI * 2); mmCtxW.clip();
+    mmCtxW.fillStyle = '#3a7bd5'; mmCtxW.fillRect(0, 0, cvWW, cvHW);
+    const imgW = staticMiniW();
+    mmCtxW.imageSmoothingEnabled = true;
+    mmCtxW.drawImage(imgW, heroW.x - spanW / 2 + CFG.half, heroW.z - spanW / 2 + CFG.half, spanW, spanW, 0, 0, cvWW, cvHW);
+    if (G.objective) routeStrokeW(mmCtxW, projW, heroW);
+    mmCtxW.beginPath(); mmCtxW.arc(cvWW / 2, cvHW / 2, HUB_R_W, 0, Math.PI * 2); mmCtxW.fillStyle = HUB_BG_W; mmCtxW.fill(); mmCtxW.lineWidth = HUB_W_W; mmCtxW.strokeStyle = HUB_EDGE_W; mmCtxW.stroke();
+    blipsW(mmCtxW, projW, nowW, { chipSize: 13 * 1.3, arrowSize: 8 * 1.3 });
+    mmCtxW.restore();
+    mmCtxW.beginPath(); mmCtxW.arc(cvWW / 2, cvHW / 2, cvWW / 2 - 1.5, 0, Math.PI * 2); mmCtxW.lineWidth = 3; mmCtxW.strokeStyle = 'rgba(10,12,16,0.85)'; mmCtxW.stroke();
+    mmCtxW.fillStyle = '#ffffff'; mmCtxW.font = 'bold 13px Arial, sans-serif'; mmCtxW.textAlign = 'center'; mmCtxW.textBaseline = 'top'; mmCtxW.shadowColor = 'rgba(0,0,0,0.8)'; mmCtxW.shadowBlur = 3; mmCtxW.fillText('N', cvWW / 2, 7); mmCtxW.shadowBlur = 0; }
+  function bigMapW() {
+    if (!bmCtxW || !E.bigmap) return;
+    const cvWW = E.bigmap.width, cvHW = E.bigmap.height; const margW = 46;
+    const scaleW = Math.min((cvWW - margW * 2) / CFG.world, (cvHW - margW * 2) / CFG.world) * viewW.zoom;
+    const orgXW = cvWW / 2, orgYW = cvHW / 2; const projW = (pxW, pzW) => [orgXW + ((pxW - viewW.cx) * scaleW), orgYW + ((pzW - viewW.cz) * scaleW)];
+    const heroW = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
+    bmCtxW.save(); bmCtxW.beginPath(); bmCtxW.rect(0, 0, cvWW, cvHW); bmCtxW.clip();
+    mapBaseW(bmCtxW, cvWW, cvHW, projW, CFG.world / viewW.zoom, { washAlpha: 0.12, labels: true, waves: true, routeFrom: heroW });
+    const nowW = performance.now() / 1000;
+    blipsW(bmCtxW, projW, nowW, { chipSize: 20, arrowSize: 13, tags: true });
+    bmCtxW.restore();
+    bmCtxW.fillStyle = '#2c2114'; bmCtxW.font = 'bold 34px Arial, sans-serif'; bmCtxW.textAlign = 'left'; bmCtxW.textBaseline = 'top';
+    try { bmCtxW.letterSpacing = '6px'; } catch (errW) {}
+    bmCtxW.fillText('STREET SAMURAI', 22, 16);
+    try { bmCtxW.letterSpacing = '0px'; } catch (errW) {} }
+  let nosLevelW = 1;
+  function speedoTicksW(maxKmhW, sweepStartW, sweepEndW, dialXW, dialYW, dialRW) {
+    spCtxW.fillStyle = '#e8e8e8'; spCtxW.font = '9px Arial, sans-serif'; spCtxW.textAlign = 'center'; spCtxW.textBaseline = 'middle';
+    let tickW = 0;
+    while (!(tickW > maxKmhW)) {
+      const tickAngW = sweepStartW + ((tickW / maxKmhW) * (sweepEndW - sweepStartW));
+      const cosW = Math.cos(tickAngW); const sinW = Math.sin(tickAngW);
+      const innerXW = dialXW + (cosW * (dialRW - 4)), innerYW = dialYW + (sinW * (dialRW - 4));
+      const outerXW = dialXW + (cosW * dialRW), outerYW = dialYW + (sinW * dialRW);
+      spCtxW.beginPath(); spCtxW.moveTo(innerXW, innerYW); spCtxW.lineTo(outerXW, outerYW); spCtxW.strokeStyle = tickW > 220 ? '#e33b3b' : '#cfcfcf'; spCtxW.lineWidth = 2; spCtxW.stroke();
+      if (tickW % 40 === 0) { const labXW = dialXW + (cosW * (dialRW - 13)), labYW = dialYW + (sinW * (dialRW - 13)); spCtxW.fillText(String(tickW), labXW, labYW); }
+      tickW += 20; } }
+  function speedoDrawW(dtW) {
+    if (!spCtxW || !E.speedo) return;
+    const cvWW = E.speedo.width, cvHW = E.speedo.height;
+    spCtxW.clearRect(0, 0, cvWW, cvHW);
+    const dialXW = cvWW / 2, dialYW = 74, dialRW = 56; const maxKmhW = 280;
+    const sweepStartW = Math.PI * 0.75, sweepEndW = Math.PI * 0.75 + Math.PI * 1.5;
+    spCtxW.beginPath(); spCtxW.arc(dialXW, dialYW, dialRW + 8, 0, Math.PI * 2); spCtxW.fillStyle = 'rgba(10,12,18,0.72)'; spCtxW.fill();
+    spCtxW.beginPath(); spCtxW.arc(dialXW, dialYW, dialRW, sweepStartW + (220 / maxKmhW) * (sweepEndW - sweepStartW), sweepEndW); spCtxW.strokeStyle = '#e33b3b'; spCtxW.lineWidth = 5; spCtxW.stroke();
+    speedoTicksW(maxKmhW, sweepStartW, sweepEndW, dialXW, dialYW, dialRW);
+    const kmhW = Math.min(maxKmhW, Math.abs(G.speedKmh || 0)); const needleW = sweepStartW + ((kmhW / maxKmhW) * (sweepEndW - sweepStartW));
+    spCtxW.beginPath(); spCtxW.moveTo(dialXW - Math.cos(needleW) * 8, dialYW - Math.sin(needleW) * 8); spCtxW.lineTo(dialXW + Math.cos(needleW) * (dialRW - 8), dialYW + Math.sin(needleW) * (dialRW - 8)); spCtxW.strokeStyle = '#ff7a1a'; spCtxW.lineWidth = 3; spCtxW.stroke();
+    spCtxW.beginPath(); spCtxW.arc(dialXW, dialYW, 4.5, 0, Math.PI * 2); spCtxW.fillStyle = '#f2f2f2'; spCtxW.fill();
+    spCtxW.fillStyle = '#ffffff'; spCtxW.font = 'bold 19px Arial, sans-serif'; spCtxW.fillText(String(Math.round(kmhW)), dialXW, dialYW + 26);
+    spCtxW.font = '8px Arial, sans-serif'; spCtxW.fillStyle = '#aab'; spCtxW.fillText('km/h', dialXW, dialYW + 38);
+    if (G.flags.nosActive) nosLevelW = Math.max(0, nosLevelW - dtW * 0.45); else nosLevelW = Math.min(1, nosLevelW + dtW * 0.12);
+    const nosWW = 74, nosXW = dialXW - nosWW / 2, nosYW = cvHW - 14;
+    spCtxW.fillStyle = 'rgba(255,255,255,0.18)'; spCtxW.fillRect(nosXW, nosYW, nosWW, 6);
+    spCtxW.fillStyle = '#37c8ff'; spCtxW.fillRect(nosXW, nosYW, nosWW * nosLevelW, 6);
+    spCtxW.fillStyle = '#9adfff'; spCtxW.font = 'bold 8px Arial, sans-serif'; spCtxW.fillText('NOS', dialXW, nosYW - 6);
     if (G.flags.drifting) {
-      spPen.beginPath(); spPen.arc(cvW - 16, 14, 5, 0, Math.PI * 2); spPen.fillStyle = '#e879ff'; spPen.fill();
-      spPen.fillStyle = '#e879ff'; spPen.font = 'bold 8px Arial, sans-serif'; spPen.fillText('DRIFT', cvW - 16, 26);
-    }
-  }
-  // Workshop (garage) panel.
-  let garShown = false, garTick = 0;
-  function drawGarage() {
-    if (!els.garagePanel) return;
-    const rows = G.garageList || []; let html = '<div class="garageTitle">HQ GARAGE — RONIN BAY</div>';
-    rows.slice(0, 9).forEach((row, idx) => { const price = row.owned ? 'OWNED' : moneyText(row.price); const mark = row.current ? ' ▶' : ''; html = html + `<div class="garageRow${row.current ? ' current' : ''}"><span>${idx + 1}. ${row.name}${mark}</span><span>${price}</span></div>`; });
-    html = html + '<div class="garageFoot">1-9 select · E close</div>';
-    els.garagePanel.innerHTML = html; els.garagePanel.style.display = 'block';
-  }
-  // Per-frame updates plus the slower panel refreshes.
-  const textCache = {};
-  function memoText(node, key, val) { if (!node) return; if (textCache[key] !== val) { textCache[key] = val; node.textContent = val; } }
-  let slowTimer = 0;
-  G.updaters.push((frameG, dt) => {
-    const nowSec = performance.now() / 1000;
-    if (isStagedShot()) G.bustMeter = 0;
-    memoText(els.money, 'money', moneyText(G.money));
-    memoText(els.rep, 'rep', String(Math.round(G.rep || 0)));
-    memoText(els.rank, 'rank', CLUB_RANKS[G.rankIdx || 0] || 'Rookie');
-    if (els.stars) { const starCount = Math.round(G.wanted || 0); els.stars.style.display = starCount > 0 ? 'block' : 'none'; memoText(els.stars, 'stars', '★'.repeat(starCount)); }
-    if (els.healthBar) { const hp = Math.max(0, Math.min(100, G.playerHealth ?? 100)); els.healthBar.style.width = `${hp}%`; els.healthBar.style.backgroundColor = hp < 30 ? '#e33b3b' : ''; }
-    if (els.carBar) els.carBar.style.width = `${Math.max(0, Math.min(100, G.car ? (G.car.health ?? 100) : 100))}%`;
-    if (els.objective) {
-      const actor = G.car ? G.car : G.player;
-      if (G.objective) { const distM = Math.round(Math.hypot(G.objective.x - actor.x, G.objective.z - actor.z)); memoText(els.objective, 'obj', `${G.objective.label} — ${distM}m`); }
-      else memoText(els.objective, 'obj', 'Free roam — find a letter blip');
-    }
-    if (els.wasted) els.wasted.style.display = G.flags.wasted ? 'flex' : 'none';
-    if (els.busted) els.busted.style.display = G.flags.busted ? 'flex' : 'none';
-    {
-      const elapsed = G.elapsed || 0;
-      if (!flowState) {
-        const actor = G.car || G.player;
-        if (actor && (Math.abs(actor.x) > 668 || Math.abs(actor.z) > 668)) G.damagePlayer(22 * dt);
-        else if ((G.playerHealth ?? 100) < 100 && elapsed - (G._lastDamageAt ?? -99) > 8) G.playerHealth = Math.min(100, (G.playerHealth ?? 100) + (0.8 * dt));
-      } else if (!flowState.staging) {
-        flowState.t = flowState.t - dt;
-        const ov = flowState.kind === 'wasted' ? ovWasted : ovBusted;
-        if (ov) { const grow = 1 - Math.max(0, flowState.t) / 2.8; ov.title.style.transform = `scale(${(1 + grow * 0.16).toFixed(3)})`; }
-        if (!(flowState.t > 0)) resolveOverlay();
-      }
-      if (dispTimer > 0 && els.dispatch) { dispTimer = dispTimer - dt; if (!(dispTimer > 0)) els.dispatch.style.display = 'none'; else if (dispTimer < 1) els.dispatch.style.opacity = dispTimer.toFixed(2); }
-      if (els.bustWrap) {
-        const meter = Math.max(0, Math.min(1, G.bustMeter || 0));
-        els.bustWrap.style.display = meter > 0 ? 'block' : 'none';
-        if (meter > 0) { if (els.bustFill) els.bustFill.style.width = `${Math.round(meter * 100)}%`; if (els.bustLabel) els.bustLabel.style.opacity = meter > 0.7 ? (Math.sin(nowSec * 10) > 0 ? '1' : '0.25') : '1'; }
-      }
-    }
-    if (els.radioChip) {
-      let station = G.radioName || null;
-      if (!station) {
-        try { const cur = G.audio && G.audio.radio && G.audio.radio.current ? G.audio.radio.current() : null; if (cur) station = cur.name; } catch (err) { /* the chip stays hidden */ }
-      }
-      const stagedSeat = !!(G.shotMode && G.car); const showRadio = !!((G.flags.inCar || stagedSeat) && station);
-      els.radioChip.style.display = showRadio ? 'block' : 'none';
-      if (showRadio) memoText(els.radioChip, 'radio', `♪ ${station}`);
-    }
-    drawMinimap(nowSec); drawSpeedo(dt);
-    if (G.paused && els.pauseMenu && els.pauseMenu.style.display !== 'none') drawBigMap();
-    if (G.flags.garageOpen && !garShown) drawGarage();
-    if (!G.flags.garageOpen && garShown && els.garagePanel) els.garagePanel.style.display = 'none';
-    garShown = !!G.flags.garageOpen;
-    if (G.flags.garageOpen) { garTick = garTick - dt; if (!(garTick > 0)) { garTick = 0.5; drawGarage(); } }
-    slowTimer = slowTimer - dt;
-    if (!(slowTimer > 0)) {
-      slowTimer = 0.25;
-      const next = (typeof G.missionIndex === 'number' && G.missionIndex < MISSIONS.length) ? MISSIONS[G.missionIndex] : null;
-      if (els.card) {
-        const showCard = !!(next || G.missionProg);
-        els.card.style.display = showCard ? 'block' : 'none';
-        if (showCard && next) {
-          const person = CAST[next.giver];
-          if (els.cardPortrait) {
-            const nameWords = (person?.name || '?').trim().split(/\s+/);
-            els.cardPortrait.textContent = nameWords.map((word) => word[0]).join('').slice(0, 2).toUpperCase();
-            els.cardPortrait.style.background = person?.outfit?.topColor ? '#' + person.outfit.topColor.toString(16).padStart(6, '0') : '#555';
-          }
-          memoText(els.cardGiver, 'giver', person?.name || next.giver || '');
-          memoText(els.cardText, 'cardText', `${next.title} — ${next.blurb}`);
-        }
-        memoText(els.cardProg, 'prog', G.missionProg || 'Go to the blip');
-      }
-      const statusMap = { driver: G.car && G.flags.inCar ? (G.car.spec?.name || G.car.specId || 'Driving') : 'On foot', mechanic: !G.car || !G.flags.inCar ? '—' : ((G.car.health ?? 100) > 70 ? 'Ready' : (G.car.health ?? 100) >= 30 ? 'Damaged' : 'Wrecked'), lookout: (G.wanted || 0) > 0 ? 'RBPD ACTIVE' : (next ? `Next: ${next.title}` : 'Clear') };
-      document.querySelectorAll('.crewCard').forEach((card) => { const sEl = card.querySelector('.crewStatus'); if (sEl && statusMap[card.dataset.role] !== undefined) sEl.textContent = statusMap[card.dataset.role]; });
-      if (els.copPanel && els.copRows) {
-        const showPanel = (G.wanted || 0) >= 1;
-        els.copPanel.style.display = showPanel ? 'block' : 'none';
-        if (showPanel) {
-          const actor = G.car ? { x: G.car.x, z: G.car.z, angle: G.car.angle } : { x: G.player.x, z: G.player.z, angle: G.player.angle };
-          const units = [];
-          (G.cops || []).forEach((unit) => { units.push({ name: unit.specId === 'police-suv' ? 'RBPD Enforcer' : 'RBPD Interceptor', d: Math.hypot(unit.x - actor.x, unit.z - actor.z), v: unit }); });
-          if (G.heli?.group) { const spot = G.heli.group.position; units.push({ name: 'RBPD Air Unit', d: Math.hypot(spot.x - actor.x, spot.z - actor.z), heli: true }); }
-          units.sort((a, b) => a.d - b.d);
-          const headHtml = `<div class="copHead">RBPD RESPONSE — ${units.length} UNITS</div>`;
-          const rowsHtml = units.slice(0, 4).map((rec) => {
-            let tactic = 'PURSUIT';
-            if (rec.heli) tactic = 'TRACKING';
-            else if (rec.v) {
-              const dot = Math.cos((rec.v.angle || 0) - (actor.angle || 0));
-              const bearing = Math.atan2(actor.x - rec.v.x, actor.z - rec.v.z);
-              const closing = Math.abs(((bearing - (rec.v.angle || 0) + Math.PI * 3) % (Math.PI * 2)) - Math.PI) > 2.4 && (rec.v.speed || 0) > 12;
-              if (rec.d < 14 && closing) tactic = 'RAMMING';
-              else if (dot > 0.3 && rec.d < 60) tactic = 'INTERCEPT';
-            }
-            return `<div class="copRow"><span>${rec.name}</span><span>${Math.round(rec.d)}m</span><span>${tactic}</span></div>`;
-          }).join('');
-          els.copRows.innerHTML = headHtml + rowsHtml;
-        }
-      }
-    }
+      spCtxW.beginPath(); spCtxW.arc(cvWW - 16, 14, 5, 0, Math.PI * 2); spCtxW.fillStyle = '#e879ff'; spCtxW.fill();
+      spCtxW.fillStyle = '#e879ff'; spCtxW.font = 'bold 8px Arial, sans-serif'; spCtxW.fillText('DRIFT', cvWW - 16, 26); } }
+  let garageShownW = false, garageTickW = 0;
+  function garageDrawW() {
+    if (!E.garagePanel) return;
+    const rowsW = G.garageList || []; let htmlW = '<div class="garageTitle">HQ GARAGE — RONIN BAY</div>';
+    const shownW = rowsW.slice(0, 9);
+    shownW.forEach((rowW, idxW) => { const priceW = rowW.owned ? 'OWNED' : moneyTextW(rowW.price); const markW = rowW.current ? ' ▶' : ''; htmlW = htmlW + `<div class="garageRow${rowW.current ? ' current' : ''}"><span>${idxW + 1}. ${rowW.name}${markW}</span><span>${priceW}</span></div>`; });
+    htmlW = htmlW + '<div class="garageFoot">1-9 select · E close</div>';
+    E.garagePanel.innerHTML = htmlW; E.garagePanel.style.display = 'block'; }
+  const memoW = {};
+  function memoSetW(nodeW, keyW, valW) { if (!nodeW) return; if (memoW[keyW] !== valW) { memoW[keyW] = valW; nodeW.textContent = valW; } }
+  let slowSecsW = 0;
+  function flowTickW(dtW, nowSecsW) {
+    const elapsedW = G.elapsed || 0;
+    if (!flowW) {
+      const heroW = G.car || G.player;
+      if (heroW && (Math.abs(heroW.x) > 668 || Math.abs(heroW.z) > 668)) G.damagePlayer(22 * dtW);
+      else if ((G.playerHealth ?? 100) < 100 && elapsedW - (G._lastDamageAt ?? -99) > 8) G.playerHealth = Math.min(100, (G.playerHealth ?? 100) + (0.8 * dtW));
+    } else if (!flowW.staging) {
+      flowW.t = flowW.t - dtW;
+      const ovW = flowW.kind === 'wasted' ? wastedOvW : bustedOvW;
+      if (ovW) { const growW = 1 - Math.max(0, flowW.t) / 2.8; ovW.title.style.transform = `scale(${(1 + growW * 0.16).toFixed(3)})`; }
+      if (!(flowW.t > 0)) settleW(); }
+    if (dispatchSecsW > 0 && E.dispatch) { dispatchSecsW = dispatchSecsW - dtW; if (!(dispatchSecsW > 0)) E.dispatch.style.display = 'none'; else if (dispatchSecsW < 1) E.dispatch.style.opacity = dispatchSecsW.toFixed(2); }
+    if (E.bustWrap) {
+      const meterW = Math.max(0, Math.min(1, G.bustMeter || 0));
+      E.bustWrap.style.display = meterW > 0 ? 'block' : 'none';
+      if (meterW > 0) { if (E.bustFill) E.bustFill.style.width = `${Math.round(meterW * 100)}%`; if (E.bustLabel) E.bustLabel.style.opacity = meterW > 0.7 ? (Math.sin(nowSecsW * 10) > 0 ? '1' : '0.25') : '1'; } } }
+  function radioTickW() {
+    if (!E.radioChip) return;
+    let stationW = G.radioName || null;
+    if (!stationW) {
+      try { const curW = G.audio && G.audio.radio && G.audio.radio.current ? G.audio.radio.current() : null; if (curW) stationW = curW.name; } catch (errW) { /* chip stays hidden */ } }
+    const stagedSeatW = !!(G.shotMode && G.car); const showChipW = !!((G.flags.inCar || stagedSeatW) && stationW);
+    E.radioChip.style.display = showChipW ? 'block' : 'none';
+    if (showChipW) memoSetW(E.radioChip, 'radio', `♪ ${stationW}`); }
+  function cardTickW(nextDefW) {
+    if (!E.card) return;
+    const cardVisibleW = !!(nextDefW || G.missionProg);
+    E.card.style.display = cardVisibleW ? 'block' : 'none';
+    if (cardVisibleW && nextDefW) {
+      const personW = CAST[nextDefW.giver];
+      if (E.cardPortrait) {
+        const wordsW = (personW?.name || '?').trim().split(/\s+/);
+        const lettersW = []; for (const wordW of wordsW) lettersW.push(wordW[0]);
+        E.cardPortrait.textContent = lettersW.join('').slice(0, 2).toUpperCase();
+        E.cardPortrait.style.background = personW?.outfit?.topColor ? '#' + personW.outfit.topColor.toString(16).padStart(6, '0') : '#555'; }
+      memoSetW(E.cardGiver, 'giver', personW?.name || nextDefW.giver || '');
+      memoSetW(E.cardText, 'cardText', `${nextDefW.title} — ${nextDefW.blurb}`); }
+    memoSetW(E.cardProg, 'prog', G.missionProg || 'Go to the blip'); }
+  function crewStatusW(nextDefW) {
+    const statusW = {}; statusW.driver = G.car && G.flags.inCar ? (G.car.spec?.name || G.car.specId || 'Driving') : 'On foot'; statusW.mechanic = !G.car || !G.flags.inCar ? '—' : ((G.car.health ?? 100) > 70 ? 'Ready' : (G.car.health ?? 100) >= 30 ? 'Damaged' : 'Wrecked'); statusW.lookout = (G.wanted || 0) > 0 ? 'RBPD ACTIVE' : (nextDefW ? `Next: ${nextDefW.title}` : 'Clear');
+    const cardsW = document.querySelectorAll('.crewCard');
+    for (const cardW of cardsW) { const statusNodeW = cardW.querySelector('.crewStatus'); if (statusNodeW && statusW[cardW.dataset.role] !== undefined) statusNodeW.textContent = statusW[cardW.dataset.role]; } }
+  function copPanelTickW() {
+    if (!(E.copPanel && E.copRows)) return;
+    const panelVisibleW = (G.wanted || 0) >= 1;
+    E.copPanel.style.display = panelVisibleW ? 'block' : 'none';
+    if (!panelVisibleW) return;
+    const heroW = G.car ? { x: G.car.x, z: G.car.z, angle: G.car.angle } : { x: G.player.x, z: G.player.z, angle: G.player.angle };
+    const unitsW = [];
+    for (const unitW of (G.cops || [])) unitsW.push({ name: unitW.specId === 'police-suv' ? 'RBPD Enforcer' : 'RBPD Interceptor', d: Math.hypot(unitW.x - heroW.x, unitW.z - heroW.z), v: unitW });
+    if (G.heli?.group) { const spotW = G.heli.group.position; unitsW.push({ name: 'RBPD Air Unit', d: Math.hypot(spotW.x - heroW.x, spotW.z - heroW.z), heli: true }); }
+    unitsW.sort((aW, bW) => aW.d - bW.d);
+    const headW = `<div class="copHead">RBPD RESPONSE — ${unitsW.length} UNITS</div>`;
+    const rowsTxtW = unitsW.slice(0, 4).map((unitW) => {
+      let tacticW = 'PURSUIT';
+      if (unitW.heli) tacticW = 'TRACKING';
+      else if (unitW.v) {
+        const dotW = Math.cos((unitW.v.angle || 0) - (heroW.angle || 0));
+        const bearW = Math.atan2(heroW.x - unitW.v.x, heroW.z - unitW.v.z);
+        const closingW = Math.abs(((bearW - (unitW.v.angle || 0) + Math.PI * 3) % (Math.PI * 2)) - Math.PI) > 2.4 && (unitW.v.speed || 0) > 12;
+        if (unitW.d < 14 && closingW) tacticW = 'RAMMING';
+        else if (dotW > 0.3 && unitW.d < 60) tacticW = 'INTERCEPT'; }
+      return `<div class="copRow"><span>${unitW.name}</span><span>${Math.round(unitW.d)}m</span><span>${tacticW}</span></div>`; }).join('');
+    E.copRows.innerHTML = headW + rowsTxtW; }
+  G.updaters.push((frameW, dt) => {
+    const nowSecsW = performance.now() / 1000;
+    if (stagedW()) G.bustMeter = 0;
+    memoSetW(E.money, 'money', moneyTextW(G.money));
+    memoSetW(E.rep, 'rep', String(Math.round(G.rep || 0)));
+    memoSetW(E.rank, 'rank', CLUB_RANKS[G.rankIdx || 0] || 'Rookie');
+    if (E.stars) { const starW = Math.round(G.wanted || 0); E.stars.style.display = starW > 0 ? 'block' : 'none'; memoSetW(E.stars, 'stars', '★'.repeat(starW)); }
+    if (E.healthBar) { const hpW = Math.max(0, Math.min(100, G.playerHealth ?? 100)); E.healthBar.style.width = `${hpW}%`; E.healthBar.style.backgroundColor = hpW < 30 ? '#e33b3b' : ''; }
+    if (E.carBar) E.carBar.style.width = `${Math.max(0, Math.min(100, G.car ? (G.car.health ?? 100) : 100))}%`;
+    if (E.objective) {
+      const heroW = G.car ? G.car : G.player;
+      if (G.objective) { const distW = Math.round(Math.hypot(G.objective.x - heroW.x, G.objective.z - heroW.z)); memoSetW(E.objective, 'obj', `${G.objective.label} — ${distW}m`); }
+      else memoSetW(E.objective, 'obj', 'Free roam — find a letter blip'); }
+    if (E.wasted) E.wasted.style.display = G.flags.wasted ? 'flex' : 'none';
+    if (E.busted) E.busted.style.display = G.flags.busted ? 'flex' : 'none';
+    flowTickW(dt, nowSecsW);
+    radioTickW();
+    miniDrawW(nowSecsW); speedoDrawW(dt);
+    if (G.paused && E.pauseMenu && E.pauseMenu.style.display !== 'none') bigMapW();
+    if (G.flags.garageOpen && !garageShownW) garageDrawW();
+    if (!G.flags.garageOpen && garageShownW && E.garagePanel) E.garagePanel.style.display = 'none';
+    garageShownW = !!G.flags.garageOpen;
+    if (G.flags.garageOpen) { garageTickW = garageTickW - dt; if (!(garageTickW > 0)) { garageTickW = 0.5; garageDrawW(); } }
+    slowSecsW = slowSecsW - dt;
+    if (!(slowSecsW > 0)) {
+      slowSecsW = 0.25;
+      const nextDefW = (typeof G.missionIndex === 'number' && G.missionIndex < MISSIONS.length) ? MISSIONS[G.missionIndex] : null;
+      cardTickW(nextDefW);
+      crewStatusW(nextDefW);
+      copPanelTickW(); }
   });
 }

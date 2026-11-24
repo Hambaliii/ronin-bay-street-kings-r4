@@ -1,670 +1,727 @@
-// All sound here is synthesized live with WebAudio; nothing loads
-// from disk. Engine, skid, siren, UI tones and the scheduled music
-// loops are oscillators plus shaped noise, and every entry point
-// stays defensive so a context-less capture can never throw.
-function clampUnit(rawVal) {
-  const numericVal = Number(rawVal);
-  if (!(Number.isFinite(numericVal))) return 0;
-  if (numericVal < 0) return 0;
-  return (1 < numericVal) ? 1 : numericVal;
+// Every sound in the game is manufactured live out of WebAudio
+// oscillators and filtered noise; no sample files exist. The
+// engine, the skid, the siren, the interface blips and the two
+// music sequencers all sit below, and each public entry point
+// is written so a missing audio context can never throw.
+function clampUnit(limIn) {
+  const limNum = Number(limIn);
+  if (!Number.isFinite(limNum)) return 0;
+  if (!(limNum >= 0)) return 0;
+  return (1 < limNum) ? 1 : limNum;
 }
-const MS_IN_SEC = 1000;
+const MS_PER_SEC = 1000;
 function nowSecs() {
   try {
-    if (('undefined' !== typeof performance) && performance.now) return performance.now() / MS_IN_SEC;
-  } catch (ignoredErr) {}
-  return Date.now() / MS_IN_SEC;
+    if (('undefined' !== typeof performance) && performance.now) return performance.now() / MS_PER_SEC;
+  } catch (swallowed) {}
+  return Date.now() / MS_PER_SEC;
 }
-// Game objects arrive in several shapes; find one carrying x/z.
-function locateObj(objRef) {
-  if (!(objRef) || ('object' !== typeof objRef)) return null;
-  const shapeCandidates = [];
-  shapeCandidates.push(objRef.position, objRef.pos, objRef.group && objRef.group.position, objRef.mesh && objRef.mesh.position, objRef);
-  for (const shapeItem of shapeCandidates) {
-    if (shapeItem && Number.isFinite(shapeItem.x) && Number.isFinite(shapeItem.z)) return shapeItem;
-  }
-  return null;
+// Entities reach us in many shapes; hunt down one carrying x/z.
+function locateObj(seekArg) {
+  if (!seekArg || ('object' !== typeof seekArg)) return null;
+  const carrierArr = [seekArg.position, seekArg.pos, seekArg.group && seekArg.group.position, seekArg.mesh && seekArg.mesh.position, seekArg];
+  let hitSpot = null;
+  carrierArr.forEach((probeItem) => {
+    if (!hitSpot && probeItem && Number.isFinite(probeItem.x) && Number.isFinite(probeItem.z)) hitSpot = probeItem;
+  });
+  return hitSpot;
 }
-export function initAudio(game) {
+export function initAudio(gmObj) {
   try {
-    if (!(game) || ('object' !== typeof game)) return;
-    if (game.__audioInit) return;
-    game.__audioInit = true;
-    const S = {};
-    S.ctx = null; S.master = null; S.musicBus = null; S.noiseBuf = null;
-    S.engOsc1 = null; S.engOsc2 = null; S.engFilter = null; S.engGain = null;
-    S.engOn = false;
-    S.engRpm = 0; S.engRpmCur = 0; S.engGainCur = 0;
-    S.lastSetEngine = -10;
-    S.skidSrc = null; S.skidFilter = null; S.skidGain = null;
-    S.skidCur = 0;
-    S.screechOn = false;
-    S.screechInt = 0;
-    S.lastScreech = -10;
-    S.lastCrashAt = -10;
-    S.radioBus = null; S.radioFilter = null;
-    S.radioOn = false;
-    S.radioIdx = 0; S.radioStep = 0; S.radioNextAt = 0;
-    S.radioTimer = null;
-    S.sirOsc = null; S.sirGain = null;
-    S.sirCur = 0;
-    S.musicStarted = false;
-    S.step = 0; S.nextStepAt = 0; S.prevCrash = 0;
-    S.hornOsc1 = null; S.hornOsc2 = null; S.hornFilter = null; S.hornGain = null;
-    S.hornOn = false;
-    S.hornTimer = null;
-    const Ctor = (('undefined' !== typeof window) && (window.AudioContext || window.webkitAudioContext)) || null;
-    function buildNoise(ctxRef) {
-      const totalSamples = ctxRef.sampleRate;
-      const bufferObj = ctxRef.createBuffer(1, totalSamples, ctxRef.sampleRate);
-      const channelData = bufferObj.getChannelData(0);
-      let lcgSeed = 22222;
-      let sampleCursor = 0;
-      while (sampleCursor < totalSamples) {
-        lcgSeed = ((lcgSeed * 1103515245) + 12345) & 0x7fffffff;
-        channelData[sampleCursor] = (lcgSeed / 0x40000000) - 1;
-        sampleCursor = (sampleCursor + 1);
+    if (!gmObj || ('object' !== typeof gmObj)) return;
+    if (gmObj.__audioInit) return;
+    gmObj.__audioInit = true;
+    const au = {};
+    const seedState = {
+      ctx: null, master: null, musicBus: null, noiseBuf: null,
+      engOsc1: null, engOsc2: null, engFilter: null, engGain: null,
+      engOn: false, engRpm: 0, engRpmCur: 0, engGainCur: 0, lastSetEngine: -10,
+      skidSrc: null, skidFilter: null, skidGain: null, skidCur: 0,
+      screechOn: false, screechInt: 0, lastScreech: -10, lastCrashAt: -10,
+      radioBus: null, radioFilter: null, radioOn: false,
+      radioIdx: 0, radioStep: 0, radioNextAt: 0, radioTimer: null,
+      sirOsc: null, sirGain: null, sirCur: 0, musicStarted: false,
+      step: 0, nextStepAt: 0, prevCrash: 0,
+      hornOsc1: null, hornOsc2: null, hornFilter: null, hornGain: null,
+      hornOn: false, hornTimer: null,
+    };
+    Object.assign(au, seedState);
+    const hasWindow = ('undefined' !== typeof window);
+    const AudioClass = (hasWindow && (window.AudioContext || window.webkitAudioContext)) || null;
+    function buildNoise(acIn) {
+      const sampleCount = acIn.sampleRate;
+      const noiseBuffer = acIn.createBuffer(1, sampleCount, acIn.sampleRate);
+      const samples = noiseBuffer.getChannelData(0);
+      let lcgVal = 22222;
+      let writeIdx = 0;
+      while (sampleCount > writeIdx) {
+        lcgVal = ((lcgVal * 1103515245) + 12345) & 0x7fffffff;
+        samples[writeIdx] = (lcgVal / 0x40000000) + -1;
+        writeIdx = (1 + writeIdx);
       }
-      return bufferObj;
+      return noiseBuffer;
     }
-    function buildEngine(ctxRef) {
-      try { S.engOsc1 = ctxRef.createOscillator();
-        S.engOsc1.type = 'sawtooth';
-        S.engOsc2 = ctxRef.createOscillator();
-        S.engOsc2.type = 'square';
-        S.engOsc2.detune.value = 9;
-        S.engFilter = ctxRef.createBiquadFilter();
-        S.engFilter.type = 'lowpass';
-        S.engFilter.frequency.value = 400;
-        S.engFilter.Q.value = 2;
-        S.engGain = ctxRef.createGain();
-        S.engGain.gain.value = 0;
-        S.engOsc1.connect(S.engFilter);
-        S.engOsc2.connect(S.engFilter);
-        S.engFilter.connect(S.engGain);
-        S.engGain.connect(S.master);
-        S.engOsc1.frequency.value = 60;
-        S.engOsc2.frequency.value = 60;
-        S.engOsc1.start();
-        S.engOsc2.start();
-      } catch (ignoredErr) {}
+    function buildEngine(acIn) {
+      try {
+        au.engOsc1 = acIn.createOscillator();
+        au.engOsc1.type = 'sawtooth';
+        au.engOsc2 = acIn.createOscillator();
+        au.engOsc2.type = 'square';
+        au.engOsc2.detune.value = 9;
+        au.engFilter = acIn.createBiquadFilter();
+        au.engFilter.type = 'lowpass';
+        au.engFilter.frequency.value = 400;
+        au.engFilter.Q.value = 2;
+        au.engGain = acIn.createGain();
+        au.engGain.gain.value = 0;
+        au.engOsc1.connect(au.engFilter);
+        au.engOsc2.connect(au.engFilter);
+        au.engFilter.connect(au.engGain);
+        au.engGain.connect(au.master);
+        au.engOsc1.frequency.value = 60;
+        au.engOsc2.frequency.value = 60;
+        au.engOsc1.start();
+        au.engOsc2.start();
+      } catch (swallowed) {}
     }
-    function buildSkid(ctxRef) {
-      try { S.skidSrc = ctxRef.createBufferSource();
-        S.skidSrc.buffer = S.noiseBuf;
-        S.skidSrc.loop = true;
-        S.skidFilter = ctxRef.createBiquadFilter();
-        S.skidFilter.type = 'bandpass';
-        S.skidFilter.frequency.value = 900;
-        S.skidFilter.Q.value = 2;
-        S.skidGain = ctxRef.createGain();
-        S.skidGain.gain.value = 0;
-        S.skidSrc.connect(S.skidFilter);
-        S.skidFilter.connect(S.skidGain);
-        S.skidGain.connect(S.master);
-        S.skidSrc.start();
-      } catch (ignoredErr) {}
+    function buildSkid(acIn) {
+      try {
+        au.skidSrc = acIn.createBufferSource();
+        au.skidSrc.buffer = au.noiseBuf;
+        au.skidSrc.loop = true;
+        au.skidFilter = acIn.createBiquadFilter();
+        au.skidFilter.type = 'bandpass';
+        au.skidFilter.frequency.value = 900;
+        au.skidFilter.Q.value = 2;
+        au.skidGain = acIn.createGain();
+        au.skidGain.gain.value = 0;
+        au.skidSrc.connect(au.skidFilter);
+        au.skidFilter.connect(au.skidGain);
+        au.skidGain.connect(au.master);
+        au.skidSrc.start();
+      } catch (swallowed) {}
     }
-    function buildSiren(ctxRef) {
-      try { S.sirOsc = ctxRef.createOscillator();
-        S.sirOsc.type = 'square';
-        S.sirOsc.frequency.value = 720;
-        S.sirGain = ctxRef.createGain();
-        S.sirGain.gain.value = 0;
-        S.sirOsc.connect(S.sirGain);
-        S.sirGain.connect(S.master);
-        S.sirOsc.start();
-      } catch (ignoredErr) {}
+    function buildSiren(acIn) {
+      try {
+        au.sirOsc = acIn.createOscillator();
+        au.sirOsc.type = 'square';
+        au.sirOsc.frequency.value = 720;
+        au.sirGain = acIn.createGain();
+        au.sirGain.gain.value = 0;
+        au.sirOsc.connect(au.sirGain);
+        au.sirGain.connect(au.master);
+        au.sirOsc.start();
+      } catch (swallowed) {}
+    }
+    function makeBus(acIn, busLvl) {
+      const busGain = acIn.createGain();
+      busGain.gain.value = busLvl;
+      busGain.connect(au.master);
+      return busGain;
+    }
+    function wireRadioChain(acIn) {
+      au.radioFilter = acIn.createBiquadFilter();
+      au.radioFilter.type = 'lowpass';
+      au.radioFilter.frequency.value = 950;
+      au.radioFilter.Q.value = 1;
+      au.radioFilter.connect(au.radioBus);
     }
     function getCtx() {
-      if (S.ctx) return S.ctx;
-      if (!(Ctor)) return null;
+      if (au.ctx) return au.ctx;
+      if (!AudioClass) return null;
       try {
-        const freshCtx = new Ctor();
-        S.ctx = freshCtx;
-        S.master = freshCtx.createGain();
-        S.master.gain.value = soundApi.muted ? 0 : 0.5;
-        S.master.connect(freshCtx.destination);
-        S.musicBus = freshCtx.createGain();
-        S.musicBus.gain.value = 0.05;
-        S.musicBus.connect(S.master);
-        S.radioBus = freshCtx.createGain();
-        S.radioBus.gain.value = 0.16;
-        S.radioBus.connect(S.master);
-        S.radioFilter = freshCtx.createBiquadFilter();
-        S.radioFilter.type = 'lowpass';
-        S.radioFilter.frequency.value = 950;
-        S.radioFilter.Q.value = 1;
-        S.radioFilter.connect(S.radioBus);
-        S.noiseBuf = buildNoise(freshCtx);
-        buildEngine(freshCtx);
-        buildSkid(freshCtx);
-        buildSiren(freshCtx);
-        return freshCtx;
-      } catch (ignoredErr) { S.ctx = null; return null; }
+        const liveCtx = new AudioClass();
+        au.ctx = liveCtx;
+        au.master = liveCtx.createGain();
+        au.master.gain.value = apiObj.muted ? 0 : 0.5;
+        au.master.connect(liveCtx.destination);
+        au.musicBus = makeBus(liveCtx, 0.05);
+        au.radioBus = makeBus(liveCtx, 0.16);
+        wireRadioChain(liveCtx);
+        au.noiseBuf = buildNoise(liveCtx);
+        buildEngine(liveCtx);
+        buildSkid(liveCtx);
+        buildSiren(liveCtx);
+        return liveCtx;
+      } catch (swallowed) { au.ctx = null; return null; }
     }
-    // One enveloped oscillator tone, gliding when asked.
-    function tone(kindName, freqStart, freqEnd, whenAt, durSecs, volLevel, destBus) {
-      const ctxRef = S.ctx;
-      if (!(ctxRef)) return;
-      try { const oscNode = ctxRef.createOscillator();
-        const ampNode = ctxRef.createGain();
-        oscNode.type = kindName;
-        oscNode.frequency.setValueAtTime(Math.max(20, freqStart), whenAt);
-        if (freqEnd && (freqStart !== freqEnd)) oscNode.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), whenAt + durSecs);
-        ampNode.gain.setValueAtTime(0, whenAt);
-        ampNode.gain.linearRampToValueAtTime(volLevel, whenAt + 0.012);
-        ampNode.gain.exponentialRampToValueAtTime(0.0001, whenAt + durSecs);
-        oscNode.connect(ampNode);
-        ampNode.connect(destBus || S.master);
-        oscNode.start(whenAt);
-        oscNode.stop(whenAt + (durSecs + 0.05));
-      } catch (ignoredErr) {}
-    }
-    function noiseBurst(whenAt, durSecs, volLevel, freqVal, kindName, destBus, rateVal) {
-      const ctxRef = S.ctx;
-      if (!(ctxRef) || !(S.noiseBuf)) return;
+    // One enveloped tone; the pitch glide is folded in here and
+    // only runs when start and end frequencies actually differ.
+    function tone(waveType, startHz, endHz, whenAt, lenSecs, lvlVal, destBus) {
+      const acLive = au.ctx;
+      if (!acLive) return;
       try {
-        const srcNode = ctxRef.createBufferSource();
-        srcNode.buffer = S.noiseBuf;
-        if (rateVal !== undefined) srcNode.playbackRate.value = rateVal;
-        const filtNode = ctxRef.createBiquadFilter();
-        filtNode.type = kindName || 'lowpass';
-        filtNode.frequency.value = freqVal;
-        const ampNode = ctxRef.createGain();
-        ampNode.gain.setValueAtTime(volLevel, whenAt);
-        ampNode.gain.exponentialRampToValueAtTime(0.0001, whenAt + durSecs);
-        srcNode.connect(filtNode);
-        filtNode.connect(ampNode);
-        ampNode.connect(destBus || S.master);
-        srcNode.start(whenAt);
-        srcNode.stop(whenAt + (durSecs + 0.05));
-      } catch (ignoredErr) {}
+        const toneOsc = acLive.createOscillator();
+        const toneGain = acLive.createGain();
+        toneOsc.type = waveType;
+        toneOsc.frequency.setValueAtTime(Math.max(20, startHz), whenAt);
+        if (endHz && (startHz !== endHz)) toneOsc.frequency.exponentialRampToValueAtTime(Math.max(20, endHz), whenAt + lenSecs);
+        toneGain.gain.setValueAtTime(0, whenAt);
+        toneGain.gain.linearRampToValueAtTime(lvlVal, whenAt + 0.012);
+        toneGain.gain.exponentialRampToValueAtTime(0.0001, whenAt + lenSecs);
+        toneOsc.connect(toneGain);
+        toneGain.connect(destBus || au.master);
+        toneOsc.start(whenAt);
+        toneOsc.stop(whenAt + (lenSecs + 0.05));
+      } catch (swallowed) {}
     }
-    function noiseHit(whenAt, durSecs, volLevel, freqVal, kindName) {
-      noiseBurst(whenAt, durSecs, volLevel, freqVal, kindName, undefined, undefined);
-    }
-    function noiseHitTo(whenAt, durSecs, volLevel, freqVal, kindName, destBus) {
-      const ctxRef = S.ctx;
-      if (!(ctxRef) || !(S.noiseBuf)) return;
+    function noiseBurst(whenAt, lenSecs, lvlVal, freqHz, kindName, destBus, rateNum) {
+      const acLive = au.ctx;
+      if (!acLive || !au.noiseBuf) return;
       try {
-        const srcNode = ctxRef.createBufferSource();
-        srcNode.buffer = S.noiseBuf;
-        srcNode.playbackRate.value = (0.7 + (((whenAt * 7) % 1) * 0.6));
-        const filtNode = ctxRef.createBiquadFilter();
-        filtNode.type = kindName || 'lowpass';
-        filtNode.frequency.value = freqVal;
-        const ampNode = ctxRef.createGain();
-        ampNode.gain.setValueAtTime(volLevel, whenAt);
-        ampNode.gain.exponentialRampToValueAtTime(0.0001, whenAt + durSecs);
-        srcNode.connect(filtNode);
-        filtNode.connect(ampNode);
-        ampNode.connect(destBus || S.master);
-        srcNode.start(whenAt);
-        srcNode.stop(whenAt + (durSecs + 0.05));
-      } catch (ignoredErr) {}
+        const noiseSrc = acLive.createBufferSource();
+        noiseSrc.buffer = au.noiseBuf;
+        if (rateNum !== undefined) noiseSrc.playbackRate.value = rateNum;
+        const noiseFilter = acLive.createBiquadFilter();
+        noiseFilter.type = kindName || 'lowpass';
+        noiseFilter.frequency.value = freqHz;
+        const noiseGain = acLive.createGain();
+        noiseGain.gain.setValueAtTime(lvlVal, whenAt);
+        noiseGain.gain.exponentialRampToValueAtTime(0.0001, whenAt + lenSecs);
+        noiseSrc.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(destBus || au.master);
+        noiseSrc.start(whenAt);
+        noiseSrc.stop(whenAt + (lenSecs + 0.05));
+      } catch (swallowed) {}
     }
-    // Crash thud with a shared debounce on the context clock.
-    function fireCrash(intensityVal) {
-      try { const ctxRef = getCtx();
-        if (!(ctxRef)) return;
-        const impactLevel = Math.max(0.15, clampUnit(intensityVal));
-        const clockNow = ctxRef.currentTime;
-        if ((clockNow - S.lastCrashAt) < 0.12) return;
-        S.lastCrashAt = clockNow;
-        const startAt = (clockNow + 0.005);
-        noiseHit(startAt, 0.26, 0.5 * impactLevel, 300 + (260 * impactLevel), 'lowpass');
-        tone('sine', 90, 35, startAt, 0.32, 0.48 * impactLevel);
-      } catch (ignoredErr) {}
+    function noiseHit(whenAt, lenSecs, lvlVal, freqHz, kindName) {
+      noiseBurst(whenAt, lenSecs, lvlVal, freqHz, kindName, undefined, undefined);
     }
-    function crashCall(intensityVal) {
-      fireCrash(intensityVal);
+    function noiseHitTo(whenAt, lenSecs, lvlVal, freqHz, kindName, destBus) {
+      const acLive = au.ctx;
+      if (!acLive || !au.noiseBuf) return;
+      try {
+        const hitSrc = acLive.createBufferSource();
+        hitSrc.buffer = au.noiseBuf;
+        hitSrc.playbackRate.value = (0.7 + (((whenAt * 7) % 1) * 0.6));
+        const hitFilter = acLive.createBiquadFilter();
+        hitFilter.type = kindName || 'lowpass';
+        hitFilter.frequency.value = freqHz;
+        const hitGain = acLive.createGain();
+        hitGain.gain.setValueAtTime(lvlVal, whenAt);
+        hitGain.gain.exponentialRampToValueAtTime(0.0001, whenAt + lenSecs);
+        hitSrc.connect(hitFilter);
+        hitFilter.connect(hitGain);
+        hitGain.connect(destBus || au.master);
+        hitSrc.start(whenAt);
+        hitSrc.stop(whenAt + (lenSecs + 0.05));
+      } catch (swallowed) {}
     }
-    function setScreech(activeFlag, intensityVal) {
-      try { S.screechOn = !(!(activeFlag));
-        S.screechInt = clampUnit(intensityVal);
-        S.lastScreech = nowSecs();
-        if (activeFlag) {
-          const ctxRef = getCtx();
-          if (ctxRef && ('suspended' === ctxRef.state)) ctxRef.resume().catch(() => {});
+    // Impact thud, debounced against the context clock.
+    function fireCrash(hitPower) {
+      try {
+        const acLive = getCtx();
+        if (!acLive) return;
+        const impactScale = Math.max(0.15, clampUnit(hitPower));
+        const ctxClock = acLive.currentTime;
+        if (0.12 > (ctxClock - au.lastCrashAt)) return;
+        au.lastCrashAt = ctxClock;
+        const hitAt = (0.005 + ctxClock);
+        const noiseLvl = 0.5 * impactScale;
+        const toneLvl = 0.48 * impactScale;
+        noiseHit(hitAt, 0.26, noiseLvl, 300 + (260 * impactScale), 'lowpass');
+        tone('sine', 90, 35, hitAt, 0.32, toneLvl);
+      } catch (swallowed) {}
+    }
+    function crashCall(hitPower) {
+      fireCrash(hitPower);
+    }
+    function setScreech(onVal, powerVal) {
+      try {
+        au.screechOn = !(!(onVal));
+        au.screechInt = clampUnit(powerVal);
+        au.lastScreech = nowSecs();
+        if (onVal) {
+          const acLive = getCtx();
+          if (acLive && ('suspended' === acLive.state)) acLive.resume().catch(() => {});
         }
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
     }
-    function playSfx(nameVal) {
-      try { const ctxRef = getCtx();
-        if (!(ctxRef)) return;
-        if ('suspended' === ctxRef.state) ctxRef.resume().catch(() => {});
-        const startBase = (ctxRef.currentTime + 0.01);
-        switch (nameVal) {
-          case 'click': tone('square', 880, 660, startBase, 0.06, 0.07); break;
-          case 'cash':
-            tone('sine', 988, 988, startBase, 0.08, 0.12);
-            tone('sine', 1319, 1319, startBase + 0.08, 0.14, 0.12);
+    function playNoteSeq(notesArr, waveType, beginAt, gapVal, lenSecs, lvlVal) {
+      let noteIdx = 0;
+      while (notesArr.length > noteIdx) {
+        tone(waveType, notesArr[noteIdx], notesArr[noteIdx], beginAt + (noteIdx * gapVal), lenSecs, lvlVal);
+        noteIdx = (noteIdx + 1);
+      }
+    }
+    function playSfx(sfxName) {
+      try {
+        const acLive = getCtx();
+        if (!acLive) return;
+        if ('suspended' === acLive.state) acLive.resume().catch(() => {});
+        const sfxAt = (acLive.currentTime + 0.01);
+        switch (sfxName) {
+          case 'click': tone('square', 880, 660, sfxAt, 0.06, 0.07); break;
+          case 'cash': {
+            tone('sine', 988, 988, sfxAt, 0.08, 0.12);
+            tone('sine', 1319, 1319, sfxAt + 0.08, 0.14, 0.12);
             break;
-          case 'win': {
-            const winNotes = [523, 659, 784, 1047];
-            for (let noteIdx = 0; noteIdx < winNotes.length; noteIdx = (noteIdx + 1)) tone('triangle', winNotes[noteIdx], winNotes[noteIdx], startBase + (noteIdx * 0.09), 0.16, 0.13);
-            break; }
+          }
+          case 'win': playNoteSeq([523, 659, 784, 1047], 'triangle', sfxAt, 0.09, 0.16, 0.13); break;
           case 'fail': {
-            const failNotes = [392, 330, 262];
-            for (let noteIdx = 0; noteIdx < failNotes.length; noteIdx = (noteIdx + 1)) tone('sawtooth', failNotes[noteIdx], failNotes[noteIdx], startBase + (noteIdx * 0.13), 0.16, 0.07);
-            break; }
-          case 'busted':
-            tone('sawtooth', 900, 280, startBase, 0.8, 0.1);
-            tone('sawtooth', 905, 285, startBase, 0.8, 0.05);
+            const failSeq = [392, 330, 262];
+            let failIdx = 0;
+            while (failSeq.length > failIdx) {
+              tone('sawtooth', failSeq[failIdx], failSeq[failIdx], sfxAt + (failIdx * 0.13), 0.16, 0.07);
+              failIdx = (failIdx + 1);
+            }
             break;
-          case 'pickup': tone('sine', 660, 990, startBase, 0.09, 0.1); break;
+          }
+          case 'busted': {
+            tone('sawtooth', 900, 280, sfxAt, 0.8, 0.1);
+            tone('sawtooth', 905, 285, sfxAt, 0.8, 0.05);
+            break;
+          }
+          case 'pickup': tone('sine', 660, 990, sfxAt, 0.09, 0.1); break;
           case 'crash': fireCrash(0.75); break;
-          case 'shot':
-            noiseHit(startBase, 0.12, 0.3, 900, 'lowpass');
-            tone('square', 220, 55, startBase, 0.12, 0.16);
+          case 'shot': {
+            noiseHit(sfxAt, 0.12, 0.3, 900, 'lowpass');
+            tone('square', 220, 55, sfxAt, 0.12, 0.16);
             break;
-          case 'smg':
-            noiseHit(startBase, 0.07, 0.22, 1100, 'lowpass');
-            tone('square', 260, 70, startBase, 0.07, 0.12);
+          }
+          case 'smg': {
+            noiseHit(sfxAt, 0.07, 0.22, 1100, 'lowpass');
+            tone('square', 260, 70, sfxAt, 0.07, 0.12);
             break;
-          case 'dry': tone('square', 1200, 900, startBase, 0.03, 0.06); break;
-          case 'reload':
-            tone('square', 700, 500, startBase, 0.04, 0.09);
-            tone('square', 950, 650, startBase + 0.13, 0.04, 0.09);
+          }
+          case 'dry': tone('square', 1200, 900, sfxAt, 0.03, 0.06); break;
+          case 'reload': {
+            tone('square', 700, 500, sfxAt, 0.04, 0.09);
+            tone('square', 950, 650, sfxAt + 0.13, 0.04, 0.09);
             break;
-          case 'swing': noiseHit(startBase, 0.18, 0.12, 700, 'bandpass'); break;
-          case 'thud': tone('sine', 90, 40, startBase, 0.15, 0.3); break;
+          }
+          case 'swing': noiseHit(sfxAt, 0.18, 0.12, 700, 'bandpass'); break;
+          case 'thud': tone('sine', 90, 40, sfxAt, 0.15, 0.3); break;
           default: break;
         }
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
     }
-    // Dual tone horn: start, stop and one-shot helpers.
+    // Twin oscillator horn, with start, stop and timed one-shot.
     function hornStartFn() {
-      try { if (S.hornOn) return;
-        const ctxRef = getCtx();
-        if (!(ctxRef)) return;
-        if ('suspended' === ctxRef.state) ctxRef.resume().catch(() => {});
-        if (S.hornTimer) { clearTimeout(S.hornTimer); S.hornTimer = null; }
-        const clockNow = ctxRef.currentTime;
-        const oscLow = ctxRef.createOscillator();
-        oscLow.type = 'sawtooth';
-        oscLow.frequency.value = 370;
-        const oscHigh = ctxRef.createOscillator();
-        oscHigh.type = 'sawtooth';
-        oscHigh.frequency.value = 440;
-        oscHigh.detune.value = 4;
-        const filtNode = ctxRef.createBiquadFilter();
-        filtNode.type = 'lowpass';
-        filtNode.frequency.value = 1200;
-        filtNode.Q.value = 1;
-        const ampNode = ctxRef.createGain();
-        ampNode.gain.setValueAtTime(0, clockNow);
-        ampNode.gain.linearRampToValueAtTime(0.16, clockNow + 0.01);
-        oscLow.connect(filtNode);
-        oscHigh.connect(filtNode);
-        filtNode.connect(ampNode);
-        ampNode.connect(S.master);
-        oscLow.start(clockNow);
-        oscHigh.start(clockNow);
-        S.hornOsc1 = oscLow; S.hornOsc2 = oscHigh; S.hornFilter = filtNode; S.hornGain = ampNode;
-        S.hornOn = true;
-      } catch (ignoredErr) {}
+      try {
+        if (au.hornOn) return;
+        const acLive = getCtx();
+        if (!acLive) return;
+        if ('suspended' === acLive.state) acLive.resume().catch(() => {});
+        if (au.hornTimer) { clearTimeout(au.hornTimer); au.hornTimer = null; }
+        const hornClock = acLive.currentTime;
+        const hornLow = acLive.createOscillator();
+        hornLow.type = 'sawtooth';
+        hornLow.frequency.value = 370;
+        const hornHigh = acLive.createOscillator();
+        hornHigh.type = 'sawtooth';
+        hornHigh.frequency.value = 440;
+        hornHigh.detune.value = 4;
+        const hornFilter = acLive.createBiquadFilter();
+        hornFilter.type = 'lowpass';
+        hornFilter.frequency.value = 1200;
+        hornFilter.Q.value = 1;
+        const hornGain = acLive.createGain();
+        hornGain.gain.setValueAtTime(0, hornClock);
+        hornGain.gain.linearRampToValueAtTime(0.16, hornClock + 0.01);
+        hornLow.connect(hornFilter);
+        hornHigh.connect(hornFilter);
+        hornFilter.connect(hornGain);
+        hornGain.connect(au.master);
+        hornLow.start(hornClock);
+        hornHigh.start(hornClock);
+        au.hornOsc1 = hornLow;
+        au.hornOsc2 = hornHigh;
+        au.hornFilter = hornFilter;
+        au.hornGain = hornGain;
+        au.hornOn = true;
+      } catch (swallowed) {}
     }
     function hornStopFn() {
-      try { if (!(S.hornOn)) return;
-        S.hornOn = false;
-        if (S.hornTimer) { clearTimeout(S.hornTimer); S.hornTimer = null; }
-        const ctxRef = S.ctx;
-        const oscLow = S.hornOsc1;
-        const oscHigh = S.hornOsc2;
-        const ampNode = S.hornGain;
-        S.hornOsc1 = null; S.hornOsc2 = null; S.hornFilter = null; S.hornGain = null;
-        if (!(ctxRef) || !(ampNode)) {
-          try { oscLow && oscLow.stop(); } catch (ignoredErr) {}
-          try { oscHigh && oscHigh.stop(); } catch (ignoredErr) {}
+      try {
+        if (!au.hornOn) return;
+        au.hornOn = false;
+        if (au.hornTimer) { clearTimeout(au.hornTimer); au.hornTimer = null; }
+        const acLive = au.ctx;
+        const hornLow = au.hornOsc1;
+        const hornHigh = au.hornOsc2;
+        const hornGainNode = au.hornGain;
+        au.hornOsc1 = null;
+        au.hornOsc2 = null;
+        au.hornFilter = null;
+        au.hornGain = null;
+        if (!acLive || !hornGainNode) {
+          try { hornLow && hornLow.stop(); } catch (swallowed) {}
+          try { hornHigh && hornHigh.stop(); } catch (swallowed) {}
           return;
         }
-        const clockNow = ctxRef.currentTime;
+        const hornClock = acLive.currentTime;
         try {
-          ampNode.gain.cancelScheduledValues(clockNow);
-          ampNode.gain.setValueAtTime(ampNode.gain.value, clockNow);
-          ampNode.gain.linearRampToValueAtTime(0, clockNow + 0.08);
-          if (oscLow) oscLow.stop(clockNow + 0.1);
-          if (oscHigh) oscHigh.stop(clockNow + 0.1);
-        } catch (ignoredErr) {}
-      } catch (ignoredErr) {}
+          hornGainNode.gain.cancelScheduledValues(hornClock);
+          hornGainNode.gain.setValueAtTime(hornGainNode.gain.value, hornClock);
+          hornGainNode.gain.linearRampToValueAtTime(0, hornClock + 0.08);
+          if (hornLow) hornLow.stop(hornClock + 0.1);
+          if (hornHigh) hornHigh.stop(hornClock + 0.1);
+        } catch (swallowed) {}
+      } catch (swallowed) {}
     }
-    function hornOnceFn(durVal) {
+    function hornOnceFn(holdVal) {
       try {
-        const holdSecs = (Number.isFinite(durVal) && (0 < durVal)) ? Math.min(durVal, 1.2) : 0.35;
+        const holdLen = (Number.isFinite(holdVal) && (holdVal > 0)) ? Math.min(holdVal, 1.2) : 0.35;
         hornStartFn();
-        if (S.hornTimer) clearTimeout(S.hornTimer);
-        S.hornTimer = setTimeout(() => { S.hornTimer = null; hornStopFn(); }, holdSecs * 1000);
-      } catch (ignoredErr) {}
+        if (au.hornTimer) clearTimeout(au.hornTimer);
+        au.hornTimer = setTimeout(() => { au.hornTimer = null; hornStopFn(); }, holdLen * 1000);
+      } catch (swallowed) {}
     }
-    function setEngine(onFlag, rpmVal) {
+    function setEngine(onVal, rpmIn) {
       try {
-        S.engOn = !(!(onFlag));
-        S.engRpm = clampUnit(rpmVal);
-        S.lastSetEngine = nowSecs();
-        if (onFlag) {
-          const ctxRef = getCtx();
-          if (ctxRef && ('suspended' === ctxRef.state)) ctxRef.resume().catch(() => {});
+        au.engOn = !(!(onVal));
+        au.engRpm = clampUnit(rpmIn);
+        au.lastSetEngine = nowSecs();
+        if (onVal) {
+          const acLive = getCtx();
+          if (acLive && ('suspended' === acLive.state)) acLive.resume().catch(() => {});
         }
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
     }
     function resumeFn() {
       try {
-        const ctxRef = getCtx();
-        if (ctxRef && ('suspended' === ctxRef.state)) ctxRef.resume().catch(() => {});
-      } catch (ignoredErr) {}
+        const acLive = getCtx();
+        if (acLive && ('suspended' === acLive.state)) acLive.resume().catch(() => {});
+      } catch (swallowed) {}
     }
     function toggleMuteFn() {
       try {
-        soundApi.muted = !(soundApi.muted);
-        const ctxRef = getCtx();
-        if (ctxRef && S.master) {
-          const clockNow = ctxRef.currentTime;
-          S.master.gain.cancelScheduledValues(clockNow);
-          S.master.gain.setTargetAtTime(soundApi.muted ? 0 : 0.5, clockNow, 0.05);
+        apiObj.muted = !(apiObj.muted);
+        const acLive = getCtx();
+        if (acLive && au.master) {
+          const muteClock = acLive.currentTime;
+          au.master.gain.cancelScheduledValues(muteClock);
+          au.master.gain.setTargetAtTime(apiObj.muted ? 0 : 0.5, muteClock, 0.05);
         }
-      } catch (ignoredErr) {}
-      return soundApi.muted;
+      } catch (swallowed) {}
+      return apiObj.muted;
     }
-    // Synthwave loop constants: tempo steps and chord data.
-    const STEP_SECS = 60 / 100 / 2;
-    const BASS_ROOTS = [33, 29, 36, 31];
-    const PAD_CHORDS = [];
-    PAD_CHORDS.push([57, 60, 64], [53, 57, 60]);
-    PAD_CHORDS.push([48, 52, 55], [55, 59, 62]);
-    function midiHz(midiVal) {
-      const exponentVal = (midiVal - 69) / 12;
-      return 440 * Math.pow(2, exponentVal);
+    // Synthwave sequencer data: step length, rotating bass roots
+    // and the pad chord cycle.
+    const STEP_LEN = (60 / 100) / 2;
+    const BASS_LINE = [33, 29, 36, 31];
+    const PAD_SETS = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
+    function midiHz(midiIn) {
+      const expPart = (midiIn + -69) / 12;
+      return 440 * Math.pow(2, expPart);
     }
-    function padVoice(noteVal, whenAt) {
-      const ctxRef = S.ctx;
+    function padVoice(noteIn, whenAt) {
+      const acLive = au.ctx;
       try {
-        const oscNode = ctxRef.createOscillator();
-        const ampNode = ctxRef.createGain();
-        oscNode.type = 'triangle';
-        oscNode.frequency.value = midiHz(noteVal);
-        ampNode.gain.setValueAtTime(0, whenAt);
-        ampNode.gain.linearRampToValueAtTime(0.05, whenAt + 0.4);
-        ampNode.gain.setValueAtTime(0.05, whenAt + (STEP_SECS * 8) - 0.4);
-        ampNode.gain.linearRampToValueAtTime(0, whenAt + (STEP_SECS * 8));
-        oscNode.connect(ampNode);
-        ampNode.connect(S.musicBus);
-        oscNode.start(whenAt);
-        oscNode.stop(whenAt + (STEP_SECS * 8) + 0.05);
-      } catch (ignoredErr) {}
+        const padOsc = acLive.createOscillator();
+        const padGain = acLive.createGain();
+        padOsc.type = 'triangle';
+        padOsc.frequency.value = midiHz(noteIn);
+        padGain.gain.setValueAtTime(0, whenAt);
+        padGain.gain.linearRampToValueAtTime(0.05, whenAt + 0.4);
+        padGain.gain.setValueAtTime(0.05, whenAt + (STEP_LEN * 8) - 0.4);
+        padGain.gain.linearRampToValueAtTime(0, whenAt + (STEP_LEN * 8));
+        padOsc.connect(padGain);
+        padGain.connect(au.musicBus);
+        padOsc.start(whenAt);
+        padOsc.stop(whenAt + (STEP_LEN * 8) + 0.05);
+      } catch (swallowed) {}
     }
     function hatVoice(whenAt) {
       try {
-        const ctxRef = S.ctx;
-        const srcNode = ctxRef.createBufferSource();
-        srcNode.buffer = S.noiseBuf;
-        const filtNode = ctxRef.createBiquadFilter();
-        filtNode.type = 'highpass';
-        filtNode.frequency.value = 6000;
-        const ampNode = ctxRef.createGain();
-        ampNode.gain.setValueAtTime(0.25, whenAt);
-        ampNode.gain.exponentialRampToValueAtTime(0.001, whenAt + 0.04);
-        srcNode.connect(filtNode);
-        filtNode.connect(ampNode);
-        ampNode.connect(S.musicBus);
-        srcNode.start(whenAt);
-        srcNode.stop(whenAt + 0.06);
-      } catch (ignoredErr) {}
+        const acLive = au.ctx;
+        const hatSrc = acLive.createBufferSource();
+        hatSrc.buffer = au.noiseBuf;
+        const hatFilter = acLive.createBiquadFilter();
+        hatFilter.type = 'highpass';
+        hatFilter.frequency.value = 6000;
+        const hatGain = acLive.createGain();
+        hatGain.gain.setValueAtTime(0.25, whenAt);
+        hatGain.gain.exponentialRampToValueAtTime(0.001, whenAt + 0.04);
+        hatSrc.connect(hatFilter);
+        hatFilter.connect(hatGain);
+        hatGain.connect(au.musicBus);
+        hatSrc.start(whenAt);
+        hatSrc.stop(whenAt + 0.06);
+      } catch (swallowed) {}
     }
     function musicStep(stepIdx, whenAt) {
       const barIdx = Math.floor(stepIdx / 8) % 4;
-      const inBarIdx = stepIdx % 8;
-      const rootNote = BASS_ROOTS[barIdx];
-      if (0 === (inBarIdx % 2)) {
-        const bassNote = (4 === inBarIdx) ? (rootNote + 12) : rootNote;
-        tone('sawtooth', midiHz(bassNote), midiHz(bassNote), whenAt, 0.22, 0.16, S.musicBus);
-      } else if (7 === inBarIdx) {
-        tone('sawtooth', midiHz(rootNote + 7), midiHz(rootNote + 7), whenAt, 0.14, 0.1, S.musicBus);
+      const barPos = stepIdx % 8;
+      const rootMidi = BASS_LINE[barIdx];
+      if (0 === (barPos % 2)) {
+        const bassMidi = (4 === barPos) ? (12 + rootMidi) : rootMidi;
+        tone('sawtooth', midiHz(bassMidi), midiHz(bassMidi), whenAt, 0.22, 0.16, au.musicBus);
+      } else if (7 === barPos) {
+        tone('sawtooth', midiHz(rootMidi + 7), midiHz(rootMidi + 7), whenAt, 0.14, 0.1, au.musicBus);
       }
-      if (0 === inBarIdx) {
-        for (const chordNote of PAD_CHORDS[barIdx]) padVoice(chordNote, whenAt);
-      }
-      if (1 === (inBarIdx % 2)) hatVoice(whenAt);
+      if (0 === barPos) PAD_SETS[barIdx].forEach((chordMidi) => padVoice(chordMidi, whenAt));
+      if (1 === (barPos % 2)) hatVoice(whenAt);
     }
-    // Radio stations and their pattern tables.
-    const STATION_LIST = [];
-    STATION_LIST.push({ name: 'WAVEFORM FM', bpm: 100, kind: 'wave' });
-    STATION_LIST.push({ name: 'LOFI BAY', bpm: 76, kind: 'lofi' });
-    STATION_LIST.push({ name: 'EUROBEAT KAI', bpm: 150, kind: 'euro' });
-    const LOFI_CHORDS = [];
-    LOFI_CHORDS.push([53, 57, 60, 64], [50, 53, 57, 60]);
-    LOFI_CHORDS.push([48, 52, 55, 59], [52, 55, 59, 62]);
-    const LOFI_ROOTS = [29, 26, 24, 28];
-    const EURO_ROOTS = [33, 33, 29, 31];
-    const EURO_LEAD = [
-      69, 0, 72, 0, 76, 0, 72, 0, 74, 0, 76, 0, 79, 0, 76, 0,
-      69, 0, 72, 0, 76, 0, 81, 0, 79, 76, 74, 0, 72, 0, 0, 0,
+    // Station roster and the per-genre pattern tables.
+    const STATIONS = [
+      { name: 'WAVEFORM FM', bpm: 100, kind: 'wave' },
+      { name: 'LOFI BAY', bpm: 76, kind: 'lofi' },
+      { name: 'EUROBEAT KAI', bpm: 150, kind: 'euro' },
     ];
-    function kickHit(whenAt, volLevel) {
-      tone('sine', 130, 45, whenAt, 0.14, volLevel, S.radioBus);
+    const LOFI_SETS = [[53, 57, 60, 64], [50, 53, 57, 60], [48, 52, 55, 59], [52, 55, 59, 62]];
+    const LOFI_BASS = [29, 26, 24, 28];
+    const EURO_BASS = [33, 33, 29, 31];
+    const EURO_MELODY = [
+      69, 0, 72, 0, 76, 0, 72, 0,
+      74, 0, 76, 0, 79, 0, 76, 0,
+      69, 0, 72, 0, 76, 0, 81, 0,
+      79, 76, 74, 0, 72, 0, 0, 0,
+    ];
+    function kickHit(whenAt, lvlVal) {
+      tone('sine', 130, 45, whenAt, 0.14, lvlVal, au.radioBus);
     }
-    function hatTick(whenAt, volLevel, durVal) {
-      noiseHitTo(whenAt, durVal || 0.04, volLevel, 6500, 'highpass', S.radioBus);
+    function hatTick(whenAt, lvlVal, lenVal) {
+      noiseHitTo(whenAt, lenVal || 0.04, lvlVal, 6500, 'highpass', au.radioBus);
     }
-    function radioBass(whenAt, midiVal, durSecs, volLevel) {
-      tone('sawtooth', midiHz(midiVal), midiHz(midiVal), whenAt, durSecs, volLevel, S.radioFilter);
+    function radioBass(whenAt, midiIn, lenSecs, lvlVal) {
+      tone('sawtooth', midiHz(midiIn), midiHz(midiIn), whenAt, lenSecs, lvlVal, au.radioFilter);
     }
-    function radioPad(whenAt, midiList, durSecs, volLevel, detuneVal) {
-      const ctxRef = S.ctx;
-      if (!(ctxRef)) return;
-      for (const noteVal of midiList) {
-        for (const signVal of [-1, 1]) {
+    function radioPad(whenAt, midiArr, lenSecs, lvlVal, detuneAmt) {
+      const acLive = au.ctx;
+      if (!acLive) return;
+      midiArr.forEach((noteIn) => {
+        [-1, 1].forEach((signAmt) => {
           try {
-            const oscNode = ctxRef.createOscillator();
-            const ampNode = ctxRef.createGain();
-            oscNode.type = 'triangle';
-            oscNode.frequency.value = midiHz(noteVal);
-            oscNode.detune.value = signVal * (detuneVal || 6);
-            ampNode.gain.setValueAtTime(0, whenAt);
-            ampNode.gain.linearRampToValueAtTime(volLevel, whenAt + Math.min(0.4, durSecs * 0.3));
-            ampNode.gain.setValueAtTime(volLevel, whenAt + Math.max(0, durSecs - 0.35));
-            ampNode.gain.linearRampToValueAtTime(0, whenAt + durSecs);
-            oscNode.connect(ampNode);
-            ampNode.connect(S.radioBus);
-            oscNode.start(whenAt);
-            oscNode.stop(whenAt + (durSecs + 0.05));
-          } catch (ignoredErr) {}
-        }
-      }
+            const padOsc = acLive.createOscillator();
+            const padGain = acLive.createGain();
+            padOsc.type = 'triangle';
+            padOsc.frequency.value = midiHz(noteIn);
+            padOsc.detune.value = signAmt * (detuneAmt || 6);
+            padGain.gain.setValueAtTime(0, whenAt);
+            padGain.gain.linearRampToValueAtTime(lvlVal, whenAt + Math.min(0.4, lenSecs * 0.3));
+            padGain.gain.setValueAtTime(lvlVal, whenAt + Math.max(0, lenSecs - 0.35));
+            padGain.gain.linearRampToValueAtTime(0, whenAt + lenSecs);
+            padOsc.connect(padGain);
+            padGain.connect(au.radioBus);
+            padOsc.start(whenAt);
+            padOsc.stop(whenAt + (lenSecs + 0.05));
+          } catch (swallowed) {}
+        });
+      });
     }
     function stationStep(stepIdx, whenAt) {
-      const stationObj = STATION_LIST[S.radioIdx];
-      if (!(stationObj) || !(S.ctx)) return;
-      const stepDur = 60 / stationObj.bpm / 4;
-      const barDur = 16 * stepDur;
+      const stationCur = STATIONS[au.radioIdx];
+      if (!stationCur || !au.ctx) return;
+      const stepLen = (60 / stationCur.bpm) / 4;
+      const barLen = 16 * stepLen;
       const barIdx = Math.floor(stepIdx / 16);
-      const stepInBar = stepIdx % 16;
-      if ('wave' === stationObj.kind) {
-        const barOfFour = barIdx % 4;
-        const rootNote = BASS_ROOTS[barOfFour];
-        if (0 === (stepInBar % 2)) radioBass(whenAt, (8 === stepInBar) ? (rootNote + 12) : rootNote, 0.22, 0.5);
-        if (0 === stepInBar) radioPad(whenAt, PAD_CHORDS[barOfFour], barDur, 0.055, 7);
-        const arpPool = PAD_CHORDS[barOfFour];
-        const arpNoteVal = arpPool[stepInBar % 3] + 12 + ((6 === (stepInBar % 8)) ? 7 : 0);
-        tone('square', midiHz(arpNoteVal), midiHz(arpNoteVal), whenAt, 0.09, 0.07, S.radioBus);
-        if (2 === (stepInBar % 4)) hatTick(whenAt, 0.1);
-      } else if ('lofi' === stationObj.kind) {
-        const barOfFour = barIdx % 4;
-        if (0 === stepInBar) {
-          radioPad(whenAt, LOFI_CHORDS[barOfFour], barDur, 0.085, 5 + (Math.sin(barIdx * 1.7) * 4));
-          tone('triangle', midiHz(LOFI_ROOTS[barOfFour] + 12), midiHz(LOFI_ROOTS[barOfFour] + 12), whenAt, barDur * 0.9, 0.22, S.radioBus);
+      const barPos = stepIdx % 16;
+      switch (stationCur.kind) {
+        case 'wave': {
+          const cyclePos = barIdx % 4;
+          const rootMidi = BASS_LINE[cyclePos];
+          if (0 === (barPos % 2)) radioBass(whenAt, (8 === barPos) ? (12 + rootMidi) : rootMidi, 0.22, 0.5);
+          if (0 === barPos) radioPad(whenAt, PAD_SETS[cyclePos], barLen, 0.055, 7);
+          const arpSet = PAD_SETS[cyclePos];
+          const arpMidi = arpSet[barPos % 3] + 12 + ((6 === (barPos % 8)) ? 7 : 0);
+          tone('square', midiHz(arpMidi), midiHz(arpMidi), whenAt, 0.09, 0.07, au.radioBus);
+          if (2 === (barPos % 4)) hatTick(whenAt, 0.1);
+          break;
         }
-        if ((0 === stepInBar) || (10 === stepInBar)) kickHit(whenAt, 0.32);
-        if ((4 === stepInBar) || (12 === stepInBar)) noiseHitTo(whenAt, 0.09, 0.09, 1800, 'bandpass', S.radioBus);
-        if (2 === (stepInBar % 4)) hatTick(whenAt, 0.045);
-        if (0 === (stepInBar % 2)) noiseHitTo(whenAt, 0.02, 0.014, 1600, 'lowpass', S.radioBus);
-      } else {
-        const barOfFour = barIdx % 4;
-        const rootNote = EURO_ROOTS[barOfFour];
-        if (0 === (stepInBar % 4)) kickHit(whenAt, 0.5);
-        if (2 === (stepInBar % 4)) radioBass(whenAt, rootNote + 12, 0.16, 0.42);
-        if (2 === (stepInBar % 4)) hatTick(whenAt, 0.13, 0.07);
-        else if (0 === (stepInBar % 2)) hatTick(whenAt, 0.04);
-        if (0 === stepInBar) radioPad(whenAt, PAD_CHORDS[(1 === barOfFour) ? 0 : barOfFour], stepDur * 4, 0.04, 5);
-        const leadNoteVal = EURO_LEAD[((barIdx % 2) * 16) + stepInBar];
-        if (leadNoteVal) tone('sawtooth', midiHz(leadNoteVal), midiHz(leadNoteVal), whenAt, 0.17, 0.16, S.radioBus);
+        case 'lofi': {
+          const cyclePos = barIdx % 4;
+          if (0 === barPos) {
+            radioPad(whenAt, LOFI_SETS[cyclePos], barLen, 0.085, 5 + (Math.sin(barIdx * 1.7) * 4));
+            tone('triangle', midiHz(LOFI_BASS[cyclePos] + 12), midiHz(LOFI_BASS[cyclePos] + 12), whenAt, barLen * 0.9, 0.22, au.radioBus);
+          }
+          if ((0 === barPos) || (10 === barPos)) kickHit(whenAt, 0.32);
+          if ((4 === barPos) || (12 === barPos)) noiseHitTo(whenAt, 0.09, 0.09, 1800, 'bandpass', au.radioBus);
+          if (2 === (barPos % 4)) hatTick(whenAt, 0.045);
+          if (0 === (barPos % 2)) noiseHitTo(whenAt, 0.02, 0.014, 1600, 'lowpass', au.radioBus);
+          break;
+        }
+        default: {
+          const cyclePos = barIdx % 4;
+          const rootMidi = EURO_BASS[cyclePos];
+          if (0 === (barPos % 4)) kickHit(whenAt, 0.5);
+          if (2 === (barPos % 4)) radioBass(whenAt, rootMidi + 12, 0.16, 0.42);
+          if (2 === (barPos % 4)) hatTick(whenAt, 0.13, 0.07);
+          else if (0 === (barPos % 2)) hatTick(whenAt, 0.04);
+          if (0 === barPos) radioPad(whenAt, PAD_SETS[(1 === cyclePos) ? 0 : cyclePos], stepLen * 4, 0.04, 5);
+          const leadMidi = EURO_MELODY[((barIdx % 2) * 16) + barPos];
+          if (leadMidi) tone('sawtooth', midiHz(leadMidi), midiHz(leadMidi), whenAt, 0.17, 0.16, au.radioBus);
+          break;
+        }
       }
     }
     function pumpRadio() {
-      const ctxRef = S.ctx;
-      if (!(ctxRef) || !(S.radioOn)) return;
-      if ('running' !== ctxRef.state) return;
-      const stationObj = STATION_LIST[S.radioIdx];
-      const stepDur = 60 / stationObj.bpm / 4;
-      if (S.radioNextAt < ctxRef.currentTime) S.radioNextAt = ctxRef.currentTime + 0.05;
-      while (S.radioNextAt < (ctxRef.currentTime + 0.2)) {
-        stationStep(S.radioStep, S.radioNextAt);
-        S.radioStep = (S.radioStep + 1);
-        S.radioNextAt = (S.radioNextAt + stepDur);
+      const acLive = au.ctx;
+      if (!acLive || !au.radioOn) return;
+      if ('running' !== acLive.state) return;
+      const stationCur = STATIONS[au.radioIdx];
+      const stepLen = (60 / stationCur.bpm) / 4;
+      if (acLive.currentTime > au.radioNextAt) au.radioNextAt = acLive.currentTime + 0.05;
+      while ((acLive.currentTime + 0.2) > au.radioNextAt) {
+        stationStep(au.radioStep, au.radioNextAt);
+        au.radioStep = (1 + au.radioStep);
+        au.radioNextAt = (stepLen + au.radioNextAt);
       }
     }
     function stationNow() {
-      return S.radioOn ? { name: STATION_LIST[S.radioIdx].name, index: S.radioIdx } : null;
+      return au.radioOn ? { name: STATIONS[au.radioIdx].name, index: au.radioIdx } : null;
     }
-    function startStationAt(idxVal) {
+    function startStationAt(idxIn) {
       try {
-        const stationCount = STATION_LIST.length;
-        S.radioIdx = (((Math.floor(Number(idxVal) || 0) % stationCount) + stationCount) % stationCount);
-        S.radioOn = true;
-        S.radioStep = 0;
-        const ctxRef = getCtx();
-        if (ctxRef) {
-          if ('suspended' === ctxRef.state) ctxRef.resume().catch(() => {});
-          S.radioNextAt = ctxRef.currentTime + 0.06;
-          if (!(S.radioTimer)) S.radioTimer = setInterval(pumpRadio, 100);
+        const stationCount = STATIONS.length;
+        au.radioIdx = (((Math.floor(Number(idxIn) || 0) % stationCount) + stationCount) % stationCount);
+        au.radioOn = true;
+        au.radioStep = 0;
+        const acLive = getCtx();
+        if (acLive) {
+          if ('suspended' === acLive.state) acLive.resume().catch(() => {});
+          au.radioNextAt = acLive.currentTime + 0.06;
+          if (!au.radioTimer) au.radioTimer = setInterval(pumpRadio, 100);
           pumpRadio();
         }
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
       return stationNow();
     }
     function stopStationFn() {
       try {
-        S.radioOn = false;
-        if (S.radioTimer) { clearInterval(S.radioTimer); S.radioTimer = null; }
-        S.musicStarted = false;
-      } catch (ignoredErr) {}
+        au.radioOn = false;
+        if (au.radioTimer) { clearInterval(au.radioTimer); au.radioTimer = null; }
+        au.musicStarted = false;
+      } catch (swallowed) {}
     }
     function nextStationFn() {
       try {
-        const lastIdx = STATION_LIST.length - 1;
-        if (!(S.radioOn)) return startStationAt(0);
-        if (S.radioIdx < lastIdx) return startStationAt(S.radioIdx + 1);
+        const lastPos = STATIONS.length - 1;
+        if (!au.radioOn) return startStationAt(0);
+        if (lastPos > au.radioIdx) return startStationAt(au.radioIdx + 1);
         stopStationFn();
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
       return stationNow();
     }
-    const radioApi = {};
-    radioApi.start = startStationAt;
-    radioApi.stop = stopStationFn;
-    radioApi.next = nextStationFn;
-    radioApi.current = stationNow;
+    const radioApi = {
+      start: startStationAt,
+      stop: stopStationFn,
+      next: nextStationFn,
+      current: stationNow,
+    };
     function pumpMusic() {
-      const ctxRef = S.ctx;
-      if (!(ctxRef) || ('running' !== ctxRef.state)) return;
-      if (S.radioOn) return;
-      if (!(S.musicStarted)) { S.musicStarted = true; S.step = 0; S.nextStepAt = ctxRef.currentTime + 0.06; }
-      while (S.nextStepAt < (ctxRef.currentTime + 0.15)) {
-        musicStep(S.step, S.nextStepAt);
-        S.step = (S.step + 1);
-        S.nextStepAt = (S.nextStepAt + STEP_SECS);
+      const acLive = au.ctx;
+      if (!acLive || ('running' !== acLive.state)) return;
+      if (au.radioOn) return;
+      if (!au.musicStarted) {
+        au.musicStarted = true;
+        au.step = 0;
+        au.nextStepAt = acLive.currentTime + 0.06;
+      }
+      while (au.nextStepAt < (acLive.currentTime + 0.15)) {
+        musicStep(au.step, au.nextStepAt);
+        au.step = (1 + au.step);
+        au.nextStepAt = (STEP_LEN + au.nextStepAt);
       }
     }
-    // Per-frame poll: engine, skid, crash edge, siren, music pump.
-    function frameTick(dtRaw) {
+    // Frame poll: engine blend, skid level, the crash edge, the
+    // siren proximity sweep and the music scheduler.
+    function frameTick(dtIn) {
       try {
-        const dtVal = (Number.isFinite(dtRaw) && (0 < dtRaw) && (dtRaw < 1)) ? dtRaw : 1 / 60;
-        const ctxRef = S.ctx;
-        if (!(ctxRef)) return;
-        const clockNow = nowSecs();
-        const flagsObj = game.flags || {};
-        if (0.3 < (clockNow - S.lastSetEngine)) {
-          if (flagsObj.inCar && game.car) {
-            let rpmFraction = 0;
+        const dtStep = (Number.isFinite(dtIn) && (dtIn > 0) && (1 > dtIn)) ? dtIn : 1 / 60;
+        const acLive = au.ctx;
+        if (!acLive) return;
+        const wallNow = nowSecs();
+        const flagsObj = gmObj.flags || {};
+        if ((wallNow - au.lastSetEngine) > 0.3) {
+          if (flagsObj.inCar && gmObj.car) {
+            let rpmPart = 0;
             try {
-              const topSpeedVal = game.car.spec && game.car.spec.topSpeed;
-              rpmFraction = topSpeedVal ? Math.abs(game.car.speed || 0) / (topSpeedVal / 3.6) : Math.abs(game.car.speed || 0) / 50;
-            } catch (ignoredErr) { rpmFraction = 0; }
-            S.engOn = true;
-            S.engRpm = Math.max(0.07, clampUnit(rpmFraction));
-          } else { S.engOn = false; }
+              const topSpeedIn = gmObj.car.spec && gmObj.car.spec.topSpeed;
+              rpmPart = topSpeedIn ? Math.abs(gmObj.car.speed || 0) / (topSpeedIn / 3.6) : Math.abs(gmObj.car.speed || 0) / 50;
+            } catch (swallowed) { rpmPart = 0; }
+            au.engOn = true;
+            au.engRpm = Math.max(0.07, clampUnit(rpmPart));
+          } else { au.engOn = false; }
         }
-        const easeFactor = Math.min(1, dtVal * 9);
-        S.engRpmCur = S.engRpmCur + ((S.engRpm - S.engRpmCur) * easeFactor);
-        const gainTarget = S.engOn ? (0.05 + (S.engRpmCur * 0.1)) : 0;
-        S.engGainCur = S.engGainCur + ((gainTarget - S.engGainCur) * easeFactor);
-        if (S.engOsc1 && S.engGain) {
-          const freqCurrent = 60 + (S.engRpmCur * 220);
-          S.engOsc1.frequency.value = freqCurrent;
-          S.engOsc2.frequency.value = freqCurrent;
-          S.engFilter.frequency.value = 350 + (S.engRpmCur * 1600);
-          S.engGain.gain.value = S.engGainCur;
+        const easeAmt = Math.min(1, dtStep * 9);
+        au.engRpmCur = au.engRpmCur + ((au.engRpm - au.engRpmCur) * easeAmt);
+        const gainTarget = au.engOn ? (0.05 + (au.engRpmCur * 0.1)) : 0;
+        au.engGainCur = au.engGainCur + ((gainTarget - au.engGainCur) * easeAmt);
+        if (au.engOsc1 && au.engGain) {
+          const pitchNow = 60 + (au.engRpmCur * 220);
+          au.engOsc1.frequency.value = pitchNow;
+          au.engOsc2.frequency.value = pitchNow;
+          au.engFilter.frequency.value = 350 + (au.engRpmCur * 1600);
+          au.engGain.gain.value = au.engGainCur;
         }
         let skidTarget = flagsObj.drifting ? 0.06 : 0;
-        if ((clockNow - S.lastScreech) < 0.3) {
-          skidTarget = S.screechOn ? (0.03 + (0.11 * S.screechInt)) : 0;
-          if (S.skidFilter) S.skidFilter.frequency.value = 750 + (350 * S.screechInt);
+        if (0.3 > (wallNow - au.lastScreech)) {
+          skidTarget = au.screechOn ? (0.03 + (0.11 * au.screechInt)) : 0;
+          if (au.skidFilter) au.skidFilter.frequency.value = 750 + (350 * au.screechInt);
         }
-        S.skidCur = S.skidCur + ((skidTarget - S.skidCur) * Math.min(1, dtVal * 12));
-        if (S.skidGain) S.skidGain.gain.value = S.skidCur;
-        const crashRaw = flagsObj.crashTimer;
-        const crashVal = ('number' === typeof crashRaw) ? ct : (crashRaw ? 1 : 0);
-        if (((0 < crashVal) && !(S.prevCrash > 0)) || ((S.prevCrash + 0.001) < crashVal)) {
-          if (crashVal !== S.prevCrash) playSfx('crash');
+        au.skidCur = au.skidCur + ((skidTarget - au.skidCur) * Math.min(1, dtStep * 12));
+        if (au.skidGain) au.skidGain.gain.value = au.skidCur;
+        const crashIn = flagsObj.crashTimer;
+        let crashLvl = 0;
+        if ('number' === typeof crashIn) crashLvl = ct;
+        else if (crashIn) crashLvl = 1;
+        if (((crashLvl > 0) && !(au.prevCrash > 0)) || ((au.prevCrash + 0.001) < crashLvl)) {
+          if (crashLvl !== au.prevCrash) playSfx('crash');
         }
-        S.prevCrash = crashVal;
-        let sirenActive = false;
+        au.prevCrash = crashLvl;
+        let sirenOn = false;
         try {
-          if ((2 <= (game.wanted || 0)) && Array.isArray(game.cops) && game.cops.length) {
-            const selfPos = locateObj((flagsObj.inCar && game.car) ? game.car : game.player) || locateObj(game.car) || locateObj(game.player);
-            if (selfPos) {
-              for (const copUnit of game.cops) {
-                const copPos = locateObj(copUnit);
-                if (!(copPos)) continue;
-                const deltaX = copPos.x - selfPos.x;
-                const deltaZ = copPos.z - selfPos.z;
-                if (!(3600 < ((deltaX * deltaX) + (deltaZ * deltaZ)))) { sirenActive = true; break; }
-              }
+          if (((gmObj.wanted || 0) >= 2) && Array.isArray(gmObj.cops) && gmObj.cops.length) {
+            const selfSpot = locateObj((flagsObj.inCar && gmObj.car) ? gmObj.car : gmObj.player) || locateObj(gmObj.car) || locateObj(gmObj.player);
+            if (selfSpot) {
+              gmObj.cops.some((copUnit) => {
+                const copSpot = locateObj(copUnit);
+                if (!copSpot) return false;
+                const gapX = copSpot.x - selfSpot.x;
+                const gapZ = copSpot.z - selfSpot.z;
+                if (!(((gapX * gapX) + (gapZ * gapZ)) > 3600)) { sirenOn = true; return true; }
+                return false;
+              });
             }
           }
-        } catch (ignoredErr) { sirenActive = false; }
-        S.sirCur = S.sirCur + (((sirenActive ? 0.04 : 0) - S.sirCur) * Math.min(1, dtVal * 8));
-        if (S.sirGain && S.sirOsc) {
-          S.sirGain.gain.value = S.sirCur;
-          if (sirenActive) S.sirOsc.frequency.value = (0 === (Math.floor(clockNow * 2.8) % 2)) ? 720 : 960;
+        } catch (swallowed) { sirenOn = false; }
+        au.sirCur = au.sirCur + (((sirenOn ? 0.04 : 0) - au.sirCur) * Math.min(1, dtStep * 8));
+        if (au.sirGain && au.sirOsc) {
+          au.sirGain.gain.value = au.sirCur;
+          if (sirenOn) au.sirOsc.frequency.value = (0 === (Math.floor(wallNow * 2.8) % 2)) ? 720 : 960;
         }
         pumpMusic();
-      } catch (ignoredErr) {}
+      } catch (swallowed) {}
     }
-    const soundApi = {};
-    soundApi.muted = false;
-    soundApi.play = playSfx;
-    soundApi.toggleMute = toggleMuteFn;
-    soundApi.setEngine = setEngine;
-    soundApi.resume = resumeFn;
-    soundApi.horn = hornOnceFn;
-    soundApi.hornStart = hornStartFn;
-    soundApi.hornStop = hornStopFn;
-    soundApi.screech = setScreech;
-    soundApi.setScreech = setScreech;
-    soundApi.crash = crashCall;
-    soundApi.radio = radioApi;
-    game.audio = soundApi;
+    const apiObj = {
+      muted: false,
+      play: playSfx,
+      toggleMute: toggleMuteFn,
+      setEngine: setEngine,
+      resume: resumeFn,
+      horn: hornOnceFn,
+      hornStart: hornStartFn,
+      hornStop: hornStopFn,
+      screech: setScreech,
+      setScreech: setScreech,
+      crash: crashCall,
+      radio: radioApi,
+    };
+    gmObj.audio = apiObj;
     try {
-      if (Array.isArray(game.updaters)) game.updaters.push(frameTick);
-      else if (game.updaters && ('function' === typeof game.updaters.add)) game.updaters.add(frameTick);
-      else if (null == game.updaters) game.updaters = [frameTick];
-    } catch (ignoredErr) {}
+      if (Array.isArray(gmObj.updaters)) gmObj.updaters.push(frameTick);
+      else if (gmObj.updaters && ('function' === typeof gmObj.updaters.add)) gmObj.updaters.add(frameTick);
+      else if (null == gmObj.updaters) gmObj.updaters = [frameTick];
+    } catch (swallowed) {}
   } catch (outerErr) {
     try {
-      if (game && !(game.audio)) {
-        game.audio = { muted: true, play() {}, toggleMute() {}, setEngine() {}, resume() {}, horn() {}, hornStart() {}, hornStop() {}, screech() {}, setScreech() {}, crash() {}, radio: { start() {}, stop() {}, next() {}, current() { return null; } } };
+      if (gmObj && !gmObj.audio) {
+        const fallbackApi = { muted: true, radio: { start() {}, stop() {}, next() {}, current() { return null; } } };
+        fallbackApi.play = function () {};
+        fallbackApi.toggleMute = function () {};
+        fallbackApi.setEngine = function () {};
+        fallbackApi.resume = function () {};
+        fallbackApi.horn = function () {};
+        fallbackApi.hornStart = function () {};
+        fallbackApi.hornStop = function () {};
+        fallbackApi.screech = function () {};
+        fallbackApi.setScreech = function () {};
+        fallbackApi.crash = function () {};
+        gmObj.audio = fallbackApi;
       }
-    } catch (ignoredErr) {}
+    } catch (swallowed) {}
   }
 }

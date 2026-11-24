@@ -1,4 +1,4 @@
-// Getting into and out of cars, plus the arcade driving itself
+// Getting into and out of vehicles, plus the arcade driving model
 import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
@@ -6,344 +6,451 @@ import { makeFigure, poseSeated } from './player.js';
 import { spawnSmokeAt, damageVehicle } from './cars.js';
 import { loadHeroAsset } from './assets.js';
 import { rnd, rr, pick } from './random.js';
-// How roaming traffic obeys traffic lights
-// The traffic updater sits in another module and cannot be called
-// from here, so a hook registers once on the updater list, which the main
-// loop runs ahead of traffic each frame, and pre brakes by scaling
-// cruise speed while the traffic updater applies its own obstacle
-// clamp, easing cars to a stop before the crossing edge, and green
-// brings back the original cruise value
+// Roaming traffic and traffic lights
+// The traffic updater lives in another module and cannot be
+// called from here, so a hook registers once on the updater
+// list, which the main loop runs ahead of traffic each frame,
+// and pre brakes by scaling cruise speed while the traffic
+// updater applies its own obstacle clamp, easing cars to a
+// stop before the crossing edge, with green restoring the
+// original cruise value afterwards
 const CROSSING_HALF = 15;
-function runLightCompliance(G) {
-  if (!G.traffic || typeof G.lightState !== 'function') return;
-  const halfSpan = CROSSING_HALF;
-  G.traffic.forEach((trafficCar) => {
-    if (trafficCar.driver !== 'traffic' || trafficCar.cruise == null) return;
-    if (trafficCar._cruiseOrig == null) trafficCar._cruiseOrig = trafficCar.cruise;
-    let effectiveCruise = trafficCar._cruiseOrig;
-    const axisName = trafficCar.onX ? 'z' : 'x';
-    const lightPhase = G.lightState(axisName);
-    if (lightPhase === 'red' || lightPhase === 'yellow') {
-      const stopLines = trafficCar.onX ? G.roadZ : G.roadX;
-      const posAlong = trafficCar.onX ? trafficCar.z : trafficCar.x;
-      const headingComp = trafficCar.onX ? Math.cos(trafficCar.angle) : Math.sin(trafficCar.angle);
-      const travelSign = headingComp !== 0 ? Math.sign(headingComp) : (trafficCar.dirSign || 1);
-      (stopLines || []).forEach((linePos) => {
-        const gapToEdge = travelSign * (linePos - posAlong) - halfSpan;
-        if (gapToEdge > 0 && !(gapToEdge > 14)) {
-          if (lightPhase === 'red' || gapToEdge > 6) effectiveCruise = Math.min(effectiveCruise, trafficCar._cruiseOrig * Math.min(1, Math.max(0, gapToEdge - 2) / 12)); } });
-    }
-    trafficCar.cruise = effectiveCruise; }); }
-function registerLightHook(G) {
-  if (!G || G._lightHook || !Array.isArray(G.updaters)) return; G._lightHook = true;
-  G.updaters.push((stateIn) => { try { runLightCompliance(stateIn); } catch (err) {} }); }
-// Scooter traffic and parked props form their own small agent set
-// The scooter model, with rider baked in, becomes weaving traffic plus
-// parked props with riders waiting, and a failed load spawns nothing
-// at all, with no procedural stand in, because it is pure garnish
-const SCOOTER_PALETTE = [0xffffff, 0xffd9c9, 0xfff3b0, 0xbfe3ff, 0xe6ccff, 0xffc4c4];
-function tintedCloneOf(sourceWrap, tintHex) {
-  const cloneRoot = sourceWrap.clone(true);
-  cloneRoot.traverse((nodeIn) => {
-    if (!nodeIn.isMesh || !nodeIn.material) return;
-    const retintOne = (matIn) => { const matClone = matIn.clone(); if (matClone.color) matClone.color.setHex(tintHex); return matClone; };
-    nodeIn.material = Array.isArray(nodeIn.material) ? nodeIn.material.map(retintOne) : retintOne(nodeIn.material); });
+function trafficPhaseFor(carGiven, stateGiven) {
+  const axisName = carGiven.onX ? 'z' : 'x';
+  const phaseName = stateGiven.lightState(axisName);
+  return phaseName; }
+function trafficSignFor(carGiven) {
+  const headingPart = carGiven.onX ? Math.cos(carGiven.angle) : Math.sin(carGiven.angle);
+  const headingSign = (headingPart === 0) ? 0 : Math.sign(headingPart);
+  const signFinal = headingSign ? headingSign : (carGiven.dirSign || 1);
+  return signFinal; }
+function lightCruiseFor(carGiven, stateGiven, phaseGiven) {
+  let cruiseNow = carGiven._cruiseOrig;
+  const linesSet = carGiven.onX ? stateGiven.roadZ : stateGiven.roadX;
+  const alongNow = carGiven.onX ? carGiven.z : carGiven.x;
+  const signTravel = trafficSignFor(carGiven);
+  const weighLine = (lineAt) => {
+    const gapEdge = ((signTravel * (lineAt + (-alongNow))) + (-CROSSING_HALF));
+    const gapCounts = (gapEdge > 0) && !(gapEdge > 14);
+    if (!gapCounts) return;
+    const phaseHalts = (phaseGiven === 'red') || (gapEdge > 6);
+    if (!phaseHalts) return;
+    const shareSlow = Math.min(1, Math.max(0, (gapEdge + (-2)) / 12));
+    cruiseNow = Math.min(cruiseNow, carGiven._cruiseOrig * shareSlow); };
+  (linesSet || []).forEach(weighLine);
+  return cruiseNow; }
+function enforceLights(stateGiven) {
+  const trafficMissing = !stateGiven.traffic;
+  const lightsMissing = (typeof stateGiven.lightState !== 'function');
+  if (trafficMissing || lightsMissing) return;
+  stateGiven.traffic.forEach((carGiven) => {
+    const driverTraffic = (carGiven.driver === 'traffic');
+    const cruisePresent = (carGiven.cruise != null);
+    if (!driverTraffic || !cruisePresent) return;
+    if (carGiven._cruiseOrig == null) carGiven._cruiseOrig = carGiven.cruise;
+    const phaseNow = trafficPhaseFor(carGiven, stateGiven);
+    const phaseHalts = (phaseNow === 'red') || (phaseNow === 'yellow');
+    carGiven.cruise = phaseHalts ? lightCruiseFor(carGiven, stateGiven, phaseNow) : carGiven._cruiseOrig; }); }
+function installLightHook(stateGiven) {
+  const hookBlocked = !stateGiven || stateGiven._lightHook || !Array.isArray(stateGiven.updaters);
+  if (hookBlocked) return;
+  stateGiven._lightHook = true;
+  stateGiven.updaters.push((stateArg) => { try { enforceLights(stateArg); } catch (ignoredFault) {} }); }
+// Scooter traffic and parked props make up their own agent set
+// The scooter model, rider baked in, becomes weaving traffic
+// plus parked props with riders waiting, and a failed load
+// spawns nothing at all, with no procedural stand in, since it
+// is pure garnish
+const TINTS_SCOOTER = [0xffffff, 0xffd9c9, 0xfff3b0, 0xbfe3ff, 0xe6ccff, 0xffc4c4];
+function materialRetinted(matGiven, tintGiven) {
+  const cloneMat = matGiven.clone();
+  if (cloneMat.color) cloneMat.color.setHex(tintGiven);
+  return cloneMat; }
+function cloneTintedWrap(wrapGiven, tintGiven) {
+  const cloneRoot = wrapGiven.clone(true);
+  cloneRoot.traverse((nodeGiven) => {
+    if (!nodeGiven.isMesh || !nodeGiven.material) return;
+    nodeGiven.material = Array.isArray(nodeGiven.material) ? nodeGiven.material.map((matGiven) => materialRetinted(matGiven, tintGiven)) : materialRetinted(nodeGiven.material, tintGiven); });
   return cloneRoot; }
-function rerollScooterRoute(G, scooter) {
-  scooter.onX = rnd() < 0.5;
-  scooter.line = pick(scooter.onX ? G.roadX : G.roadZ);
-  scooter.dirSign = rnd() < 0.5 ? 1 : -1;
-  scooter.along = rr(-600, 600);
-  scooter.travel = 0; }
-function advanceScooters(G, dtIn) {
-  if (!G._vespas || !dtIn) return;
-  const elapsedNow = G.elapsed || 0;
-  G._vespas.forEach((scooter) => {
-    scooter.travel += scooter.speed * dtIn;
-    scooter.along += (scooter.speed * dtIn) * scooter.dirSign;
-    if (scooter.travel > 500 || Math.abs(scooter.along) > 655) rerollScooterRoute(G, scooter);
-    const weaveOffset = Math.sin(elapsedNow * 0.9 + scooter.weavePhase) * 0.8;
-    const headingWobble = Math.cos(elapsedNow * 0.9 + scooter.weavePhase) * 0.06;
-    let headingBase;
-    if (scooter.onX) {
-      scooter.x = (scooter.line + scooter.dirSign * 5) + weaveOffset; scooter.z = scooter.along;
-      headingBase = scooter.dirSign > 0 ? 0 : Math.PI;
-    } else { scooter.x = scooter.along; scooter.z = (scooter.line - scooter.dirSign * 5) + weaveOffset;
-      headingBase = scooter.dirSign > 0 ? Math.PI / 2 : -Math.PI / 2; }
-    scooter.angle = headingBase + headingWobble;
-    scooter.group.position.set(scooter.x, groundH(scooter.x, scooter.z) + 0.02, scooter.z);
-    scooter.group.rotation.y = scooter.angle; }); }
-const SCOOTER_PARKED_SPOTS = [
-  { x: -405, z: 448,
-    angle: 0.7, tint: 1 },
-  { x: 330, z: 470,
-    angle: -Math.PI / 2, tint: 3 },
-  { x: 155, z: -145,
-    angle: 2.35, tint: 5 } ];
-export function initVespas(G) {
-  if (!G || G._vespasInit || !Array.isArray(G.updaters)) return;
-  G._vespasInit = true;
-  G._vespas = [];
-  G.updaters.push((stateIn, dtIn) => { try { advanceScooters(stateIn, dtIn); } catch (err) {} });
-  initSportbikes(G); loadHeroAsset('npcVespa').then((wrapIn) => { try {
-      if (!wrapIn) return;
-      for (let idx = 0; idx < 4; idx++) {
-        const scooterGroup = tintedCloneOf(wrapIn, SCOOTER_PALETTE[idx % SCOOTER_PALETTE.length]);
-        G.scene.add(scooterGroup);
-        const scooter = { group: scooterGroup, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, weavePhase: rr(0, 2 * Math.PI), speed: rr(11, 15) };
-        rerollScooterRoute(G, scooter);
-        scooterGroup.position.set(scooter.onX ? scooter.line + scooter.dirSign * 5 : scooter.along, 0, scooter.onX ? scooter.along : scooter.line - scooter.dirSign * 5);
-        scooterGroup.position.y = groundH(scooterGroup.position.x, scooterGroup.position.z) + 0.02;
-        G._vespas.push(scooter); } G._parkedVespas = [];
-      SCOOTER_PARKED_SPOTS.forEach((spotDef) => {
-        const parkedGroup = tintedCloneOf(wrapIn, SCOOTER_PALETTE[spotDef.tint % SCOOTER_PALETTE.length]);
-        parkedGroup.position.set(spotDef.x, groundH(spotDef.x, spotDef.z) + 0.02, spotDef.z);
-        parkedGroup.rotation.y = spotDef.angle;
-        G.scene.add(parkedGroup);
-        G._parkedVespas.push(parkedGroup); });
-    } catch (err) { /* garnish only */ }
+function rerollRoute(stateGiven, agentGiven) {
+  agentGiven.onX = (rnd() < 0.5);
+  agentGiven.line = pick(agentGiven.onX ? stateGiven.roadX : stateGiven.roadZ);
+  agentGiven.dirSign = (rnd() < 0.5) ? 1 : -1;
+  agentGiven.along = rr(-600, 600);
+  agentGiven.travel = 0; }
+function placeOnRoad(agentGiven, lateralGiven, headingGiven) {
+  if (agentGiven.onX) {
+    agentGiven.x = ((agentGiven.line + (agentGiven.dirSign * 5)) + lateralGiven); agentGiven.z = agentGiven.along;
+  } else { agentGiven.x = agentGiven.along; agentGiven.z = ((agentGiven.line + (-(agentGiven.dirSign * 5))) + lateralGiven); }
+  return headingGiven; }
+function headingBaseFor(agentGiven) {
+  const pairFacing = agentGiven.onX ? [0, Math.PI] : [(Math.PI / 2), (-Math.PI / 2)];
+  const [facingPos, facingNeg] = pairFacing;
+  const facingChosen = (agentGiven.dirSign > 0) ? facingPos : facingNeg;
+  return facingChosen; }
+function syncPose(agentGiven) {
+  agentGiven.group.position.set(agentGiven.x, (groundH(agentGiven.x, agentGiven.z) + 0.02), agentGiven.z);
+  agentGiven.group.rotation.y = agentGiven.angle; }
+function stepScooters(stateGiven, dtGiven) {
+  if (!stateGiven._vespas || !dtGiven) return;
+  const elapsedNow = (stateGiven.elapsed || 0);
+  stateGiven._vespas.forEach((scooterGiven) => {
+    scooterGiven.travel += (scooterGiven.speed * dtGiven);
+    scooterGiven.along += ((scooterGiven.speed * dtGiven) * scooterGiven.dirSign);
+    const routeStale = (scooterGiven.travel > 500) || (Math.abs(scooterGiven.along) > 655);
+    if (routeStale) rerollRoute(stateGiven, scooterGiven);
+    const weaveAt = ((elapsedNow * 0.9) + scooterGiven.weavePhase);
+    const weaveOff = (Math.sin(weaveAt) * 0.8);
+    const wobbleValue = (Math.cos(weaveAt) * 0.06);
+    placeOnRoad(scooterGiven, weaveOff, 0);
+    scooterGiven.angle = (headingBaseFor(scooterGiven) + wobbleValue);
+    syncPose(scooterGiven); }); }
+const SPOTS_PARKED_SCOOTER = [
+  { x: -405, z: 448, angle: 0.7, tint: 1 },
+  { x: 330, z: 470, angle: -Math.PI / 2, tint: 3 },
+  { x: 155, z: -145, angle: 2.35, tint: 5 } ];
+function spawnRollingScooters(stateGiven, wrapGiven) {
+  for (let idxSpawn = 0; idxSpawn < 4; idxSpawn++) {
+    const tintNow = TINTS_SCOOTER[idxSpawn % TINTS_SCOOTER.length];
+    const grpScooter = cloneTintedWrap(wrapGiven, tintNow);
+    stateGiven.scene.add(grpScooter);
+    const recordScooter = { group: grpScooter, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, weavePhase: rr(0, 2 * Math.PI), speed: rr(11, 15) };
+    rerollRoute(stateGiven, recordScooter);
+    const bornX = recordScooter.onX ? (recordScooter.line + (recordScooter.dirSign * 5)) : recordScooter.along;
+    const bornZ = recordScooter.onX ? recordScooter.along : (recordScooter.line + (-(recordScooter.dirSign * 5)));
+    grpScooter.position.set(bornX, 0, bornZ);
+    grpScooter.position.y = (groundH(grpScooter.position.x, grpScooter.position.z) + 0.02);
+    stateGiven._vespas.push(recordScooter); } }
+function spawnParkedScooters(stateGiven, wrapGiven) {
+  stateGiven._parkedVespas = [];
+  SPOTS_PARKED_SCOOTER.forEach((spotGiven) => {
+    const tintNow = TINTS_SCOOTER[spotGiven.tint % TINTS_SCOOTER.length];
+    const grpParked = cloneTintedWrap(wrapGiven, tintNow);
+    grpParked.position.set(spotGiven.x, (groundH(spotGiven.x, spotGiven.z) + 0.02), spotGiven.z);
+    grpParked.rotation.y = spotGiven.angle;
+    stateGiven.scene.add(grpParked);
+    stateGiven._parkedVespas.push(grpParked); }); }
+export function initVespas(stateGiven) {
+  const initBlocked = !stateGiven || stateGiven._vespasInit || !Array.isArray(stateGiven.updaters);
+  if (initBlocked) return;
+  stateGiven._vespasInit = true;
+  stateGiven._vespas = [];
+  stateGiven.updaters.push((stateArg, dtArg) => { try { stepScooters(stateArg, dtArg); } catch (ignoredFault) {} });
+  initSportbikes(stateGiven);
+  loadHeroAsset('npcVespa').then((wrapGiven) => { try {
+      if (!wrapGiven) return;
+      spawnRollingScooters(stateGiven, wrapGiven);
+      spawnParkedScooters(stateGiven, wrapGiven);
+    } catch (ignoredFault) { /* garnish only */ }
   }).catch(() => {}); }
-// Sportbike traffic runs with the scooters, sharing road lane and
-// respawn conventions plus the same clone tint helper and hook style
-// They ride straight along roads and respawn instead of turning at
-// crossings, so the weave is their cornering and the lean banks in
-// Garnish only again, so a null load spawns nothing
-const BIKE_PALETTE = [0xffffff, 0xdfe8ff, 0xffe3f2, 0xe8ffe3];
-function bikeAssemblyOf(sourceWrap, tintHex) {
-  const outerGroup = new THREE.Group();
-  const innerGroup = new THREE.Group();
-  innerGroup.rotation.y = -Math.PI / 2;
-  innerGroup.add(tintedCloneOf(sourceWrap, tintHex));
-  outerGroup.add(innerGroup);
-  outerGroup.userData.inner = innerGroup;
-  return outerGroup; }
-function advanceBikes(G, dtIn) {
-  if (!G._sportbikes || !dtIn) return;
-  const elapsedNow = G.elapsed || 0;
-  G._sportbikes.forEach((bike) => {
-    bike.travel += bike.speed * dtIn;
-    bike.along += (bike.speed * dtIn) * bike.dirSign;
-    if (bike.travel > 500 || Math.abs(bike.along) > 655) rerollScooterRoute(G, bike);
-    const weavePhaseNow = elapsedNow * 1.7 + bike.weavePhase;
-    const lateralOffset = Math.sin(weavePhaseNow) * 1.1;
-    const lateralRate = Math.cos(weavePhaseNow) * 1.1 * 1.7;
-    const headingWobble = Math.cos(weavePhaseNow) * 0.06;
-    let headingBase;
-    if (bike.onX) {
-      bike.x = (bike.line + bike.dirSign * 5) + lateralOffset; bike.z = bike.along;
-      headingBase = bike.dirSign > 0 ? 0 : Math.PI;
-    } else { bike.x = bike.along; bike.z = (bike.line - bike.dirSign * 5) + lateralOffset;
-      headingBase = bike.dirSign > 0 ? Math.PI / 2 : -Math.PI / 2; }
-    bike.angle = headingBase + headingWobble;
-    bike.group.position.set(bike.x, groundH(bike.x, bike.z) + 0.02, bike.z); bike.group.rotation.y = bike.angle;
-    if (bike.inner) bike.inner.rotation.z = THREE.MathUtils.clamp(lateralRate * -0.30, -0.38, 0.38); }); }
-export function initSportbikes(G) {
-  if (!G || G._sportbikesInit || !Array.isArray(G.updaters)) return;
-  G._sportbikesInit = true;
-  G._sportbikes = [];
-  G.updaters.push((stateIn, dtIn) => { try { advanceBikes(stateIn, dtIn); } catch (err) {} });
-  loadHeroAsset('npcSportbike').then((wrapIn) => { try {
-      if (!wrapIn) return;
-      for (let idx = 0; idx < 3; idx++) {
-        const bikeGroup = bikeAssemblyOf(wrapIn, BIKE_PALETTE[idx % BIKE_PALETTE.length]);
-        G.scene.add(bikeGroup);
-        const bike = { group: bikeGroup, inner: bikeGroup.userData.inner, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, weavePhase: rr(0, 2 * Math.PI), speed: rr(19, 26) };
-        rerollScooterRoute(G, bike);
-        bikeGroup.position.set(bike.onX ? bike.line + bike.dirSign * 5 : bike.along, 0, bike.onX ? bike.along : bike.line - bike.dirSign * 5);
-        bikeGroup.position.y = groundH(bikeGroup.position.x, bikeGroup.position.z) + 0.02;
-        G._sportbikes.push(bike); }
-    } catch (err) { /* garnish only */ }
+
+// Sportbike traffic runs alongside the scooters, sharing road
+// lane and respawn conventions plus the same clone tint helper
+// and hook style
+// They ride straight along roads and respawn instead of turning
+// at crossings, so the weave is their cornering and the lean
+// banks them in
+// Garnish only again, so a null load spawns nothing at all
+const TINTS_BIKE = [0xffffff, 0xdfe8ff, 0xffe3f2, 0xe8ffe3];
+function assemblyBikeFrom(wrapGiven, tintGiven) {
+  const grpOuter = new THREE.Group();
+  const grpInner = new THREE.Group();
+  grpInner.rotation.y = -Math.PI / 2;
+  grpInner.add(cloneTintedWrap(wrapGiven, tintGiven));
+  grpOuter.add(grpInner);
+  grpOuter.userData.inner = grpInner;
+  return grpOuter; }
+function stepBikes(stateGiven, dtGiven) {
+  if (!stateGiven._sportbikes || !dtGiven) return;
+  const elapsedNow = (stateGiven.elapsed || 0);
+  stateGiven._sportbikes.forEach((bikeGiven) => {
+    bikeGiven.travel += (bikeGiven.speed * dtGiven);
+    bikeGiven.along += ((bikeGiven.speed * dtGiven) * bikeGiven.dirSign);
+    const routeStale = (bikeGiven.travel > 500) || (Math.abs(bikeGiven.along) > 655);
+    if (routeStale) rerollRoute(stateGiven, bikeGiven);
+    const weaveAt = ((elapsedNow * 1.7) + bikeGiven.weavePhase);
+    const offLateral = (Math.sin(weaveAt) * 1.1);
+    const rateLateral = ((Math.cos(weaveAt) * 1.1) * 1.7);
+    const wobbleValue = (Math.cos(weaveAt) * 0.06);
+    placeOnRoad(bikeGiven, offLateral, 0);
+    bikeGiven.angle = (headingBaseFor(bikeGiven) + wobbleValue);
+    syncPose(bikeGiven);
+    if (bikeGiven.inner) bikeGiven.inner.rotation.z = THREE.MathUtils.clamp((rateLateral * -0.30), -0.38, 0.38); }); }
+export function initSportbikes(stateGiven) {
+  const initBlocked = !stateGiven || stateGiven._sportbikesInit || !Array.isArray(stateGiven.updaters);
+  if (initBlocked) return;
+  stateGiven._sportbikesInit = true;
+  stateGiven._sportbikes = [];
+  stateGiven.updaters.push((stateArg, dtArg) => { try { stepBikes(stateArg, dtArg); } catch (ignoredFault) {} });
+  loadHeroAsset('npcSportbike').then((wrapGiven) => { try {
+      if (!wrapGiven) return;
+      for (let idxSpawn = 0; idxSpawn < 3; idxSpawn++) {
+        const tintNow = TINTS_BIKE[idxSpawn % TINTS_BIKE.length];
+        const grpBike = assemblyBikeFrom(wrapGiven, tintNow);
+        stateGiven.scene.add(grpBike);
+        const recordBike = { group: grpBike, inner: grpBike.userData.inner, onX: false, line: 0, dirSign: 1, along: 0, travel: 0, x: 0, z: 0, angle: 0, weavePhase: rr(0, 2 * Math.PI), speed: rr(19, 26) };
+        rerollRoute(stateGiven, recordBike);
+        const bornX = recordBike.onX ? (recordBike.line + (recordBike.dirSign * 5)) : recordBike.along;
+        const bornZ = recordBike.onX ? recordBike.along : (recordBike.line + (-(recordBike.dirSign * 5)));
+        grpBike.position.set(bornX, 0, bornZ);
+        grpBike.position.y = (groundH(grpBike.position.x, grpBike.position.z) + 0.02);
+        stateGiven._sportbikes.push(recordBike); }
+    } catch (ignoredFault) { /* garnish only */ }
   }).catch(() => {}); }
-// Radio state mirrors onto shared state, so the HUD draws its chip
-// without reaching into audio, and the choice survives across drives
-const mirrorRadioState = (G, stationIn) => { try {
-    const stationPresent = !!stationIn;
-    G._radioOff = !stationPresent; G.radioName = stationPresent ? stationIn.name : null;
-    if (stationPresent) G._radioIdx = stationIn.index;
-  } catch (err) {} };
-export function enterCar(G, veh) {
-  registerLightHook(G); if (!G.player) return;
-  G.player.fig.visible = false;
-  if (!veh.driverFig) {
-    veh.driverFig = makeFigure(CAST.ren); poseSeated(veh.driverFig);
-    veh.driverFig.scale.setScalar(0.96); }
-  veh.driverFig.position.set(veh.spec.wid * -0.22, 0.42, 0.15);
-  veh.driverFig.rotation.y = 0; veh.mesh.add(veh.driverFig);
-  veh.driver = 'player';
-  G.car = veh;
-  G.flags.inCar = true;
-  try { if (G.audio && G.audio.setEngine) G.audio.setEngine(true, 0.07); } catch (err) {}
+// Radio state is mirrored onto shared state, so the HUD draws
+// its chip without reaching into audio, and the choice survives
+// from one drive to the next
+function publishRadio(stateGiven, stationGiven) { try {
+    const stationThere = !!stationGiven;
+    stateGiven._radioOff = !stationThere;
+    stateGiven.radioName = stationThere ? stationGiven.name : null;
+    if (stationThere) stateGiven._radioIdx = stationGiven.index;
+  } catch (ignoredFault) {} }
+export function enterCar(stateGiven, vehicleGiven) {
+  installLightHook(stateGiven);
+  if (!stateGiven.player) return;
+  stateGiven.player.fig.visible = false;
+  if (!vehicleGiven.driverFig) {
+    vehicleGiven.driverFig = makeFigure(CAST.ren);
+    poseSeated(vehicleGiven.driverFig);
+    vehicleGiven.driverFig.scale.setScalar(0.96); }
+  vehicleGiven.driverFig.position.set((vehicleGiven.spec.wid * -0.22), 0.42, 0.15);
+  vehicleGiven.driverFig.rotation.y = 0;
+  vehicleGiven.mesh.add(vehicleGiven.driverFig);
+  vehicleGiven.driver = 'player';
+  stateGiven.car = vehicleGiven;
+  stateGiven.flags.inCar = true;
+  try { if (stateGiven.audio && stateGiven.audio.setEngine) stateGiven.audio.setEngine(true, 0.07); } catch (ignoredFault) {}
   try {
-    if (G.audio && G.audio.radio && !G._radioOff) mirrorRadioState(G, G.audio.radio.start(G._radioIdx || 0));
-    else if (G._radioOff) { G.radioName = null; }
-  } catch (err) {} }
-export function exitCar(G) { const veh = G.car; if (!veh) return;
-  try { if (G._hornActive && G.audio && G.audio.hornStop) G.audio.hornStop(); } catch (err) {} G._hornActive = false; G._hornT = 0; G._hornWasDown = false;
-  try { if (G.audio && G.audio.setEngine) G.audio.setEngine(false, 0); } catch (err) {}
-  try { if (G.audio && G.audio.screech) G.audio.screech(false, 0); } catch (err) {}
-  try { if (G.audio && G.audio.radio) G.audio.radio.stop(); } catch (err) {}
-  G.radioName = null; G._radioWasDown = false; if (veh.driverFig) veh.mesh.remove(veh.driverFig);
-  veh.driver = 'parked'; veh.speed = 0;
-  G.car = null; G.flags.inCar = false;
-  G.speedKmh = 0; const pl = G.player;
-  pl.x = veh.x + Math.cos(veh.angle) * -(veh.spec.wid / 2 + 1.2);
-  pl.z = veh.z + Math.sin(veh.angle) * (veh.spec.wid / 2 + 1.2);
-  pl.x = veh.x - Math.cos(veh.angle) * (veh.spec.wid / 2 + 1.1);
-  pl.z = veh.z + Math.sin(veh.angle) * (veh.spec.wid / 2 + 1.1);
-  pl.angle = veh.angle;
-  pl.fig.visible = true;
-  pl.fig.position.set(pl.x, groundH(pl.x, pl.z), pl.z); }
-export function updateDriving(G, dt) { registerLightHook(G);
-  const veh = G.car; if (!veh) return;
-  const spec = veh.spec; const keyMap = G.keys;
-  const healthBefore = typeof veh.health === 'number' ? veh.health : null;
-  // Horn handling: the key map fills from key events in the main
-  // module, and this updater only runs in play mode, unpaused, inside a
-  // car, so the horn stays inert on foot or in menus
-  // The press edge starts the horn and startles pedestrians, once
-  // A tap still sounds briefly, holding sustains up to a cap, and
-  // releasing past the minimum, or hitting the cap, stops it, while
-  // honks stay spaced apart, and holding past the cap never retriggers
-  {
-    const hornHeld = !!(keyMap && keyMap['KeyH']);
-    if (G._hornCooldown == null) G._hornCooldown = 0;
-    if (G._hornCooldown > 0) G._hornCooldown -= dt;
-    if (hornHeld && !G._hornWasDown && !G._hornActive && !(G._hornCooldown > 0)) {
-      try { if (G.audio && G.audio.hornStart) G.audio.hornStart(); else if (G.audio && G.audio.horn) G.audio.horn(0.35); } catch (err) {}
-      G._hornActive = true; G._hornT = 0;
-      try { if (typeof G.pedsStartle === 'function') G.pedsStartle(veh.x, veh.z, 12); } catch (err) {} }
-    if (G._hornActive) { G._hornT = (G._hornT || 0) + dt;
-      if (G._hornT >= 1.2 || (!hornHeld && G._hornT >= 0.18)) {
-        try { if (G.audio && G.audio.hornStop) G.audio.hornStop(); } catch (err) {}
-        G._hornActive = false; G._hornT = 0; G._hornCooldown = 0.25; } }
-    G._hornWasDown = hornHeld; }
-  // Radio handling: keydown edge only, so auto repeat never cycles,
-  // and inert on foot because this updater is car only
-  // The cycle runs through the stations then off, and the mirror
-  // helper keeps the choice ready for the next drive
-  {
-    const radioHeld = !!(keyMap && keyMap['KeyR']);
-    if (radioHeld && !G._radioWasDown) {
-      try { if (G.audio && G.audio.radio) mirrorRadioState(G, G.audio.radio.next()); } catch (err) {} }
-    G._radioWasDown = radioHeld; }
-  // A battered car loses pace: for this frame only, the effective top
-  // speed and acceleration scale down, while the spec itself is never
-  // mutated, and the clamp below reads the scaled top speed
-  const batteredFactor = typeof veh.health === 'number' && veh.health < 35 ? 0.72 : 1;
-  const effectiveTop = batteredFactor * (spec.topSpeed / 3.6);
-  const nosHeld = (keyMap['ShiftLeft'] || keyMap['ShiftRight']) && veh.speed > 2;
-  let throttleIn = 0;
-  if (keyMap['KeyW'] || keyMap['ArrowUp']) throttleIn = 1;
-  if (keyMap['KeyS'] || keyMap['ArrowDown']) throttleIn = veh.speed > 0.5 ? -1.6 : -0.55;
-  const accelRate = batteredFactor * ((spec.accel * 16) + 6);
-  if (throttleIn > 0) veh.speed += accelRate * dt * (nosHeld ? 1.8 : 1) * (1 - Math.max(0, veh.speed) / (effectiveTop * (nosHeld ? 1.15 : 1)));
-  else if (throttleIn < 0) veh.speed += throttleIn * 10 * dt;
-  else veh.speed = veh.speed - veh.speed * 0.35 * dt;
-  veh.speed = veh.speed - veh.speed * 0.12 * dt;
-  const reverseCap = -9;
-  const clampedSpeed = Math.min(effectiveTop * 1.18, veh.speed);
-  veh.speed = Math.max(reverseCap, clampedSpeed);
-  if (Math.abs(veh.speed) < 0.02 && throttleIn === 0) veh.speed = 0;
-  let steerIn = 0;
-  if (keyMap['KeyA'] || keyMap['ArrowLeft']) steerIn = 1;
-  if (keyMap['KeyD'] || keyMap['ArrowRight']) steerIn = -1;
-  const handbrakeHeld = !!keyMap['Space'];
-  const speedFactor = Math.min(1, Math.abs(veh.speed) / 8 + 0.25);
-  const steerRate = speedFactor * (spec.grip * 1.15 + (handbrakeHeld ? spec.drift * 0.9 : 0));
-  if (veh.speed !== 0) veh.angle += steerIn * steerRate * dt * Math.sign(veh.speed) * (handbrakeHeld ? 1.25 : 1);
-  veh.steerVis += ((steerIn * 0.45) - veh.steerVis) * Math.min(1, dt * 10);
-  if (handbrakeHeld) veh.speed -= veh.speed * 1.1 * dt;
-  if (nosHeld) { const exhaustX = veh.x - Math.sin(veh.angle) * (spec.len / 2 + 0.3), exhaustZ = veh.z - Math.cos(veh.angle) * (spec.len / 2 + 0.3); spawnSmokeAt(G, { x: exhaustX, y: groundH(veh.x, veh.z) + 0.4, z: exhaustZ }, 1, true); G.flags.nosActive = true; } else G.flags.nosActive = false;
-  const wideSlideNow = Math.abs(steerIn) !== 0 && Math.abs(veh.speed) > 12;
-  if ((handbrakeHeld && Math.abs(veh.speed) > 5) || wideSlideNow && handbrakeHeld) spawnSmokeAt(G, veh.mesh.position, 1, false);
-  const startX = veh.x, startZ = veh.z;
-  veh.x += veh.speed * dt * Math.sin(veh.angle); veh.z += veh.speed * dt * Math.cos(veh.angle);
-  G.colliders.forEach((collider) => {
-    const deltaX = veh.x - collider.x, deltaZ = veh.z - collider.z;
-    const penAlongX = collider.hw + 1.6 - Math.abs(deltaX), penAlongZ = collider.hd + 1.6 - Math.abs(deltaZ);
-    if (penAlongX > 0 && penAlongZ > 0) {
-      if (penAlongZ > penAlongX) veh.x += 0 <= deltaX ? penAlongX : -penAlongX; else veh.z += 0 <= deltaZ ? penAlongZ : -penAlongZ;
-      if (Math.abs(veh.speed) > 6) { damageVehicle(G, veh, Math.abs(veh.speed) * 0.7); G.flags.crashTimer = 1; }
-      veh.speed *= -0.25; } });
-  // Crossing a junction box on red heats the wanted level, and the
-  // clamp here matches the one used by the shooting layer
+    const radioThere = stateGiven.audio && stateGiven.audio.radio;
+    if (radioThere && !stateGiven._radioOff) publishRadio(stateGiven, stateGiven.audio.radio.start(stateGiven._radioIdx || 0));
+    else if (stateGiven._radioOff) { stateGiven.radioName = null; }
+  } catch (ignoredFault) {} }
+export function exitCar(stateGiven) {
+  const vehicleGiven = stateGiven.car;
+  if (!vehicleGiven) return;
+  try { if (stateGiven._hornActive && stateGiven.audio && stateGiven.audio.hornStop) stateGiven.audio.hornStop(); } catch (ignoredFault) {}
+  stateGiven._hornActive = false; stateGiven._hornT = 0; stateGiven._hornWasDown = false;
+  try { if (stateGiven.audio && stateGiven.audio.setEngine) stateGiven.audio.setEngine(false, 0); } catch (ignoredFault) {}
+  try { if (stateGiven.audio && stateGiven.audio.screech) stateGiven.audio.screech(false, 0); } catch (ignoredFault) {}
+  try { if (stateGiven.audio && stateGiven.audio.radio) stateGiven.audio.radio.stop(); } catch (ignoredFault) {}
+  stateGiven.radioName = null; stateGiven._radioWasDown = false;
+  if (vehicleGiven.driverFig) vehicleGiven.mesh.remove(vehicleGiven.driverFig);
+  vehicleGiven.driver = 'parked'; vehicleGiven.speed = 0;
+  stateGiven.car = null; stateGiven.flags.inCar = false;
+  stateGiven.speedKmh = 0;
+  const playerGiven = stateGiven.player;
+  const reachExit = (vehicleGiven.spec.wid / 2);
+  playerGiven.x = (vehicleGiven.x + (Math.cos(vehicleGiven.angle) * -(reachExit + 1.2)));
+  playerGiven.z = (vehicleGiven.z + (Math.sin(vehicleGiven.angle) * (reachExit + 1.2)));
+  playerGiven.x = (vehicleGiven.x + (-(Math.cos(vehicleGiven.angle) * (reachExit + 1.1))));
+  playerGiven.z = (vehicleGiven.z + (Math.sin(vehicleGiven.angle) * (reachExit + 1.1)));
+  playerGiven.angle = vehicleGiven.angle;
+  playerGiven.fig.visible = true;
+  playerGiven.fig.position.set(playerGiven.x, groundH(playerGiven.x, playerGiven.z), playerGiven.z); }
+
+function stepHorn(stateGiven, vehicleGiven, keysGiven, dtGiven) {
+  // Horn handling: the key map fills from key events in the
+  // main module, and this updater only runs in play mode,
+  // unpaused, inside a car, so the horn stays inert on foot or
+  // in menus
+  // The press edge starts the horn and startles pedestrians,
+  // once only
+  // A tap still sounds briefly, holding sustains up to a cap,
+  // and releasing past the minimum, or hitting the cap, stops
+  // it, while honks stay spaced apart, and holding past the
+  // cap never retriggers
+  const hornDown = !!(keysGiven && keysGiven['KeyH']);
+  if (stateGiven._hornCooldown == null) stateGiven._hornCooldown = 0;
+  if (stateGiven._hornCooldown > 0) stateGiven._hornCooldown -= dtGiven;
+  const startAllowed = hornDown && !stateGiven._hornWasDown && !stateGiven._hornActive && !(stateGiven._hornCooldown > 0);
+  if (startAllowed) {
+    try { if (stateGiven.audio && stateGiven.audio.hornStart) stateGiven.audio.hornStart(); else if (stateGiven.audio && stateGiven.audio.horn) stateGiven.audio.horn(0.35); } catch (ignoredFault) {}
+    stateGiven._hornActive = true; stateGiven._hornT = 0;
+    try { if (typeof stateGiven.pedsStartle === 'function') stateGiven.pedsStartle(vehicleGiven.x, vehicleGiven.z, 12); } catch (ignoredFault) {} }
+  if (stateGiven._hornActive) {
+    stateGiven._hornT = ((stateGiven._hornT || 0) + dtGiven);
+    const hornOverCap = (stateGiven._hornT >= 1.2);
+    const hornLetGo = !hornDown && (stateGiven._hornT >= 0.18);
+    if (hornOverCap || hornLetGo) {
+      try { if (stateGiven.audio && stateGiven.audio.hornStop) stateGiven.audio.hornStop(); } catch (ignoredFault) {}
+      stateGiven._hornActive = false; stateGiven._hornT = 0; stateGiven._hornCooldown = 0.25; } }
+  stateGiven._hornWasDown = hornDown; }
+function stepRadioKeys(stateGiven, keysGiven) {
+  // Radio handling: keydown edge only, so auto repeat never
+  // cycles it, and inert on foot because this updater is car
+  // only
+  // The cycle runs through the stations and then off, and the
+  // mirror helper keeps the choice ready for the next drive
+  const radioDown = !!(keysGiven && keysGiven['KeyR']);
+  if (radioDown && !stateGiven._radioWasDown) {
+    try { if (stateGiven.audio && stateGiven.audio.radio) publishRadio(stateGiven, stateGiven.audio.radio.next()); } catch (ignoredFault) {} }
+  stateGiven._radioWasDown = radioDown; }
+function throttleFromKeys(keysGiven, vehicleGiven) {
+  let throttleOut = 0;
+  if (keysGiven['KeyW'] || keysGiven['ArrowUp']) throttleOut = 1;
+  if (keysGiven['KeyS'] || keysGiven['ArrowDown']) throttleOut = (vehicleGiven.speed > 0.5) ? -1.6 : -0.55;
+  return throttleOut; }
+function steerFromKeys(keysGiven) {
+  let steerOut = 0;
+  if (keysGiven['KeyA'] || keysGiven['ArrowLeft']) steerOut = 1;
+  if (keysGiven['KeyD'] || keysGiven['ArrowRight']) steerOut = -1;
+  return steerOut; }
+function junctionKeyNear(stateGiven, posX, posZ) {
+  for (const lineX of stateGiven.roadX) if (Math.abs(posX + (-lineX)) < 12)
+    for (const lineZ of stateGiven.roadZ) if (Math.abs(posZ + (-lineZ)) < 12) return (lineX + ',' + lineZ);
+  return null; }
+function checkRedRun(stateGiven, vehicleGiven, fromX, fromZ) {
+  // Crossing a junction box on red heats the wanted level, and
+  // the clamp here matches the one the shooting layer uses
   try {
-    if (typeof G.lightState === 'function' && Math.abs(veh.speed) > 6) {
-      const junctionKeyOf = (px, pz) => {
-        for (const lineX of G.roadX) if (Math.abs(px - lineX) < 12)
-          for (const lineZ of G.roadZ) if (Math.abs(pz - lineZ) < 12) return lineX + ',' + lineZ;
-        return null; };
-      const junctionNow = junctionKeyOf(veh.x, veh.z);
-      if (junctionNow && !junctionKeyOf(startX, startZ)) {
-        const axisName = Math.abs(Math.cos(veh.angle)) < Math.abs(Math.sin(veh.angle)) ? 'x' : 'z';
-        if (G.lightState(axisName) === 'red') {
-          const elapsedNow = G.elapsed || 0;
-          if (G._lastRedKey !== junctionNow || elapsedNow - (G._lastRedT || -10) > 4) {
-            G._lastRedKey = junctionNow; G._lastRedT = elapsedNow;
-            G.wanted = Math.min(5, Math.max(0, (G.wanted || 0) + 0.15)); } } } }
-  } catch (err) {}
-  if (G.traffic) G.traffic.forEach((otherCar) => {
-    if (otherCar === veh) return;
-    const gapDist = Math.hypot(otherCar.x - veh.x, otherCar.z - veh.z);
-    if (gapDist < 2.6 && gapDist > 0.01) {
-      const pushAmount = (2.6 - gapDist);
-      otherCar.x += ((otherCar.x - veh.x) / gapDist) * pushAmount * 0.6; otherCar.z += ((otherCar.z - veh.z) / gapDist) * pushAmount * 0.6;
-      otherCar.speed = veh.speed * 0.4;
-      if (Math.abs(veh.speed) > 5) { damageVehicle(G, otherCar, 8); damageVehicle(G, veh, 5); G.flags.crashTimer = 1; }
-      veh.speed *= 0.55; } });
-  veh.x = Math.max(-656, Math.min(656, veh.x));
-  veh.z = Math.max(-656, Math.min(656, veh.z));
-  const surfaceY = groundH(veh.x, veh.z);
-  veh.mesh.position.set(veh.x, surfaceY + 0.02, veh.z);
-  veh.mesh.rotation.set(0, veh.angle, 0);
-  veh.mesh.rotateX(THREE.MathUtils.clamp(throttleIn * -0.012, -0.02, 0.02));
-  veh.mesh.rotateZ(THREE.MathUtils.clamp(veh.steerVis * Math.abs(veh.speed) * 0.0012, -0.05, 0.05));
-  const wheelRadius = veh.mesh.userData.wheelR || 0.33;
-  const spinDelta = (veh.speed * dt) / wheelRadius;
-  const applyWheelSpin = (wheelObj, steerAngle) => {
-    if (!wheelObj) return;
-    wheelObj.userData.spin = (wheelObj.userData.spin || 0) + spinDelta;
-    wheelObj.rotation.set(wheelObj.userData.spin, steerAngle, 0); };
-  applyWheelSpin(veh.wheels.rl, 0); applyWheelSpin(veh.wheels.rr, 0);
-  applyWheelSpin(veh.wheels.fl, veh.steerVis); applyWheelSpin(veh.wheels.fr, veh.steerVis);
-  G.speedKmh = Math.abs(veh.speed) * 3.6;
-  if (veh.mesh.userData.tailMat) veh.mesh.userData.tailMat.emissiveIntensity = (throttleIn < 0 || handbrakeHeld) ? 2.2 : 0.8;
-  const nightActive = G.timeOfDay > 18.5 || G.timeOfDay < 5.5;
-  if (!veh.spotL) {
-    veh.spotL = new THREE.SpotLight(0xffe9b0, 0, 60, 0.5, 0.5);
-    veh.spotR = new THREE.SpotLight(0xffe9b0, 0, 60, 0.5, 0.5);
-    veh.mesh.add(veh.spotL); veh.mesh.add(veh.spotR);
-    veh.mesh.add(veh.spotL.target); veh.mesh.add(veh.spotR.target);
-    veh.spotL.position.set(-0.6, 0.8, spec.len / 2);
-    veh.spotR.position.set(0.6, 0.8, spec.len / 2);
-    veh.spotL.target.position.set(-1.2, 0, spec.len / 2 + 22);
-    veh.spotR.target.position.set(1.2, 0, spec.len / 2 + 22); }
-  veh.spotL.intensity = nightActive ? 60 : 0; veh.spotR.intensity = nightActive ? 60 : 0;
-  // Vehicle audio per frame: engine load follows speed fraction and
-  // throttle, while screech follows drifting or handbrake slides past
-  // a speed threshold, with intensity from the slip, and any health
-  // drop inside the frame counts as a crash, scaled by damage done
+    const lightsThere = (typeof stateGiven.lightState === 'function');
+    const movingFast = (Math.abs(vehicleGiven.speed) > 6);
+    if (!lightsThere || !movingFast) return;
+    const junctionNow = junctionKeyNear(stateGiven, vehicleGiven.x, vehicleGiven.z);
+    const junctionBefore = junctionKeyNear(stateGiven, fromX, fromZ);
+    if (!junctionNow || junctionBefore) return;
+    const axisName = (Math.abs(Math.cos(vehicleGiven.angle)) < Math.abs(Math.sin(vehicleGiven.angle))) ? 'x' : 'z';
+    if (stateGiven.lightState(axisName) !== 'red') return;
+    const elapsedNow = (stateGiven.elapsed || 0);
+    const sameJunction = (stateGiven._lastRedKey === junctionNow);
+    const flaggedLately = ((elapsedNow + (-(stateGiven._lastRedT || -10))) > 4);
+    if (!sameJunction || flaggedLately) {
+      stateGiven._lastRedKey = junctionNow; stateGiven._lastRedT = elapsedNow;
+      stateGiven.wanted = Math.min(5, Math.max(0, ((stateGiven.wanted || 0) + 0.15))); }
+  } catch (ignoredFault) {} }
+function collideStatics(stateGiven, vehicleGiven) {
+  for (const colliderGiven of stateGiven.colliders) {
+    const offX = (vehicleGiven.x + (-colliderGiven.x)), offZ = (vehicleGiven.z + (-colliderGiven.z));
+    const penX = ((colliderGiven.hw + 1.6) + (-Math.abs(offX)));
+    const penZ = ((colliderGiven.hd + 1.6) + (-Math.abs(offZ)));
+    const touching = (penX > 0) && (penZ > 0);
+    if (!touching) continue;
+    if (penZ > penX) vehicleGiven.x += (0 <= offX) ? penX : -penX;
+    else vehicleGiven.z += (0 <= offZ) ? penZ : -penZ;
+    if (Math.abs(vehicleGiven.speed) > 6) { damageVehicle(stateGiven, vehicleGiven, (Math.abs(vehicleGiven.speed) * 0.7)); stateGiven.flags.crashTimer = 1; }
+    vehicleGiven.speed *= -0.25; } }
+function collideTraffic(stateGiven, vehicleGiven) {
+  if (!stateGiven.traffic) return;
+  stateGiven.traffic.forEach((otherGiven) => {
+    if (otherGiven === vehicleGiven) return;
+    const gapNow = Math.hypot((otherGiven.x + (-vehicleGiven.x)), (otherGiven.z + (-vehicleGiven.z)));
+    const contactNow = (gapNow < 2.6) && (gapNow > 0.01);
+    if (!contactNow) return;
+    const spanPush = (2.6 + (-gapNow));
+    otherGiven.x += (((otherGiven.x + (-vehicleGiven.x)) / gapNow) * spanPush * 0.6);
+    otherGiven.z += (((otherGiven.z + (-vehicleGiven.z)) / gapNow) * spanPush * 0.6);
+    otherGiven.speed = (vehicleGiven.speed * 0.4);
+    if (Math.abs(vehicleGiven.speed) > 5) { damageVehicle(stateGiven, otherGiven, 8); damageVehicle(stateGiven, vehicleGiven, 5); stateGiven.flags.crashTimer = 1; }
+    vehicleGiven.speed *= 0.55; }); }
+function ensureHeadlights(stateGiven, vehicleGiven, specGiven) {
+  const nightNow = (stateGiven.timeOfDay > 18.5) || (stateGiven.timeOfDay < 5.5);
+  if (!vehicleGiven.spotL) {
+    vehicleGiven.spotL = new THREE.SpotLight(0xffe9b0, 0, 60, 0.5, 0.5);
+    vehicleGiven.spotR = new THREE.SpotLight(0xffe9b0, 0, 60, 0.5, 0.5);
+    vehicleGiven.mesh.add(vehicleGiven.spotL); vehicleGiven.mesh.add(vehicleGiven.spotR);
+    vehicleGiven.mesh.add(vehicleGiven.spotL.target); vehicleGiven.mesh.add(vehicleGiven.spotR.target);
+    vehicleGiven.spotL.position.set(-0.6, 0.8, specGiven.len / 2);
+    vehicleGiven.spotR.position.set(0.6, 0.8, specGiven.len / 2);
+    vehicleGiven.spotL.target.position.set(-1.2, 0, (specGiven.len / 2) + 22);
+    vehicleGiven.spotR.target.position.set(1.2, 0, (specGiven.len / 2) + 22); }
+  vehicleGiven.spotL.intensity = nightNow ? 60 : 0; vehicleGiven.spotR.intensity = nightNow ? 60 : 0;
+  return nightNow; }
+function stepVehicleAudio(stateGiven, vehicleGiven, throttleGiven, brakeGiven, topEff, healthWas) {
+  // Vehicle audio per frame: engine load follows speed fraction
+  // and throttle, while screech follows drifting or handbrake
+  // slides past a speed threshold, with intensity from the
+  // slip, and any health drop inside the frame counts as a
+  // crash, scaled by the damage done
   try {
-    if (G.audio) {
-      const speedFraction = Math.min(1, Math.abs(veh.speed) / Math.max(1, effectiveTop));
-      const loadAmount = throttleIn > 0 ? 0.3 : (throttleIn < 0 ? 0.12 : 0);
-      if (G.audio.setEngine) G.audio.setEngine(true, Math.max(0.07, Math.min(1, speedFraction * 0.85 + loadAmount)));
-      if (G.audio.screech) {
-        const slidingNow = (handbrakeHeld || !!G.flags.drifting) && Math.abs(veh.speed) > 8;
-        const slipAmount = Math.min(1, Math.abs(veh.steerVis || 0) * 1.4 + (handbrakeHeld ? 0.45 : 0.15) + speedFraction * 0.25);
-        G.audio.screech(slidingNow, slidingNow ? slipAmount : 0); }
-      if (G.audio.crash && healthBefore != null && typeof veh.health === 'number' && veh.health < healthBefore) {
-        const elapsedNow = G.elapsed || 0;
-        if (elapsedNow - (G._lastCrashSfxT || -10) > 0.12) {
-          G._lastCrashSfxT = elapsedNow;
-          G.audio.crash(Math.min(1, (healthBefore - veh.health) / 15)); } } }
-  } catch (err) {}
-  // Driver health from impacts: every collision path in this frame
-  // funnels through car health, so the frame delta measures impact,
-  // and a large enough delta hurts the driver as well
-  if (healthBefore != null && typeof veh.health === 'number') {
-    const healthLoss = healthBefore - veh.health;
-    if (healthLoss > 7) { try { G.damagePlayer?.((healthLoss - 6) * 1.6); } catch (err) {} } }
-  if (Math.abs(veh.x) >= 655 || Math.abs(veh.z) >= 655) { try { G.damagePlayer?.(dt * 18); } catch (err) {} }
-  G.camTarget = { x: veh.x, z: veh.z,
-    angle: veh.angle, speed: veh.speed }; }
+    if (!stateGiven.audio) return;
+    const shareSpeed = Math.min(1, (Math.abs(vehicleGiven.speed) / Math.max(1, topEff)));
+    const extraLoad = (throttleGiven > 0) ? 0.3 : ((throttleGiven < 0) ? 0.12 : 0);
+    if (stateGiven.audio.setEngine) stateGiven.audio.setEngine(true, Math.max(0.07, Math.min(1, ((shareSpeed * 0.85) + extraLoad))));
+    if (stateGiven.audio.screech) {
+      const slidingNow = (brakeGiven || !!stateGiven.flags.drifting) && (Math.abs(vehicleGiven.speed) > 8);
+      const shareSlip = Math.min(1, ((Math.abs(vehicleGiven.steerVis || 0) * 1.4) + (brakeGiven ? 0.45 : 0.15) + (shareSpeed * 0.25)));
+      stateGiven.audio.screech(slidingNow, slidingNow ? shareSlip : 0); }
+    const crashHeard = stateGiven.audio.crash && (healthWas != null) && (typeof vehicleGiven.health === 'number') && (vehicleGiven.health < healthWas);
+    if (crashHeard) {
+      const elapsedNow = (stateGiven.elapsed || 0);
+      if ((elapsedNow + (-(stateGiven._lastCrashSfxT || -10))) > 0.12) {
+        stateGiven._lastCrashSfxT = elapsedNow;
+        stateGiven.audio.crash(Math.min(1, ((healthWas + (-vehicleGiven.health)) / 15))); } }
+  } catch (ignoredFault) {} }
+export function updateDriving(stateGiven, dtGiven) {
+  installLightHook(stateGiven);
+  const vehicleGiven = stateGiven.car;
+  if (!vehicleGiven) return;
+  const specGiven = vehicleGiven.spec;
+  const keysGiven = stateGiven.keys;
+  const healthWas = (typeof vehicleGiven.health === 'number') ? vehicleGiven.health : null;
+  stepHorn(stateGiven, vehicleGiven, keysGiven, dtGiven);
+  stepRadioKeys(stateGiven, keysGiven);
+  // A battered car loses pace: for this frame only, the
+  // effective top speed and acceleration scale down, while the
+  // spec itself is never mutated, and the clamp below reads
+  // the scaled top speed
+  const shareBattered = ((typeof vehicleGiven.health === 'number') && (vehicleGiven.health < 35)) ? 0.72 : 1;
+  const topEff = (shareBattered * (specGiven.topSpeed / 3.6));
+  const nosDown = (keysGiven['ShiftLeft'] || keysGiven['ShiftRight']) && (vehicleGiven.speed > 2);
+  const throttleGiven = throttleFromKeys(keysGiven, vehicleGiven);
+  const rateAccel = (shareBattered * ((specGiven.accel * 16) + 6));
+  if (throttleGiven > 0) vehicleGiven.speed += ((rateAccel * dtGiven) * (nosDown ? 1.8 : 1) * (1 + (-(Math.max(0, vehicleGiven.speed) / (topEff * (nosDown ? 1.15 : 1))))));
+  else if (throttleGiven < 0) vehicleGiven.speed += ((throttleGiven * 10) * dtGiven);
+  else vehicleGiven.speed = (vehicleGiven.speed + (-(vehicleGiven.speed * 0.35 * dtGiven)));
+  vehicleGiven.speed = (vehicleGiven.speed + (-(vehicleGiven.speed * 0.12 * dtGiven)));
+  const floorReverse = -9;
+  const speedCapped = Math.min((topEff * 1.18), vehicleGiven.speed);
+  vehicleGiven.speed = Math.max(floorReverse, speedCapped);
+  if ((Math.abs(vehicleGiven.speed) < 0.02) && (throttleGiven === 0)) vehicleGiven.speed = 0;
+  const steerGiven = steerFromKeys(keysGiven);
+  const brakeDown = !!keysGiven['Space'];
+  const shareSpeed = Math.min(1, ((Math.abs(vehicleGiven.speed) / 8) + 0.25));
+  const rateSteer = (shareSpeed * ((specGiven.grip * 1.15) + (brakeDown ? (specGiven.drift * 0.9) : 0)));
+  if (vehicleGiven.speed !== 0) vehicleGiven.angle += (((steerGiven * rateSteer) * dtGiven) * Math.sign(vehicleGiven.speed) * (brakeDown ? 1.25 : 1));
+  vehicleGiven.steerVis += (((steerGiven * 0.45) + (-vehicleGiven.steerVis)) * Math.min(1, (dtGiven * 10)));
+  if (brakeDown) vehicleGiven.speed -= ((vehicleGiven.speed * 1.1) * dtGiven);
+  if (nosDown) {
+    const exhaustX = (vehicleGiven.x + (-(Math.sin(vehicleGiven.angle) * ((specGiven.len / 2) + 0.3))));
+    const exhaustZ = (vehicleGiven.z + (-(Math.cos(vehicleGiven.angle) * ((specGiven.len / 2) + 0.3))));
+    spawnSmokeAt(stateGiven, { x: exhaustX, y: (groundH(vehicleGiven.x, vehicleGiven.z) + 0.4), z: exhaustZ }, 1, true);
+    stateGiven.flags.nosActive = true;
+  } else stateGiven.flags.nosActive = false;
+  const slideWide = (Math.abs(steerGiven) !== 0) && (Math.abs(vehicleGiven.speed) > 12);
+  if ((brakeDown && (Math.abs(vehicleGiven.speed) > 5)) || slideWide && brakeDown) spawnSmokeAt(stateGiven, vehicleGiven.mesh.position, 1, false);
+  const fromX = vehicleGiven.x, fromZ = vehicleGiven.z;
+  vehicleGiven.x += ((vehicleGiven.speed * dtGiven) * Math.sin(vehicleGiven.angle));
+  vehicleGiven.z += ((vehicleGiven.speed * dtGiven) * Math.cos(vehicleGiven.angle));
+  collideStatics(stateGiven, vehicleGiven);
+  checkRedRun(stateGiven, vehicleGiven, fromX, fromZ);
+  collideTraffic(stateGiven, vehicleGiven);
+  vehicleGiven.x = Math.max(-656, Math.min(656, vehicleGiven.x));
+  vehicleGiven.z = Math.max(-656, Math.min(656, vehicleGiven.z));
+  const groundY = groundH(vehicleGiven.x, vehicleGiven.z);
+  vehicleGiven.mesh.position.set(vehicleGiven.x, (groundY + 0.02), vehicleGiven.z);
+  vehicleGiven.mesh.rotation.set(0, vehicleGiven.angle, 0);
+  vehicleGiven.mesh.rotateX(THREE.MathUtils.clamp((throttleGiven * -0.012), -0.02, 0.02));
+  vehicleGiven.mesh.rotateZ(THREE.MathUtils.clamp(((vehicleGiven.steerVis * Math.abs(vehicleGiven.speed)) * 0.0012), -0.05, 0.05));
+  const radiusWheel = (vehicleGiven.mesh.userData.wheelR || 0.33);
+  const stepSpin = ((vehicleGiven.speed * dtGiven) / radiusWheel);
+  const spinWheel = (wheelGiven, angleSteer) => {
+    if (!wheelGiven) return;
+    wheelGiven.userData.spin = ((wheelGiven.userData.spin || 0) + stepSpin);
+    wheelGiven.rotation.set(wheelGiven.userData.spin, angleSteer, 0); };
+  spinWheel(vehicleGiven.wheels.rl, 0); spinWheel(vehicleGiven.wheels.rr, 0);
+  spinWheel(vehicleGiven.wheels.fl, vehicleGiven.steerVis); spinWheel(vehicleGiven.wheels.fr, vehicleGiven.steerVis);
+  stateGiven.speedKmh = (Math.abs(vehicleGiven.speed) * 3.6);
+  if (vehicleGiven.mesh.userData.tailMat) vehicleGiven.mesh.userData.tailMat.emissiveIntensity = ((throttleGiven < 0) || brakeDown) ? 2.2 : 0.8;
+  ensureHeadlights(stateGiven, vehicleGiven, specGiven);
+  stepVehicleAudio(stateGiven, vehicleGiven, throttleGiven, brakeDown, topEff, healthWas);
+  // Driver health from impacts: every collision path in this
+  // frame funnels through car health, so the frame delta is
+  // the impact measure, and a large enough delta hurts the
+  // driver as well
+  if ((healthWas != null) && (typeof vehicleGiven.health === 'number')) {
+    const dropHealth = (healthWas + (-vehicleGiven.health));
+    if (dropHealth > 7) { try { stateGiven.damagePlayer?.(((dropHealth + (-6)) * 1.6)); } catch (ignoredFault) {} } }
+  const atEdge = (Math.abs(vehicleGiven.x) >= 655) || (Math.abs(vehicleGiven.z) >= 655);
+  if (atEdge) { try { stateGiven.damagePlayer?.((dtGiven * 18)); } catch (ignoredFault) {} }
+  stateGiven.camTarget = { x: vehicleGiven.x, z: vehicleGiven.z, angle: vehicleGiven.angle, speed: vehicleGiven.speed }; }
