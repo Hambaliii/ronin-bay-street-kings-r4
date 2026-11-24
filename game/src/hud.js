@@ -1,1088 +1,857 @@
-// Overlay layer for the screen: cash and rank readouts, heat
-// stars, both maps, the speed dial, garage list, briefs, popups.
-import { CLUB_RANKS, CAST, DISTRICTS, CFG, MISSIONS } from './config.js';
-import { roadRoute } from './world.js';
-import { districtAt } from './police.js';
-function grabNodeQ(wantedIdQ) {
-  const foundQ = document.getElementById(wantedIdQ);
-  return foundQ;
-}
-function wholeCashQ(rawCashQ) {
-  const safeCashQ = rawCashQ || 0;
-  return Math.round(safeCashQ);
-}
-function cashLabelQ(rawCashQ) {
-  const piecesQ = [];
-  piecesQ.push('$');
-  piecesQ.push(wholeCashQ(rawCashQ).toLocaleString('en-US'));
-  const joinedQ = piecesQ.join('');
-  return joinedQ;
-}
-export function initHUD(G) {
-  const nodesQ = {};
-  const bindSameQ = (idQ) => { nodesQ[idQ] = grabNodeQ(idQ); };
-  bindSameQ('objective'); bindSameQ('money'); bindSameQ('rep');
-  bindSameQ('rank'); bindSameQ('stars'); bindSameQ('healthBar');
-  bindSameQ('carBar'); bindSameQ('cardPortrait');
-  bindSameQ('cardGiver'); bindSameQ('cardText'); bindSameQ('cardProg');
-  bindSameQ('copPanel'); bindSameQ('copRows'); bindSameQ('briefing');
-  bindSameQ('banner'); bindSameQ('toast'); bindSameQ('pauseMenu');
-  bindSameQ('bigmap'); bindSameQ('mapLegend'); bindSameQ('minimap');
-  bindSameQ('wasted'); bindSameQ('busted');
-  bindSameQ('garagePanel'); bindSameQ('mapWrap');
-  nodesQ.card = grabNodeQ('missionCard');
-  nodesQ.speedo = grabNodeQ('speedoCanvas');
-  // No radio node ships in the markup, so build one lazily and
-  // only reveal it while driving with a station playing.
-  let radioNodeQ = grabNodeQ('radioChip');
-  if (!radioNodeQ && typeof document !== 'undefined' && document.body) {
-    radioNodeQ = document.createElement('div');
-    radioNodeQ.id = 'radioChip';
-    radioNodeQ.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:none;display:none;padding:5px 14px;border-radius:999px;background:rgba(10,12,18,0.72);border:1px solid rgba(255,122,26,0.65);color:#ffd9ae;font:bold 13px Arial,sans-serif;letter-spacing:1px;white-space:nowrap;';
-    document.body.appendChild(radioNodeQ);
-  }
-  nodesQ.radioChip = radioNodeQ;
-  if (G.playerHealth == null) G.playerHealth = 100;
-  if (G.bustMeter == null) G.bustMeter = 0;
-  if (G._lastDamageAt == null) G._lastDamageAt = -99;
-  let dispatchNodeQ = grabNodeQ('dispatchLine');
-  if (!dispatchNodeQ && typeof document !== 'undefined' && document.body) {
-    dispatchNodeQ = document.createElement('div');
-    dispatchNodeQ.id = 'dispatchLine';
-    dispatchNodeQ.style.cssText = 'position:fixed;top:172px;left:16px;z-index:30;pointer-events:none;display:none;max-width:430px;padding:4px 10px;background:rgba(8,10,14,0.66);border-left:3px solid #57b7ff;color:#cfe6ff;font:12px "Courier New",monospace;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;';
-    document.body.appendChild(dispatchNodeQ);
-  }
-  nodesQ.dispatch = dispatchNodeQ;
-  let bustBoxQ = grabNodeQ('bustWrap');
-  if (!bustBoxQ && typeof document !== 'undefined' && document.body) {
-    bustBoxQ = document.createElement('div');
-    bustBoxQ.id = 'bustWrap';
-    bustBoxQ.style.cssText = 'position:fixed;top:64px;right:16px;z-index:30;pointer-events:none;display:none;width:190px;';
-    const headChunkQ = '<div id="bustLabel" style="color:#ffd23f;font:bold 13px Arial,sans-serif;letter-spacing:3px;text-align:right;text-shadow:0 1px 3px #000;">BUSTED</div>';
-    const barChunkQ = '<div style="height:7px;margin-top:3px;background:rgba(255,255,255,0.18);border:1px solid rgba(0,0,0,0.6);"><div id="bustFill" style="height:100%;width:0%;background:#57b7ff;"></div></div>';
-    bustBoxQ.innerHTML = headChunkQ + barChunkQ;
-    document.body.appendChild(bustBoxQ);
-  }
-  nodesQ.bustWrap = bustBoxQ;
-  nodesQ.bustFill = bustBoxQ ? bustBoxQ.querySelector('#bustFill') : null;
-  nodesQ.bustLabel = bustBoxQ ? bustBoxQ.querySelector('#bustLabel') : null;
-  let dispatchLeftQ = 0;
-  G.dispatch = (spokenQ) => {
-    G.lastDispatch = spokenQ;
-    if (!nodesQ.dispatch) return;
-    nodesQ.dispatch.textContent = spokenQ;
-    nodesQ.dispatch.style.display = 'block';
-    nodesQ.dispatch.style.opacity = '1';
-    dispatchLeftQ = 5;
-  };
-  function styleOverlayShellQ(nodeQ, bgQ) {
-    nodeQ.innerHTML = '';
-    nodeQ.style.cssText = `position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;flex-direction:column;background:${bgQ};pointer-events:none;`;
-  }
-  function makeOverlayTitleQ(nodeQ, titleQ, colQ) {
-    const titleNodeQ = document.createElement('div');
-    titleNodeQ.className = 's26Title';
-    titleNodeQ.textContent = titleQ;
-    titleNodeQ.style.cssText = `color:${colQ};font:bold 104px Arial,sans-serif;letter-spacing:22px;text-shadow:0 4px 22px rgba(0,0,0,0.85);`;
-    nodeQ.appendChild(titleNodeQ);
-    return titleNodeQ;
-  }
-  function makeOverlaySubQ(nodeQ) {
-    const subNodeQ = document.createElement('div');
-    subNodeQ.className = 's26Sub';
-    subNodeQ.style.cssText = 'color:#e8e8e8;font:17px Arial,sans-serif;letter-spacing:2px;margin-top:16px;text-shadow:0 2px 8px #000;';
-    nodeQ.appendChild(subNodeQ);
-    return subNodeQ;
-  }
-  function overlayPartsQ(nodeQ, titleQ, bgQ, colQ) {
-    if (!nodeQ) return null;
-    styleOverlayShellQ(nodeQ, bgQ);
-    const builtQ = {};
-    builtQ.title = makeOverlayTitleQ(nodeQ, titleQ, colQ);
-    builtQ.sub = makeOverlaySubQ(nodeQ);
-    return builtQ;
-  }
-  const wastedPartsQ = overlayPartsQ(nodesQ.wasted, 'WASTED', 'radial-gradient(ellipse at center, rgba(74,4,4,0.55) 0%, rgba(16,0,0,0.94) 100%)', '#c9c9c9');
-  const bustedPartsQ = overlayPartsQ(nodesQ.busted, 'BUSTED', 'radial-gradient(ellipse at center, rgba(24,38,58,0.55) 0%, rgba(4,8,16,0.94) 100%)', '#dfe9f5');
-  let pendingEndQ = null;
-  const stagingActiveQ = () => !!(G.shot || G.shotMode);
-  function dropCarAtQ(carQ, pxQ, pzQ, healthQ) {
-    if (!carQ) return;
-    carQ.x = pxQ;
-    carQ.z = pzQ;
-    if (carQ.mesh) {
-      carQ.mesh.position.set(pxQ, carQ.mesh.position.y, pzQ);
-      carQ.mesh.rotation.y = 0;
-    }
-    carQ.speed = 0 + 0;
-    carQ.angle = 0;
-    carQ.health = healthQ;
-  }
-  function dropFigureAtQ(pxQ, pzQ) {
-    const figQ = G.player;
-    if (!figQ) return;
-    figQ.x = pxQ;
-    figQ.z = pzQ;
-    if (figQ.fig) {
-      figQ.fig.visible = true;
-      figQ.fig.position.set(pxQ, figQ.fig.position.y, pzQ);
-    }
-  }
-  function finishEndFlowQ(kindQ) {
-    void kindQ;
-    G.wanted = 0;
-    G.bustMeter = 0;
-    G.playerHealth = 100;
-    G.frozen = false;
-    pendingEndQ = null;
-    G.saveGame?.();
-  }
-  function resolveWastedQ(keptCarQ) {
-    const afterFeeQ = (G.money || 0) + (-150);
-    G.money = Math.max(0, afterFeeQ);
-    const garageXQ = (G.hq && G.hq.garage && G.hq.garage.x) || -412.5;
-    const garageZQ = (G.hq && G.hq.garage && G.hq.garage.z) || 452;
-    dropCarAtQ(keptCarQ, garageXQ, garageZQ, 60);
-    dropFigureAtQ(330, -330);
-    G.timeOfDay = ((G.timeOfDay || 12) + 2) % 24;
-    G.flags.wasted = false;
-    G.toast?.('Wasted — hospital bill $150');
-  }
-  function resolveBustedQ(keptCarQ) {
-    const afterFineQ = (G.money || 0) + (-200);
-    G.money = Math.max(0, afterFineQ);
-    dropCarAtQ(keptCarQ, -408.5, 456, 50);
-    dropFigureAtQ(-412.5, 452);
-    G.timeOfDay = ((G.timeOfDay || 12) + 1) % 24;
-    G.flags.busted = false;
-    G.toast?.('Busted — RBPD fine $200, ride impounded to HQ');
-  }
-  function resolveEndQ() {
-    const kindQ = pendingEndQ.kind;
-    const wastedCaseQ = kindQ === 'wasted';
-    void wastedCaseQ;
-    const keptCarQ = pendingEndQ.car;
-    if (G.car) {
-      try { G.exitCar?.(); } catch (ignoredQ) {}
-    }
-    const handlersQ = {};
-    handlersQ.wasted = resolveWastedQ;
-    handlersQ.busted = resolveBustedQ;
-    handlersQ[kindQ](keptCarQ);
-    finishEndFlowQ(kindQ);
-  }
-  G.hud = G.hud || {};
-  G.hud.showWasted = (zoneQ) => {
-    if (G.flags.wasted) return;
-    const srcQ = G.car ? G.car : null;
-    const hereXQ = srcQ ? srcQ.x : (G.player?.x || 0);
-    const hereZQ = srcQ ? srcQ.z : (G.player?.z || 0);
-    G.flags.wasted = true;
-    if (wastedPartsQ) wastedPartsQ.sub.textContent = `You were flatlined in ${zoneQ || districtAt(hereXQ, hereZQ)}`;
-    pendingEndQ = { kind: 'wasted', t: 2.8, car: G.car || null, staging: stagingActiveQ() };
-    if (!pendingEndQ.staging) G.frozen = true;
-  };
-  G.hud.showBusted = () => {
-    if (G.flags.busted) return;
-    G.flags.busted = true;
-    if (bustedPartsQ) bustedPartsQ.sub.textContent = 'RBPD impounded your ride';
-    pendingEndQ = { kind: 'busted', t: 2.8, car: G.car || null, staging: stagingActiveQ() };
-    if (!pendingEndQ.staging) G.frozen = true;
-  };
-  G.damagePlayer = (hitQ) => {
-    const blockedQ = !(hitQ > 0) || stagingActiveQ() || pendingEndQ || G.flags.wasted || G.flags.busted;
-    if (blockedQ) return;
-    const nextHpQ = (G.playerHealth ?? 100) + (-hitQ);
-    G.playerHealth = Math.max(0, nextHpQ);
-    G._lastDamageAt = G.elapsed || 0;
-    if (!(G.playerHealth > 0)) G.hud.showWasted();
-  };
-  const miniCtxQ = nodesQ.minimap ? nodesQ.minimap.getContext('2d') : null;
-  const bigCtxQ = nodesQ.bigmap ? nodesQ.bigmap.getContext('2d') : null;
-  const dialCtxQ = nodesQ.speedo ? nodesQ.speedo.getContext('2d') : null;
-  if (G.flags.mapZoom && nodesQ.mapWrap) {
-    // A 1.45 disc scale keeps clear of the health readout:
-    // 150px from top:198px ends near 415.5px, while 1.9
-    // stretched to 483px and collided with it.
-    nodesQ.mapWrap.style.transform = 'scale(1.45)';
-    nodesQ.mapWrap.style.transformOrigin = 'top left';
-  }
-  if (nodesQ.bigmap) {
-    nodesQ.bigmap.style.height = 'min(578px, calc(100vh - 150px))';
-    nodesQ.bigmap.style.width = 'auto';
-    nodesQ.bigmap.style.maxWidth = '94vw';
-  }
-  const crewBookQ = {};
-  crewBookQ.driver = { initials: 'RT', name: 'Ren Takagi', role: 'DRIVER', color: '#ff7a1a' };
-  crewBookQ.mechanic = { initials: 'AS', name: 'Ako Sato', role: 'MECHANIC', color: '#3f6d8e' };
-  crewBookQ.lookout = { initials: 'MC', name: 'Mika Chen', role: 'LOOKOUT', color: '#7a4fd0' };
-  const crewCardsQ = document.querySelectorAll('.crewCard');
-  for (const cardQ of crewCardsQ) {
-    const infoQ = crewBookQ[cardQ.dataset.role];
-    if (!infoQ) continue;
-    const faceQ = cardQ.querySelector('.crewFace');
-    const nameQ = cardQ.querySelector('.crewName');
-    const roleQ = cardQ.querySelector('.crewRole');
-    if (faceQ) {
-      faceQ.textContent = infoQ.initials;
-      faceQ.style.background = infoQ.color;
-    }
-    if (nameQ) nameQ.textContent = infoQ.name;
-    if (roleQ) roleQ.textContent = infoQ.role;
-  }
-  let toastTimerQ = 0;
-  let bannerTimerQ = 0;
-  let briefTimerQ = 0;
-  G.toast = (msgQ) => {
-    if (!nodesQ.toast) return;
-    nodesQ.toast.textContent = msgQ;
-    nodesQ.toast.style.display = 'block';
-    nodesQ.toast.style.opacity = '1';
-    clearTimeout(toastTimerQ);
-    toastTimerQ = setTimeout(() => { nodesQ.toast.style.display = 'none'; }, 3000);
-  };
-  G.banner = (msgQ) => {
-    if (!nodesQ.banner) return;
-    nodesQ.banner.textContent = msgQ;
-    nodesQ.banner.style.display = 'block';
-    clearTimeout(bannerTimerQ);
-    bannerTimerQ = setTimeout(() => { nodesQ.banner.style.display = 'none'; }, 2500);
-  };
-  function personInitialsQ(personQ, giverQ) {
-    const labelQ = personQ?.name || giverQ || '?';
-    const wordsQ = labelQ.trim().split(/\s+/);
-    const lettersQ = [];
-    for (const wordQ of wordsQ) lettersQ.push(wordQ[0]);
-    return lettersQ.join('').slice(0, 2).toUpperCase();
-  }
-  function personChipColorQ(personQ) {
-    if (personQ?.outfit?.topColor) return '#' + personQ.outfit.topColor.toString(16).padStart(6, '0');
-    return '#444';
-  }
-  G.showBriefing = (giverQ, lineQ) => {
-    if (!nodesQ.briefing) return;
-    const personQ = CAST[giverQ];
-    const chipQ = nodesQ.briefing.querySelector('.giverChip');
-    const nameNodeQ = nodesQ.briefing.querySelector('.giver');
-    const lineNodeQ = nodesQ.briefing.querySelector('.line');
-    if (chipQ) {
-      chipQ.textContent = personInitialsQ(personQ, giverQ);
-      chipQ.style.background = personChipColorQ(personQ);
-    }
-    if (nameNodeQ) nameNodeQ.textContent = personQ?.name || giverQ || '';
-    if (lineNodeQ) lineNodeQ.textContent = lineQ || '';
-    nodesQ.briefing.style.display = 'block';
-    clearTimeout(briefTimerQ);
-    briefTimerQ = setTimeout(() => { nodesQ.briefing.style.display = 'none'; }, 5000);
-  };
-  const viewQ = { zoom: 1, cx: 0, cz: 0 };
-  function viewHomeQ() {
-    viewQ.zoom = 1;
-    viewQ.cx = 0 + 0;
-    viewQ.cz = 0 + 0;
-  }
-  G.togglePause = () => {
-    if (!nodesQ.pauseMenu) return;
-    if (G.paused) {
-      viewHomeQ();
-      nodesQ.pauseMenu.style.display = 'block';
-      bigMapQ();
-      fillLegendQ();
-    } else nodesQ.pauseMenu.style.display = 'none';
-  };
-  function fillLegendQ() {
-    if (!nodesQ.mapLegend || nodesQ.mapLegend.dataset.filled) return;
-    nodesQ.mapLegend.dataset.filled = '1';
-    const chipsQ = [];
-    const pushChipQ = (htmlQ) => chipsQ.push(htmlQ);
-    pushChipQ('<span class="lgChip"><b style="color:#fff">➤</b> You</span>');
-    pushChipQ('<span class="lgChip"><b style="color:#ffd23f">■</b> Objective</span>');
-    pushChipQ('<span class="lgChip"><b>G</b> Garage</span>');
-    pushChipQ('<span class="lgChip"><b style="color:#ff8c1a">M</b> RONIN MART</span>');
-    pushChipQ('<span class="lgChip"><b>⌂</b> HQ / Safehouse</span>');
-    pushChipQ('<span class="lgChip"><b style="color:#57b7ff">●</b> RBPD</span>');
-    pushChipQ('<span class="lgChip"><b style="color:#ff4fd8">━</b> Route</span>');
-    pushChipQ('<span class="lgChip">Scroll zoom · drag pan</span>');
-    nodesQ.mapLegend.innerHTML = chipsQ.join(' ');
-  }
-  if (nodesQ.bigmap && !nodesQ.bigmap.dataset.panzoom) {
-    nodesQ.bigmap.dataset.panzoom = '1';
-    const canvasQ = nodesQ.bigmap;
-    canvasQ.style.cursor = 'grab';
-    canvasQ.style.touchAction = 'none';
-    function clampViewQ() {
-      const halfSpanQ = CFG.world / (2 * viewQ.zoom);
-      const limitQ = Math.max(0, CFG.half + (-halfSpanQ));
-      viewQ.cx = Math.max(-limitQ, Math.min(limitQ, viewQ.cx));
-      viewQ.cz = Math.max(-limitQ, Math.min(limitQ, viewQ.cz));
-    }
-    canvasQ.addEventListener('wheel', (evQ) => {
-      if (!G.paused) return;
-      evQ.preventDefault();
-      const rectQ = canvasQ.getBoundingClientRect();
-      const curXQ = (evQ.clientX - rectQ.left) * (canvasQ.width / rectQ.width);
-      const curYQ = (evQ.clientY - rectQ.top) * (canvasQ.height / rectQ.height);
-      const margQ = 46;
-      const scaleBeforeQ = Math.min((canvasQ.width - margQ * 2) / CFG.world, (canvasQ.height - margQ * 2) / CFG.world) * viewQ.zoom;
-      const worldXQ = viewQ.cx + ((curXQ - canvasQ.width / 2) / scaleBeforeQ);
-      const worldZQ = viewQ.cz + ((curYQ - canvasQ.height / 2) / scaleBeforeQ);
-      const factorQ = evQ.deltaY < 0 ? 1.18 : 1 / 1.18;
-      viewQ.zoom = Math.max(1, Math.min(5, viewQ.zoom * factorQ));
-      const scaleAfterQ = Math.min((canvasQ.width - margQ * 2) / CFG.world, (canvasQ.height - margQ * 2) / CFG.world) * viewQ.zoom;
-      viewQ.cx = worldXQ + (-((curXQ - canvasQ.width / 2) / scaleAfterQ));
-      viewQ.cz = worldZQ + (-((curYQ - canvasQ.height / 2) / scaleAfterQ));
-      clampViewQ();
-      bigMapQ();
-    }, { passive: false });
-    let dragStateQ = null;
-    canvasQ.addEventListener('pointerdown', (evQ) => {
-      if (!G.paused) return;
-      dragStateQ = { x: evQ.clientX, y: evQ.clientY };
-      canvasQ.style.cursor = 'grabbing';
-      try { canvasQ.setPointerCapture(evQ.pointerId); } catch (ignoredQ) {}
-    });
-    canvasQ.addEventListener('pointermove', (evQ) => {
-      if (!dragStateQ || !G.paused) return;
-      const rectQ = canvasQ.getBoundingClientRect();
-      const margQ = 46;
-      const scaleNowQ = Math.min((canvasQ.width - margQ * 2) / CFG.world, (canvasQ.height - margQ * 2) / CFG.world) * viewQ.zoom;
-      const dxQ = (evQ.clientX - dragStateQ.x) * (canvasQ.width / rectQ.width) / scaleNowQ;
-      const dyQ = (evQ.clientY - dragStateQ.y) * (canvasQ.height / rectQ.height) / scaleNowQ;
-      viewQ.cx = viewQ.cx - dxQ;
-      viewQ.cz = viewQ.cz - dyQ;
-      dragStateQ = { x: evQ.clientX, y: evQ.clientY };
-      clampViewQ();
-      bigMapQ();
-    });
-    const endDragQ = () => {
-      dragStateQ = null;
-      canvasQ.style.cursor = 'grab';
-    };
-    canvasQ.addEventListener('pointerup', endDragQ);
-    canvasQ.addEventListener('pointercancel', endDragQ);
-  }
-  if (G.flags.openPauseMap && nodesQ.pauseMenu) {
-    viewHomeQ();
-    nodesQ.pauseMenu.style.display = 'block';
-    bigMapQ();
-    fillLegendQ();
-  }
-  const mainXsQ = new Set([0, 330]);
-  const mainZsQ = new Set([0, 495]);
-  function fillProjectedRectQ(ctxQ, projQ, x0Q, z0Q, x1Q, z1Q) {
-    const [sx0Q, sy0Q] = projQ(x0Q, z0Q);
-    const [sx1Q, sy1Q] = projQ(x1Q, z1Q);
-    ctxQ.fillRect(Math.min(sx0Q, sx1Q), Math.min(sy0Q, sy1Q), Math.abs(sx1Q - sx0Q), Math.abs(sy1Q - sy0Q));
-  }
-  function paintWavesQ(ctxQ, wQ, hQ) {
-    ctxQ.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctxQ.lineWidth = 1.5;
-    for (let waveQ = 0; 14 > waveQ; waveQ++) {
-      const waveYQ = (waveQ / 14) * hQ + ((waveQ * 37) % 23);
-      ctxQ.beginPath();
-      for (let pxQ = 0; !(pxQ > wQ); pxQ += 32) ctxQ.lineTo(pxQ, waveYQ + Math.sin(pxQ * 0.05 + waveQ) * 2.5);
-      ctxQ.stroke();
-    }
-  }
-  function blockFillQ(midXQ, midZQ) {
-    const farCornerQ = -165 > midXQ && -165 > midZQ;
-    return farCornerQ ? '#b3c184' : '#cfc096';
-  }
-  function paintBlocksQ(ctxQ, wQ, hQ, projQ) {
-    const roadsXQ = G.roadX;
-    const roadsZQ = G.roadZ;
-    const halfRoadQ = CFG.roadW / 2;
-    for (let iQ = 0; iQ < roadsXQ.length - 1; iQ++) {
-      for (let jQ = 0; jQ < roadsZQ.length - 1; jQ++) {
-        const [axQ, ayQ] = projQ(roadsXQ[iQ] + halfRoadQ, roadsZQ[jQ] + halfRoadQ);
-        const [bxQ, byQ] = projQ(roadsXQ[iQ + 1] - halfRoadQ, roadsZQ[jQ + 1] - halfRoadQ);
-        const rectXQ = Math.min(axQ, bxQ);
-        const rectYQ = Math.min(ayQ, byQ);
-        const rectWQ = Math.abs(bxQ - axQ);
-        const rectHQ = Math.abs(byQ - ayQ);
-        const offscreenQ = rectXQ + rectWQ < 0 || rectYQ + rectHQ < 0 || rectXQ > wQ || rectYQ > hQ;
-        if (offscreenQ) continue;
-        const midXQ = (roadsXQ[iQ] + roadsXQ[iQ + 1]) / 2;
-        const midZQ = (roadsZQ[jQ] + roadsZQ[jQ + 1]) / 2;
-        ctxQ.fillStyle = blockFillQ(midXQ, midZQ);
-        ctxQ.fillRect(rectXQ, rectYQ, rectWQ, rectHQ);
-      }
-    }
-  }
-  function strokeRoadSetQ(ctxQ, projQ, wQ, hQ, mainsOnlyQ, colQ, widthQ) {
-    ctxQ.strokeStyle = colQ;
-    ctxQ.lineWidth = widthQ;
-    ctxQ.beginPath();
-    for (const lineXQ of G.roadX) {
-      if (mainXsQ.has(lineXQ) !== mainsOnlyQ) continue;
-      const [mxQ] = projQ(lineXQ, 0);
-      if (mxQ < -widthQ || mxQ > wQ + widthQ) continue;
-      const [, topYQ] = projQ(lineXQ, -CFG.half);
-      const [, botYQ] = projQ(lineXQ, CFG.half);
-      ctxQ.moveTo(mxQ, topYQ);
-      ctxQ.lineTo(mxQ, botYQ);
-    }
-    for (const lineZQ of G.roadZ) {
-      if (mainZsQ.has(lineZQ) !== mainsOnlyQ) continue;
-      const [, myQ] = projQ(0, lineZQ);
-      if (myQ < -widthQ || myQ > hQ + widthQ) continue;
-      const [leftXQ] = projQ(-CFG.half, lineZQ);
-      const [rightXQ] = projQ(CFG.half, lineZQ);
-      ctxQ.moveTo(leftXQ, myQ);
-      ctxQ.lineTo(rightXQ, myQ);
-    }
-    ctxQ.stroke();
-  }
-  function tracePathQ(ctxQ, projQ, ptsQ) {
-    ptsQ.forEach((ptQ, idxQ) => {
-      const [mxQ, myQ] = projQ(ptQ.x, ptQ.z);
-      if (idxQ === 0) ctxQ.moveTo(mxQ, myQ);
-      else ctxQ.lineTo(mxQ, myQ);
-    });
-  }
-  function paintRouteQ(ctxQ, projQ, fromQ, pauseModeQ) {
+import { CLUB_RANKS, CAST, DISTRICTS, CFG, MISSIONS } from './config.js'; import { roadRoute } from './world.js'; import { districtAt } from './police.js';
+const elById = (idN) => { return document.getElementById (idN); };
+const cashRound = (rawC) => { return Math.round (rawC || 0); };
+const cashStr = (rawS) => { let partsS = []; partsS.push ('$'); partsS.push (cashRound (rawS).toLocaleString ('en-US')); return partsS.join (''); };
+export const initHUD = (G) => { const elsH = { };
+  function bindEl (idB) { elsH [idB] = elById (idB); }
+  let bindIds = []; bindIds.push ('objective'); bindIds.push ('money'); bindIds.push ('rep'); bindIds.push ('rank'); bindIds.push ('stars'); bindIds.push ('healthBar'); bindIds.push ('carBar'); bindIds.push ('cardPortrait'); bindIds.push ('cardGiver'); bindIds.push ('cardText'); bindIds.push ('cardProg'); bindIds.push ('copPanel'); bindIds.push ('copRows'); bindIds.push ('briefing'); bindIds.push ('banner'); bindIds.push ('toast'); bindIds.push ('pauseMenu'); bindIds.push ('bigmap'); bindIds.push ('mapLegend'); bindIds.push ('minimap'); bindIds.push ('wasted'); bindIds.push ('busted'); bindIds.push ('garagePanel'); bindIds.push ('mapWrap'); bindIds.forEach (bindEl);
+  elsH.card = elById ('missionCard');
+  elsH.speedo = elById ('speedoCanvas');
+  let radioNode = elById ('radioChip');
+  if (! radioNode && 'undefined' !== typeof document && document.body) {
+    radioNode = document.createElement ('div');
+    radioNode.id = 'radioChip';
+    radioNode.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:none;display:none;padding:5px 14px;border-radius:999px;background:rgba(10,12,18,0.72);border:1px solid rgba(255,122,26,0.65);color:#ffd9ae;font:bold 13px Arial,sans-serif;letter-spacing:1px;white-space:nowrap;';
+    document.body.appendChild (radioNode); }
+  elsH.radioChip = radioNode;
+  if (G.playerHealth == null) G.playerHealth = 100; if (G.bustMeter == null) G.bustMeter = 0;
+  if (G._lastDamageAt == null) { G._lastDamageAt = - 99; }
+  let dispNode = elById ('dispatchLine');
+  if (! dispNode && 'undefined' !== typeof document && document.body) {
+    dispNode = document.createElement ('div');
+    dispNode.id = 'dispatchLine';
+    dispNode.style.cssText = 'position:fixed;top:172px;left:16px;z-index:30;pointer-events:none;display:none;max-width:430px;padding:4px 10px;background:rgba(8,10,14,0.66);border-left:3px solid #57b7ff;color:#cfe6ff;font:12px "Courier New",monospace;letter-spacing:0.4px;white-space:nowrap;overflow:hidden;';
+    document.body.appendChild (dispNode); }
+  elsH.dispatch = dispNode;
+  let bustNode = elById ('bustWrap');
+  if (! bustNode && 'undefined' !== typeof document && document.body) {
+    bustNode = document.createElement ('div');
+    bustNode.id = 'bustWrap';
+    bustNode.style.cssText = 'position:fixed;top:64px;right:16px;z-index:30;pointer-events:none;display:none;width:190px;';
+    bustNode.innerHTML = '<div id="bustLabel" style="color:#ffd23f;font:bold 13px Arial,sans-serif;letter-spacing:3px;text-align:right;text-shadow:0 1px 3px #000;">BUSTED</div>' + '<div style="height:7px;margin-top:3px;background:rgba(255,255,255,0.18);border:1px solid rgba(0,0,0,0.6);"><div id="bustFill" style="height:100%;width:0%;background:#57b7ff;"></div></div>';
+    document.body.appendChild (bustNode); }
+  elsH.bustWrap = bustNode;
+  elsH.bustLabel = bustNode ? bustNode.querySelector ('#bustLabel') : null;
+  elsH.bustFill = bustNode ? bustNode.querySelector ('#bustFill') : null;
+  let dispLeft = 0;
+  G.dispatch = function (spoken) { G.lastDispatch = spoken;
+    if (! elsH.dispatch) return;
+    elsH.dispatch.textContent = spoken;
+    elsH.dispatch.style.display = 'block';
+    elsH.dispatch.style.opacity = '1';
+    dispLeft = 5; };
+  const styleOverlayShell = (nodeO, bgQ) => {
+    nodeO.innerHTML = '';
+    nodeO.style.cssText = 'position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;flex-direction:column;background:' + bgQ + ';pointer-events:none;'; };
+  const makeOverlayTitle = (nodeT, titleT, colQ) => {
+    let elT; elT = document.createElement ('div');
+    elT.className = 's26Title';
+    elT.textContent = titleT;
+    elT.style.cssText = 'color:' + colQ + ';font:bold 104px Arial,sans-serif;letter-spacing:22px;text-shadow:0 4px 22px rgba(0,0,0,0.85);';
+    nodeT.appendChild (elT);
+    return elT; };
+  const makeOverlaySub = (nodeSu) => {
+    let elSu; elSu = document.createElement ('div');
+    elSu.className = 's26Sub';
+    elSu.style.cssText = 'color:#e8e8e8;font:17px Arial,sans-serif;letter-spacing:2px;margin-top:16px;text-shadow:0 2px 8px #000;';
+    nodeSu.appendChild (elSu);
+    return elSu; };
+  const overlayParts = (nodeP, titleP, bgP, colP) => {
+    if (! nodeP) return null;
+    styleOverlayShell (nodeP, bgP);
+    let partsP = { }; partsP.title = makeOverlayTitle (nodeP, titleP, colP); partsP.sub = makeOverlaySub (nodeP); return partsP; };
+  const wastedP = overlayParts (elsH.wasted, 'WASTED', 'radial-gradient(ellipse at center, rgba(74,4,4,0.55) 0%, rgba(16,0,0,0.94) 100%)', '#c9c9c9');
+  const bustedP = overlayParts (elsH.busted, 'BUSTED', 'radial-gradient(ellipse at center, rgba(24,38,58,0.55) 0%, rgba(4,8,16,0.94) 100%)', '#dfe9f5');
+  let endPend = null;
+  function isStaging () { return ! ! (G.shot || G.shotMode); }
+  const dropCarAt = (carD, pxD, pzD, healthD) => {
+    if (! carD) return;
+    carD.x = pxD;
+    carD.z = pzD;
+    if (carD.mesh) { carD.mesh.position.set (pxD, carD.mesh.position.y, pzD); carD.mesh.rotation.y = 0; }
+    carD.speed = 0 + 0;
+    carD.angle = 0;
+    carD.health = healthD; };
+  const dropFigureAt = (pxF, pzF) => {
+    let figNode; figNode = G.player;
+    if (! figNode) return;
+    figNode.x = pxF;
+    figNode.z = pzF;
+    if (figNode.fig) { figNode.fig.visible = true; figNode.fig.position.set (pxF, figNode.fig.position.y, pzF); } };
+  const finishEndFlow = (kindE) => {
+    void kindE;
+    G.wanted = 0; G.bustMeter = 0;
+    G.playerHealth = 100; G.frozen = false;
+    endPend = null;
+    G.saveGame?.(); };
+  const resolveWasted = (carW) => {
+    G.money = Math.max (0, ((G.money || 0) - 150));
+    let gxW; gxW = (G.hq && G.hq.garage && G.hq.garage.x) || - 412.5;
+    let gzW; gzW = (G.hq && G.hq.garage && G.hq.garage.z) || 452;
+    dropCarAt (carW, gxW, gzW, 60);
+    dropFigureAt (330, - 330); G.timeOfDay = ((G.timeOfDay || 12) + 2) % 24;
+    G.flags.wasted = false; G.toast?.('Wasted — hospital bill $150'); };
+  const resolveBusted = (carB) => {
+    G.money = Math.max (0, ((G.money || 0) - 200));
+    dropCarAt (carB, - 408.5, 456, 50);
+    dropFigureAt (- 412.5, 452); G.timeOfDay = ((G.timeOfDay || 12) + 1) % 24;
+    G.flags.busted = false; G.toast?.('Busted — RBPD fine $200, ride impounded to HQ'); };
+  const resolveEnd = () => { const kindR = endPend.kind;
+    void (kindR === 'wasted');
+    let carR; carR = endPend.car;
+    if (G.car) try { G.exitCar?.(); } catch (err) { }
+    let handlersR = { }; handlersR.wasted = resolveWasted; handlersR.busted = resolveBusted;
+    handlersR [kindR] (carR);
+    finishEndFlow (kindR); };
+  G.hud = G.hud || { }; G.hud.showWasted = function (zoneQ) {
+    if (G.flags.wasted) { return; }
+    let srcW; srcW = G.car ? G.car : null;
+    let hereXQ; if (srcW) { hereXQ = srcW.x; } else { hereXQ = (G.player?.x || 0); }
+    let hereZQ; if (srcW) { hereZQ = srcW.z; } else { hereZQ = (G.player?.z || 0); }
+    G.flags.wasted = true; if (wastedP) wastedP.sub.textContent = 'You were flatlined in ' + (zoneQ || districtAt (hereXQ, hereZQ)) + '';
+    let pendW = { }; pendW.kind = 'wasted'; pendW.t = 2.8; pendW.car = G.car || null; pendW.staging = isStaging (); endPend = pendW;
+    if (! endPend.staging) G.frozen = true; };
+  G.hud.showBusted = function () { if (G.flags.busted) return;
+    G.flags.busted = true; if (bustedP) bustedP.sub.textContent = 'RBPD impounded your ride';
+    let pendB = { }; pendB.kind = 'busted'; pendB.t = 2.8; pendB.car = G.car || null; pendB.staging = isStaging (); endPend = pendB;
+    if (! endPend.staging) G.frozen = true; };
+  G.damagePlayer = function (hitD) {
+    if (! (hitD > 0) || isStaging () || endPend || G.flags.wasted || G.flags.busted) return;
+    G.playerHealth = Math.max (0, (G.playerHealth ?? 100) - hitD); G._lastDamageAt = G.elapsed || 0;
+    if (! (G.playerHealth > 0)) G.hud.showWasted (); };
+  const miniCx = elsH.minimap ? elsH.minimap.getContext ('2d') : null;
+  const bigCx = elsH.bigmap ? elsH.bigmap.getContext ('2d') : null;
+  const dialCx = elsH.speedo ? elsH.speedo.getContext ('2d') : null;
+  if (G.flags.mapZoom && elsH.mapWrap) {
+    elsH.mapWrap.style.transform = 'scale(1.45)';
+    elsH.mapWrap.style.transformOrigin = 'top left'; }
+  if (elsH.bigmap) {
+    elsH.bigmap.style.maxWidth = '94vw';
+    elsH.bigmap.style.width = 'auto';
+    elsH.bigmap.style.height = 'min(578px, calc(100vh - 150px))'; }
+  const crewMap = { driver : { initials : 'RT', name : 'Ren Takagi', role : 'DRIVER', color : '#ff7a1a' }, mechanic : { initials : 'AS', name : 'Ako Sato', role : 'MECHANIC', color : '#3f6d8e' }, lookout : { initials : 'MC', name : 'Mika Chen', role : 'LOOKOUT', color : '#7a4fd0' } };
+  let crewCards = document.querySelectorAll ('.crewCard');
+  let iterCrew = crewCards [Symbol.iterator] (); let stepCrew = iterCrew.next ();
+  while (! stepCrew.done) {
+    const cardC = stepCrew.value; stepCrew = iterCrew.next ();
+    const infoC = crewMap [cardC.dataset.role];
+    if (! infoC) continue;
+    const faceC = cardC.querySelector ('.crewFace');
+    const nameC = cardC.querySelector ('.crewName');
+    const roleC = cardC.querySelector ('.crewRole');
+    if (faceC) { faceC.textContent = infoC.initials; faceC.style.background = infoC.color; }
+    if (nameC) nameC.textContent = infoC.name;
+    if (roleC) roleC.textContent = infoC.role; }
+  let toastT = 0;
+  let bannerT = 0;
+  let briefT = 0;
+  G.toast = function (msgT) {
+    if (! elsH.toast) return;
+    elsH.toast.textContent = msgT;
+    elsH.toast.style.display = 'block';
+    elsH.toast.style.opacity = '1';
+    clearTimeout (toastT);
+    toastT = setTimeout (() => { elsH.toast.style.display = 'none'; }, 3000); };
+  G.banner = function (msgB) {
+    if (! elsH.banner) return;
+    elsH.banner.textContent = msgB;
+    elsH.banner.style.display = 'block';
+    clearTimeout (bannerT);
+    bannerT = setTimeout (() => { elsH.banner.style.display = 'none'; }, 2500); };
+  const personInitials = (personI, giverI) => {
+    let labelI; labelI = personI?.name || giverI || '?';
+    let lettersI; lettersI = [];
+    let wordsI; wordsI = labelI.trim ().split (/\s+/);
+    let iterWordI = wordsI [Symbol.iterator] (); let stepWordI = iterWordI.next ();
+    while (! stepWordI.done) { const wordI = stepWordI.value; stepWordI = iterWordI.next (); lettersI.push (wordI [0]); }
+    return lettersI.join ('').slice (0, 2).toUpperCase (); };
+  const personChipColor = (personC) => {
+    if (personC?.outfit?.topColor) return '#' + personC.outfit.topColor.toString (16).padStart (6, '0');
+    return '#444'; };
+  G.showBriefing = function (giverB, lineB) {
+    if (! elsH.briefing) return;
+    let personB; personB = CAST [giverB];
+    let chipB; chipB = elsH.briefing.querySelector ('.giverChip');
+    let nameB; nameB = elsH.briefing.querySelector ('.giver');
+    let lineElB; lineElB = elsH.briefing.querySelector ('.line');
+    if (chipB) { chipB.textContent = personInitials (personB, giverB); chipB.style.background = personChipColor (personB); }
+    if (nameB) nameB.textContent = personB?.name || giverB || '';
+    if (lineElB) lineElB.textContent = lineB || '';
+    elsH.briefing.style.display = 'block';
+    clearTimeout (briefT);
+    briefT = setTimeout (() => { elsH.briefing.style.display = 'none'; }, 5000); };
+  let viewQ = { }; viewQ.zoom = 1; viewQ.cx = 0; viewQ.cz = 0;
+  function viewHome () { viewQ.zoom = 1; viewQ.cx = 0 + 0; viewQ.cz = 0 + 0; }
+  G.togglePause = function () { if (! elsH.pauseMenu) return;
+    if (G.paused) { viewHome (); elsH.pauseMenu.style.display = 'block'; bigMap (); fillLegend (); }
+    else elsH.pauseMenu.style.display = 'none'; };
+  const fillLegend = () => { if (! elsH.mapLegend || elsH.mapLegend.dataset.filled) return;
+    elsH.mapLegend.dataset.filled = '1';
+    let chipsL; chipsL = [];
+    function pushL (htmlL) { chipsL.push (htmlL); }
+    pushL ('<span class="lgChip"><b style="color:#fff">➤</b> You</span>');
+    pushL ('<span class="lgChip"><b style="color:#ffd23f">■</b> Objective</span>');
+    pushL ('<span class="lgChip"><b>G</b> Garage</span>');
+    pushL ('<span class="lgChip"><b style="color:#ff8c1a">M</b> RONIN MART</span>');
+    pushL ('<span class="lgChip"><b>⌂</b> HQ / Safehouse</span>');
+    pushL ('<span class="lgChip"><b style="color:#57b7ff">●</b> RBPD</span>');
+    pushL ('<span class="lgChip"><b style="color:#ff4fd8">━</b> Route</span>');
+    pushL ('<span class="lgChip">Scroll zoom · drag pan</span>');
+    elsH.mapLegend.innerHTML = chipsL.join (' '); };
+  if (elsH.bigmap && ! elsH.bigmap.dataset.panzoom) {
+    elsH.bigmap.dataset.panzoom = '1';
+    let canvasZ; canvasZ = elsH.bigmap;
+    canvasZ.style.cursor = 'grab';
+    canvasZ.style.touchAction = 'none';
+    const clampViewZ = () => {
+      let halfSpanZ; halfSpanZ = CFG.world / (2 * viewQ.zoom);
+      let limitZ; limitZ = Math.max (0, CFG.half - halfSpanZ);
+      viewQ.cx = Math.max (- limitZ, Math.min (limitZ, viewQ.cx));
+      viewQ.cz = Math.max (- limitZ, Math.min (limitZ, viewQ.cz)); };
+    canvasZ.addEventListener ('wheel', (ev) => {
+      if (! G.paused) { return; }
+      ev.preventDefault (); const rectZ = canvasZ.getBoundingClientRect ();
+      const curZX = (ev.clientX - rectZ.left) * (canvasZ.width / rectZ.width);
+      const curZY = (ev.clientY - rectZ.top) * (canvasZ.height / rectZ.height);
+      const margZ = 46;
+      const scaleBef = Math.min ((canvasZ.width - margZ * 2) / CFG.world, (canvasZ.height - margZ * 2) / CFG.world) * viewQ.zoom;
+      const worldZX = viewQ.cx + ((curZX - canvasZ.width / 2) / scaleBef);
+      const worldZZ = viewQ.cz + ((curZY - canvasZ.height / 2) / scaleBef);
+      let factorZ; if (ev.deltaY < 0) { factorZ = 1.18; } else { factorZ = 1 / 1.18; }
+      viewQ.zoom = Math.max (1, Math.min (5, viewQ.zoom * factorZ));
+      const scaleAft = Math.min ((canvasZ.width - margZ * 2) / CFG.world, (canvasZ.height - margZ * 2) / CFG.world) * viewQ.zoom;
+      viewQ.cx = worldZX - ((curZX - canvasZ.width / 2) / scaleAft);
+      viewQ.cz = worldZZ - ((curZY - canvasZ.height / 2) / scaleAft);
+      clampViewZ (); bigMap (); }, { passive : false });
+    let dragZ = null;
+    canvasZ.addEventListener ('pointerdown', (ev) => {
+      if (! (G.paused)) return;
+      let dragNew = { }; dragNew.x = ev.clientX; dragNew.y = ev.clientY; dragZ = dragNew;
+      canvasZ.style.cursor = 'grabbing';
+      try { canvasZ.setPointerCapture (ev.pointerId); } catch (err) { } });
+    canvasZ.addEventListener ('pointermove', (ev) => {
+      if (! dragZ || ! G.paused) return;
+      const rectMv = canvasZ.getBoundingClientRect ();
+      const margMv = 46;
+      const scaleNowZ = Math.min ((canvasZ.width - margMv * 2) / CFG.world, (canvasZ.height - margMv * 2) / CFG.world) * viewQ.zoom;
+      viewQ.cx -= (ev.clientX - dragZ.x) * (canvasZ.width / rectMv.width) / scaleNowZ;
+      viewQ.cz -= (ev.clientY - dragZ.y) * (canvasZ.height / rectMv.height) / scaleNowZ;
+      let dragNext = { }; dragNext.x = ev.clientX; dragNext.y = ev.clientY; dragZ = dragNext;
+      clampViewZ (); bigMap (); });
+    function endDragZ () { dragZ = null; canvasZ.style.cursor = 'grab'; }
+    canvasZ.addEventListener ('pointerup', endDragZ);
+    canvasZ.addEventListener ('pointercancel', endDragZ); }
+  const mainXSet = new Set (); mainXSet.add (0); mainXSet.add (330);
+  const mainZSet = new Set (); mainZSet.add (0); mainZSet.add (495);
+  const fillProjectedRect = (ctxR, projR, x0Q, z0Q, x1Q, z1K) => {
+    const [sx0K, sy0K] = projR (x0Q, z0Q);
+    const [sx1K, sy1K] = projR (x1Q, z1K);
+    ctxR.fillRect (Math.min (sx0K, sx1K), Math.min (sy0K, sy1K), Math.abs (sx1K - sx0K), Math.abs (sy1K - sy0K)); };
+  const paintWaves = (ctxWv, wWv, hWv) => {
+    ctxWv.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctxWv.lineWidth = 1.5;
+    let waveW = 0;
+    while (waveW < 14) {
+      const yW = (waveW / 14) * hWv + ((waveW * 37) % 23);
+      ctxWv.beginPath ();
+      let pxW = 0;
+      while (! (pxW > wWv)) { ctxWv.lineTo (pxW, yW + Math.sin (pxW * 0.05 + waveW) * 2.5); pxW += 32; }
+      ctxWv.stroke (); waveW++; } };
+  const blockFill = (midXB, midZB) => {
+    let greenSide; greenSide = (- 165 > midXB && - 165 > midZB);
+    if (greenSide) return '#b3c184';
+    return '#cfc096'; };
+  const paintBlocks = (ctxBl, wBl, hBl, projBl) => {
+    let halfRoadBl; halfRoadBl = CFG.roadW / 2;
+    let iBl = 0;
+    while (iBl < G.roadX.length - 1) {
+      let jBl = 0;
+      while (jBl < G.roadZ.length - 1) {
+        const [axBl, ayBl] = projBl (G.roadX [iBl] + halfRoadBl, G.roadZ [jBl] + halfRoadBl);
+        const [bxBl, byBl] = projBl (G.roadX [iBl + 1] - halfRoadBl, G.roadZ [jBl + 1] - halfRoadBl);
+        const rxBl = Math.min (axBl, bxBl), ryBl = Math.min (ayBl, byBl);
+        const rwBl = Math.abs (bxBl - axBl), rhBl = Math.abs (byBl - ayBl);
+        if (! (rxBl + rwBl < 0 || ryBl + rhBl < 0 || rxBl > wBl || ryBl > hBl)) {
+          ctxBl.fillStyle = blockFill ((G.roadX [iBl] + G.roadX [iBl + 1]) / 2, (G.roadZ [jBl] + G.roadZ [jBl + 1]) / 2);
+          ctxBl.fillRect (rxBl, ryBl, rwBl, rhBl); }
+        jBl++; }
+      iBl++; } };
+  const strokeRoadSet = (ctxRd, projRd, wRd, hRd, mainsRd, colRd, widthRd) => {
+    ctxRd.strokeStyle = colRd;
+    ctxRd.lineWidth = widthRd;
+    ctxRd.beginPath ();
+    let iterXRd = G.roadX [Symbol.iterator] (); let stepXRd = iterXRd.next ();
+    while (! stepXRd.done) {
+      const lxRd = stepXRd.value; stepXRd = iterXRd.next ();
+      if (mainXSet.has (lxRd) !== mainsRd) continue;
+      const [mxRd] = projRd (lxRd, 0);
+      if (mxRd < - widthRd || mxRd > wRd + widthRd) continue;
+      const [, topYRd] = projRd (lxRd, - CFG.half);
+      const [, botYRd] = projRd (lxRd, CFG.half);
+      ctxRd.moveTo (mxRd, topYRd);
+      ctxRd.lineTo (mxRd, botYRd); }
+    let iterZRd = G.roadZ [Symbol.iterator] (); let stepZRd = iterZRd.next ();
+    while (! stepZRd.done) {
+      const lzRd = stepZRd.value; stepZRd = iterZRd.next ();
+      if (mainZSet.has (lzRd) !== mainsRd) continue;
+      const [, myRd] = projRd (0, lzRd);
+      if (myRd < - widthRd || myRd > hRd + widthRd) continue;
+      const [leftXRd] = projRd (- CFG.half, lzRd);
+      const [rightXRd] = projRd (CFG.half, lzRd);
+      ctxRd.moveTo (leftXRd, myRd);
+      ctxRd.lineTo (rightXRd, myRd); }
+    ctxRd.stroke (); };
+  const tracePath = (ctxTp, projTp, ptsTp) => {
+    ptsTp.forEach ((ptTp, idxTp) => { const [mxTp, myTp] = projTp (ptTp.x, ptTp.z); if (idxTp === 0) ctxTp.moveTo (mxTp, myTp); else ctxTp.lineTo (mxTp, myTp); }); };
+  const paintRoute = (ctxRt, projRt, fromRt, pauseRt) => {
     try {
-      const routeQ = roadRoute(G, fromQ, G.objective) || [];
-      if (!(routeQ.length > 1)) return;
-      ctxQ.lineJoin = 'round';
-      ctxQ.lineCap = 'round';
-      const passesQ = [0, 1];
-      for (const passQ of passesQ) {
-        ctxQ.strokeStyle = passQ === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6';
-        ctxQ.lineWidth = passQ === 0 ? (pauseModeQ ? 7 : 5) : (pauseModeQ ? 4.5 : 3.2);
-        ctxQ.beginPath();
-        tracePathQ(ctxQ, projQ, routeQ);
-        ctxQ.stroke();
-      }
-    } catch (ignoredQ) { /* routing is best-effort */ }
-  }
-  function paintMapBaseQ(ctxQ, wQ, hQ, projQ, viewValQ, optsQ) {
-    void viewValQ;
-    const unitPxQ = Math.abs(projQ(1, 0)[0] - projQ(0, 0)[0]);
-    const pauseModeQ = !!optsQ.labels;
-    ctxQ.fillStyle = '#3a7bd5';
-    ctxQ.fillRect(0, 0, wQ, hQ);
-    if (optsQ.waves) paintWavesQ(ctxQ, wQ, hQ);
-    ctxQ.fillStyle = '#eed9a4';
-    fillProjectedRectQ(ctxQ, projQ, -CFG.half - 60, 600, CFG.half + 60, 668);
-    ctxQ.fillStyle = '#ddd3ae';
-    fillProjectedRectQ(ctxQ, projQ, -CFG.half, -CFG.half, CFG.half, 612);
-    for (const distQ of DISTRICTS) {
-      ctxQ.fillStyle = distQ.accent;
-      ctxQ.globalAlpha = optsQ.washAlpha;
-      fillProjectedRectQ(ctxQ, projQ, distQ.cx - 330, distQ.cz - 330, distQ.cx + 330, distQ.cz + 330);
-      ctxQ.globalAlpha = 1;
-    }
-    ctxQ.fillStyle = 'rgba(233,201,133,0.55)';
-    fillProjectedRectQ(ctxQ, projQ, -CFG.half, 505, CFG.half, 600);
-    ctxQ.fillStyle = '#a9bd7a';
-    const parksQ = [[200, 380, 300, 470], [-520, -300, -430, -210]];
-    for (const parkQ of parksQ) fillProjectedRectQ(ctxQ, projQ, parkQ[0], parkQ[1], parkQ[2], parkQ[3]);
-    paintBlocksQ(ctxQ, wQ, hQ, projQ);
-    const roadPxQ = CFG.roadW * unitPxQ;
-    ctxQ.lineCap = 'butt';
-    strokeRoadSetQ(ctxQ, projQ, wQ, hQ, false, '#b9b2a0', Math.max(1.5, roadPxQ * 0.62));
-    strokeRoadSetQ(ctxQ, projQ, wQ, hQ, false, '#e3ddcb', Math.max(1.2, roadPxQ * 0.5));
-    strokeRoadSetQ(ctxQ, projQ, wQ, hQ, true, '#8f8a7c', roadPxQ + 2);
-    strokeRoadSetQ(ctxQ, projQ, wQ, hQ, true, '#f4efe0', roadPxQ);
-    if (pauseModeQ) {
-      const [, shoreYQ] = projQ(0, 556);
-      const shoreVisibleQ = shoreYQ > -6 && shoreYQ < hQ + 6;
-      if (shoreVisibleQ) {
-        ctxQ.strokeStyle = '#d9b878';
-        ctxQ.lineWidth = Math.max(2, 8 * unitPxQ);
-        ctxQ.beginPath();
-        const [shoreX0Q] = projQ(-CFG.half, 556);
-        const [shoreX1Q] = projQ(CFG.half, 556);
-        ctxQ.moveTo(shoreX0Q, shoreYQ);
-        ctxQ.lineTo(shoreX1Q, shoreYQ);
-        ctxQ.stroke();
-      }
-    }
-    if (G.touge && G.touge.length > 1) {
-      ctxQ.lineJoin = 'round';
-      ctxQ.lineCap = 'round';
-      const tougePassesQ = [0, 1];
-      for (const passQ of tougePassesQ) {
-        ctxQ.strokeStyle = passQ === 0 ? '#8f8a7c' : '#f4efe0';
-        ctxQ.lineWidth = passQ === 0 ? 5 : 3.5;
-        ctxQ.beginPath();
-        tracePathQ(ctxQ, projQ, G.touge);
-        ctxQ.closePath();
-        ctxQ.stroke();
-      }
-    }
-    if (G.objective && optsQ.routeFrom) paintRouteQ(ctxQ, projQ, optsQ.routeFrom, pauseModeQ);
-    if (optsQ.labels) {
-      const fallbackLabelsQ = DISTRICTS.map((distQ) => ({ name: distQ.name, x: distQ.cx, z: distQ.cz }));
-      const labelsQ = (G.landmarks && G.landmarks.districts) || fallbackLabelsQ;
-      ctxQ.textAlign = 'center';
-      ctxQ.textBaseline = 'middle';
-      for (const labelQ of labelsQ) {
-        const [txtXQ, txtYQ] = projQ(labelQ.x, labelQ.z);
-        const offLabelQ = txtXQ < -90 || txtYQ < -20 || txtXQ > wQ + 90 || txtYQ > hQ + 20;
-        if (offLabelQ) continue;
-        const tagQ = labelQ.name.toUpperCase();
-        ctxQ.font = '600 21px Arial, sans-serif';
-        try { ctxQ.letterSpacing = '3px'; } catch (ignoredQ) {}
-        ctxQ.shadowColor = 'rgba(255,255,255,0.9)';
-        ctxQ.shadowBlur = 5;
-        ctxQ.lineWidth = 4;
-        ctxQ.strokeStyle = 'rgba(250,246,230,0.85)';
-        ctxQ.strokeText(tagQ, txtXQ, txtYQ);
-        ctxQ.shadowBlur = 0;
-        ctxQ.fillStyle = '#54452c';
-        ctxQ.fillText(tagQ, txtXQ, txtYQ);
-        try { ctxQ.letterSpacing = '0px'; } catch (ignoredQ) {}
-      }
-      drawMapLegendQ(ctxQ, wQ, hQ);
-      ctxQ.font = '11px Arial, sans-serif';
-      ctxQ.textAlign = 'right';
-      ctxQ.textBaseline = 'bottom';
-      ctxQ.fillStyle = 'rgba(20,16,10,0.55)';
-      ctxQ.fillText(`${viewQ.zoom.toFixed(1)}x — scroll to zoom · drag to pan`, wQ - 12, hQ - 10);
-    }
-  }
-  function drawMapLegendQ(ctxQ, wQ, hQ) {
-    void wQ;
-    const rowsQ = [];
-    rowsQ.push(['#ffffff', '➤', 'You']);
-    rowsQ.push(['#ffd23f', '■', 'Objective / mission']);
-    rowsQ.push(['#2b2f36', 'G', 'Garage — RONIN KAI HQ']);
-    rowsQ.push(['#ff8c1a', 'M', 'RONIN MART supermarket']);
-    rowsQ.push(['#ffffff', '⌂', 'Safehouse (HQ)']);
-    rowsQ.push(['#2e6fb7', '●', 'RBPD police']);
-    rowsQ.push(['#ff2fd6', '━', 'GPS route']);
-    const panelWQ = 218;
-    const panelHQ = 16 + rowsQ.length * 19 + 8;
-    const panelXQ = 12;
-    const panelYQ = hQ - panelHQ - 12;
-    ctxQ.save();
-    ctxQ.fillStyle = 'rgba(8,10,16,0.72)';
-    ctxQ.beginPath();
-    if (ctxQ.roundRect) ctxQ.roundRect(panelXQ, panelYQ, panelWQ, panelHQ, 8);
-    else ctxQ.rect(panelXQ, panelYQ, panelWQ, panelHQ);
-    ctxQ.fill();
-    ctxQ.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctxQ.lineWidth = 1;
-    ctxQ.stroke();
-    ctxQ.textAlign = 'left';
-    ctxQ.textBaseline = 'middle';
-    ctxQ.font = 'bold 11px Arial, sans-serif';
-    ctxQ.fillStyle = '#ffd9ae';
-    ctxQ.fillText('LEGEND', panelXQ + 12, panelYQ + 13);
-    ctxQ.font = '12px Arial, sans-serif';
-    rowsQ.forEach((rowQ, idxQ) => {
-      const rowYQ = panelYQ + 16 + 10 + idxQ * 19;
-      ctxQ.fillStyle = rowQ[0];
-      ctxQ.font = 'bold 12px Arial, sans-serif';
-      ctxQ.fillText(rowQ[1], panelXQ + 12, rowYQ);
-      ctxQ.font = '12px Arial, sans-serif';
-      ctxQ.fillStyle = '#e8eef4';
-      ctxQ.fillText(rowQ[2], panelXQ + 34, rowYQ);
-    });
-    ctxQ.restore();
-  }
-  function drawChipQ(ctxQ, pxQ, pyQ, sizeQ, bgQ, glyphQ, fgQ) {
-    ctxQ.fillStyle = bgQ;
-    const halfQ = sizeQ;
-    ctxQ.beginPath();
-    if (ctxQ.roundRect) ctxQ.roundRect(pxQ - halfQ / 2, pyQ - halfQ / 2, halfQ, halfQ, 3);
-    else ctxQ.rect(pxQ - halfQ / 2, pyQ - halfQ / 2, halfQ, halfQ);
-    ctxQ.fill();
-    ctxQ.fillStyle = fgQ || '#14100a';
-    ctxQ.font = `bold ${Math.round(halfQ * 0.72)}px Arial, sans-serif`;
-    ctxQ.textAlign = 'center';
-    ctxQ.textBaseline = 'middle';
-    ctxQ.fillText(glyphQ, pxQ, pyQ + 1);
-  }
-  function drawTagUnderQ(ctxQ, pxQ, pyQ, sizeQ, txtQ, dxQ, optsQ) {
-    if (!optsQ.tags) return;
-    const baseXQ = pxQ + (dxQ || 0);
-    const baseYQ = pyQ + sizeQ / 2 + 2;
-    ctxQ.font = 'bold 10px Arial, sans-serif';
-    ctxQ.textAlign = 'center';
-    ctxQ.textBaseline = 'top';
-    ctxQ.lineWidth = 3;
-    ctxQ.strokeStyle = 'rgba(250,246,230,0.9)';
-    ctxQ.strokeText(txtQ, baseXQ, baseYQ);
-    ctxQ.fillStyle = '#3a2f1c';
-    ctxQ.fillText(txtQ, baseXQ, baseYQ);
-  }
-  function paintMarketBlipQ(ctxQ, projQ, optsQ) {
-    if (!(G.landmarks && G.landmarks.market)) return;
-    const marketQ = G.landmarks.market;
-    const [mktXQ, mktYQ] = projQ(marketQ.x, marketQ.z);
-    if (optsQ.tags) {
-      drawChipQ(ctxQ, mktXQ, mktYQ, optsQ.chipSize, '#ff8c1a', 'M', '#ffffff');
-      drawTagUnderQ(ctxQ, mktXQ, mktYQ, optsQ.chipSize, 'RONIN MART', undefined, optsQ);
-    } else if (mktXQ > -14 && mktYQ > -14 && mktXQ < 234 && mktYQ < 234) {
-      ctxQ.beginPath();
-      ctxQ.arc(mktXQ, mktYQ, 6.5, 0, Math.PI * 2);
-      ctxQ.fillStyle = '#ff8c1a';
-      ctxQ.fill();
-      ctxQ.lineWidth = 2;
-      ctxQ.strokeStyle = '#ffffff';
-      ctxQ.stroke();
-      ctxQ.fillStyle = '#ffffff';
-      ctxQ.font = 'bold 9px Arial, sans-serif';
-      ctxQ.textAlign = 'center';
-      ctxQ.textBaseline = 'middle';
-      ctxQ.fillText('M', mktXQ, mktYQ + 0.5);
-    }
-  }
-  function paintCopBlipsQ(ctxQ, projQ, nowQ) {
-    if (!G.cops) return;
-    for (const copQ of G.cops) {
-      const [copXQ, copYQ] = projQ(copQ.x, copQ.z);
-      ctxQ.beginPath();
-      ctxQ.arc(copXQ, copYQ, 4, 0, Math.PI * 2);
-      ctxQ.fillStyle = '#2e6fb7';
-      ctxQ.fill();
-      const flashQ = 0.35 + (0.65 * Math.abs(Math.sin(nowQ * 5)));
-      ctxQ.beginPath();
-      ctxQ.arc(copXQ, copYQ, 6.5, 0, Math.PI * 2);
-      ctxQ.strokeStyle = `rgba(255,60,60,${flashQ.toFixed(2)})`;
-      ctxQ.lineWidth = 2;
-      ctxQ.stroke();
-    }
-  }
-  function paintBlipsQ(ctxQ, projQ, nowQ, optsQ) {
-    const heroQ = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    const [hqXQ, hqYQ] = projQ(G.hq.x, G.hq.z);
-    drawChipQ(ctxQ, hqXQ, hqYQ, optsQ.chipSize, '#ffffff', '⌂');
-    drawTagUnderQ(ctxQ, hqXQ, hqYQ, optsQ.chipSize, 'SAFEHOUSE', -16, optsQ);
-    const [garXQ, garYQ] = projQ(G.hq.garage.x, G.hq.garage.z);
-    drawChipQ(ctxQ, garXQ, garYQ, optsQ.chipSize, '#2b2f36', 'G', '#ffffff');
-    drawTagUnderQ(ctxQ, garXQ, garYQ, optsQ.chipSize, 'RONIN KAI HQ', 18, optsQ);
-    paintMarketBlipQ(ctxQ, projQ, optsQ);
-    paintCopBlipsQ(ctxQ, projQ, nowQ);
-    if (G.heli?.group) {
-      const spotQ = G.heli.group.position;
-      const [heliXQ, heliYQ] = projQ(spotQ.x, spotQ.z);
-      ctxQ.beginPath();
-      ctxQ.arc(heliXQ, heliYQ, 5, 0, Math.PI * 2);
-      ctxQ.fillStyle = '#2e6fb7';
-      ctxQ.fill();
-      ctxQ.fillStyle = '#ffffff';
-      ctxQ.font = 'bold 8px Arial, sans-serif';
-      ctxQ.textAlign = 'center';
-      ctxQ.textBaseline = 'middle';
-      ctxQ.fillText('H', heliXQ, heliYQ + 0.5);
-    }
-    if (G.objective) {
-      const [objXQ, objYQ] = projQ(G.objective.x, G.objective.z);
-      drawChipQ(ctxQ, objXQ, objYQ, optsQ.chipSize + 2, '#ffd23f', G.objective.letter || '!');
-    }
-    const [heroPxQ, heroPyQ] = projQ(heroQ.x, heroQ.z);
-    const headingQ = G.car ? G.car.angle : G.player.angle;
-    ctxQ.save();
-    ctxQ.translate(heroPxQ, heroPyQ);
-    ctxQ.rotate(((Math.PI - headingQ) + (Math.PI * 2)) % (Math.PI * 2));
-    ctxQ.beginPath();
-    const arrowQ = optsQ.arrowSize;
-    ctxQ.moveTo(0, -arrowQ);
-    ctxQ.lineTo(arrowQ * 0.62, arrowQ * 0.75);
-    ctxQ.lineTo(0, arrowQ * 0.35);
-    ctxQ.lineTo(-arrowQ * 0.62, arrowQ * 0.75);
-    ctxQ.closePath();
-    ctxQ.fillStyle = '#ffffff';
-    ctxQ.fill();
-    ctxQ.lineWidth = 2;
-    ctxQ.strokeStyle = '#14100a';
-    ctxQ.stroke();
-    ctxQ.restore();
-  }
-  let cachedStaticQ = null;
-  function staticMiniQ() {
-    if (cachedStaticQ) return cachedStaticQ;
-    const sizeQ = 1320;
-    const canvasQ = document.createElement('canvas');
-    canvasQ.width = sizeQ;
-    canvasQ.height = sizeQ;
-    const ctxQ = canvasQ.getContext('2d');
-    const projQ = (pxQ, pzQ) => [pxQ + CFG.half, pzQ + CFG.half];
-    paintMapBaseQ(ctxQ, sizeQ, sizeQ, projQ, CFG.world, { washAlpha: 0.07, labels: false, waves: false, routeFrom: null });
-    cachedStaticQ = canvasQ;
-    return canvasQ;
-  }
-  const hubRadiusQ = 13;
-  const hubBgQ = 'rgba(10,12,16,0.55)';
-  const hubEdgeQ = 'rgba(255,255,255,0.85)';
-  const hubWidthQ = 2;
-  function paintMiniRouteQ(ctxQ, projQ, heroQ) {
+      let routeRt; routeRt = roadRoute (G, fromRt, G.objective) || [];
+      if (! (routeRt.length > 1)) return;
+      ctxRt.lineJoin = 'round';
+      ctxRt.lineCap = 'round';
+      let passesRt = [0, 1];
+      let iterRt = passesRt [Symbol.iterator] (); let stepRt = iterRt.next ();
+      while (! stepRt.done) {
+        const passRt = stepRt.value; stepRt = iterRt.next ();
+        if (passRt === 0) { ctxRt.strokeStyle = 'rgba(255,255,255,0.9)'; } else { ctxRt.strokeStyle = '#ff2fd6'; }
+        if (passRt === 0) { ctxRt.lineWidth = pauseRt ? 7 : 5; } else { ctxRt.lineWidth = pauseRt ? 4.5 : 3.2; }
+        ctxRt.beginPath ();
+        tracePath (ctxRt, projRt, routeRt);
+        ctxRt.stroke (); }
+    } catch (err) { } };
+  const paintMapBase = (ctxMb, wMb, hMb, projMb, viewMb, optsMb) => {
+    void viewMb;
+    let unitPxMb; unitPxMb = Math.abs (projMb (1, 0) [0] - projMb (0, 0) [0]);
+    let pauseMb; pauseMb = ! ! optsMb.labels;
+    ctxMb.fillStyle = '#3a7bd5';
+    ctxMb.fillRect (0, 0, wMb, hMb);
+    if (optsMb.waves) paintWaves (ctxMb, wMb, hMb);
+    ctxMb.fillStyle = '#eed9a4';
+    fillProjectedRect (ctxMb, projMb, - CFG.half - 60, 600, CFG.half + 60, 668);
+    ctxMb.fillStyle = '#ddd3ae';
+    fillProjectedRect (ctxMb, projMb, - CFG.half, - CFG.half, CFG.half, 612);
+    let iterDistMb = DISTRICTS [Symbol.iterator] (); let stepDistMb = iterDistMb.next ();
+    while (! stepDistMb.done) {
+      const distMb = stepDistMb.value; stepDistMb = iterDistMb.next ();
+      ctxMb.fillStyle = distMb.accent;
+      ctxMb.globalAlpha = optsMb.washAlpha;
+      fillProjectedRect (ctxMb, projMb, distMb.cx - 330, distMb.cz - 330, distMb.cx + 330, distMb.cz + 330);
+      ctxMb.globalAlpha = 1; }
+    ctxMb.fillStyle = 'rgba(233,201,133,0.55)';
+    fillProjectedRect (ctxMb, projMb, - CFG.half, 505, CFG.half, 600);
+    ctxMb.fillStyle = '#a9bd7a';
+    [[200, 380, 300, 470], [- 520, - 300, - 430, - 210]].forEach ((parkMb) => { fillProjectedRect (ctxMb, projMb, parkMb [0], parkMb [1], parkMb [2], parkMb [3]); });
+    paintBlocks (ctxMb, wMb, hMb, projMb);
+    let roadPxMb; roadPxMb = CFG.roadW * unitPxMb;
+    ctxMb.lineCap = 'butt';
+    strokeRoadSet (ctxMb, projMb, wMb, hMb, false, '#b9b2a0', Math.max (1.5, roadPxMb * 0.62));
+    strokeRoadSet (ctxMb, projMb, wMb, hMb, false, '#e3ddcb', Math.max (1.2, roadPxMb * 0.5));
+    strokeRoadSet (ctxMb, projMb, wMb, hMb, true, '#8f8a7c', roadPxMb + 2);
+    strokeRoadSet (ctxMb, projMb, wMb, hMb, true, '#f4efe0', roadPxMb);
+    if (pauseMb) {
+      const [, shoreY] = projMb (0, 556);
+      if (shoreY > - 6 && shoreY < hMb + 6) {
+        ctxMb.strokeStyle = '#d9b878';
+        ctxMb.lineWidth = Math.max (2, 8 * unitPxMb);
+        ctxMb.beginPath ();
+        const [sx0] = projMb (- CFG.half, 556);
+        const [sx1] = projMb (CFG.half, 556);
+        ctxMb.moveTo (sx0, shoreY);
+        ctxMb.lineTo (sx1, shoreY);
+        ctxMb.stroke (); } }
+    if (G.touge && (G.touge.length > 1)) {
+      ctxMb.lineJoin = 'round';
+      ctxMb.lineCap = 'round';
+      let passesMb = [0, 1];
+      let iterMb = passesMb [Symbol.iterator] (); let stepMb = iterMb.next ();
+      while (! stepMb.done) {
+        const passMb = stepMb.value; stepMb = iterMb.next ();
+        if (passMb === 0) { ctxMb.strokeStyle = '#8f8a7c'; } else { ctxMb.strokeStyle = '#f4efe0'; }
+        if (passMb === 0) { ctxMb.lineWidth = 5; } else { ctxMb.lineWidth = 3.5; }
+        ctxMb.beginPath ();
+        tracePath (ctxMb, projMb, G.touge);
+        ctxMb.closePath ();
+        ctxMb.stroke (); } }
+    if (G.objective && optsMb.routeFrom) paintRoute (ctxMb, projMb, optsMb.routeFrom, pauseMb);
+    if (optsMb.labels) {
+      const labelsMb = (G.landmarks && G.landmarks.districts) || DISTRICTS.map ((distLbl) => { let lblRec = { }; lblRec.name = distLbl.name; lblRec.x = distLbl.cx; lblRec.z = distLbl.cz; return lblRec; });
+      ctxMb.textAlign = 'center';
+      ctxMb.textBaseline = 'middle';
+      let iterLblMb = labelsMb [Symbol.iterator] (); let stepLblMb = iterLblMb.next ();
+      while (! stepLblMb.done) {
+        const labelMb = stepLblMb.value; stepLblMb = iterLblMb.next ();
+        const [txMb, tyMb] = projMb (labelMb.x, labelMb.z);
+        if (txMb < - 90 || tyMb < - 20 || txMb > wMb + 90 || tyMb > hMb + 20) continue;
+        const tagMb = labelMb.name.toUpperCase ();
+        ctxMb.font = '600 21px Arial, sans-serif';
+        try { ctxMb.letterSpacing = '3px'; } catch (err) { }
+        ctxMb.shadowColor = 'rgba(255,255,255,0.9)';
+        ctxMb.shadowBlur = 5;
+        ctxMb.lineWidth = 4;
+        ctxMb.strokeStyle = 'rgba(250,246,230,0.85)';
+        ctxMb.strokeText (tagMb, txMb, tyMb);
+        ctxMb.shadowBlur = 0;
+        ctxMb.fillStyle = '#54452c';
+        ctxMb.fillText (tagMb, txMb, tyMb);
+        try { ctxMb.letterSpacing = '0px'; } catch (err) { } }
+      drawMapLegend (ctxMb, wMb, hMb);
+      ctxMb.font = '11px Arial, sans-serif';
+      ctxMb.textAlign = 'right';
+      ctxMb.textBaseline = 'bottom';
+      ctxMb.fillStyle = 'rgba(20,16,10,0.55)';
+      ctxMb.fillText ('' + viewQ.zoom.toFixed (1) + 'x — scroll to zoom · drag to pan', wMb - 12, hMb - 10); } };
+  const drawMapLegend = (ctxLg, wLg, hLg) => {
+    void wLg;
+    let rowsLg; rowsLg = [];
+    rowsLg.push (['#ffffff', '➤', 'You']);
+    rowsLg.push (['#ffd23f', '■', 'Objective / mission']);
+    rowsLg.push (['#2b2f36', 'G', 'Garage — RONIN KAI HQ']);
+    rowsLg.push (['#ff8c1a', 'M', 'RONIN MART supermarket']);
+    rowsLg.push (['#ffffff', '⌂', 'Safehouse (HQ)']);
+    rowsLg.push (['#2e6fb7', '●', 'RBPD police']);
+    rowsLg.push (['#ff2fd6', '━', 'GPS route']);
+    let panelWLg; panelWLg = 218;
+    let panelHLg; panelHLg = 16 + rowsLg.length * 19 + 8;
+    let panelXLg; panelXLg = 12;
+    let panelYLg; panelYLg = hLg - panelHLg - 12;
+    ctxLg.save ();
+    ctxLg.fillStyle = 'rgba(8,10,16,0.72)';
+    ctxLg.beginPath ();
+    if (ctxLg.roundRect) ctxLg.roundRect (panelXLg, panelYLg, panelWLg, panelHLg, 8);
+    else ctxLg.rect (panelXLg, panelYLg, panelWLg, panelHLg);
+    ctxLg.fill ();
+    ctxLg.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctxLg.lineWidth = 1;
+    ctxLg.stroke ();
+    ctxLg.textAlign = 'left';
+    ctxLg.textBaseline = 'middle';
+    ctxLg.font = 'bold 11px Arial, sans-serif';
+    ctxLg.fillStyle = '#ffd9ae';
+    ctxLg.fillText ('LEGEND', panelXLg + 12, panelYLg + 13);
+    ctxLg.font = '12px Arial, sans-serif';
+    rowsLg.forEach ((rowQ, idxQ) => {
+      const rowY = panelYLg + 16 + 10 + idxQ * 19; ctxLg.fillStyle = rowQ [0]; ctxLg.font = 'bold 12px Arial, sans-serif'; ctxLg.fillText (rowQ [1], panelXLg + 12, rowY); ctxLg.font = '12px Arial, sans-serif'; ctxLg.fillStyle = '#e8eef4'; ctxLg.fillText (rowQ [2], panelXLg + 34, rowY); });
+    ctxLg.restore (); };
+  const drawChip = (ctxCh, pxCh, pyCh, sizeQ, bgCh, glyphCh, fgCh) => {
+    ctxCh.fillStyle = bgCh;
+    let halfQ; halfQ = sizeQ; ctxCh.beginPath ();
+    if (ctxCh.roundRect) ctxCh.roundRect (pxCh - halfQ / 2, pyCh - halfQ / 2, halfQ, halfQ, 3);
+    else ctxCh.rect (pxCh - halfQ / 2, pyCh - halfQ / 2, halfQ, halfQ);
+    ctxCh.fill ();
+    ctxCh.fillStyle = fgCh || '#14100a';
+    ctxCh.font = 'bold ' + Math.round (halfQ * 0.72) + 'px Arial, sans-serif';
+    ctxCh.textAlign = 'center';
+    ctxCh.textBaseline = 'middle';
+    ctxCh.fillText (glyphCh, pxCh, pyCh + 1); };
+  const drawTagUnder = (ctxTu, pxTu, pyTu, sizeQ, txtTu, dxTu, optsTu) => {
+    if (! optsTu.tags) return;
+    let baseXTu; baseXTu = pxTu + (dxTu || 0);
+    let baseYTu; baseYTu = pyTu + sizeQ / 2 + 2;
+    ctxTu.font = 'bold 10px Arial, sans-serif';
+    ctxTu.textAlign = 'center';
+    ctxTu.textBaseline = 'top';
+    ctxTu.lineWidth = 3;
+    ctxTu.strokeStyle = 'rgba(250,246,230,0.9)';
+    ctxTu.strokeText (txtTu, baseXTu, baseYTu);
+    ctxTu.fillStyle = '#3a2f1c';
+    ctxTu.fillText (txtTu, baseXTu, baseYTu); };
+  const paintMarketBlip = (ctxMk, projMk, optsMk) => {
+    if (! (G.landmarks && G.landmarks.market)) { return; }
+    let marketMk; marketMk = G.landmarks.market;
+    const [mxMk, myMk] = projMk (marketMk.x, marketMk.z);
+    if (optsMk.tags) {
+      drawChip (ctxMk, mxMk, myMk, optsMk.chipSize, '#ff8c1a', 'M', '#ffffff');
+      drawTagUnder (ctxMk, mxMk, myMk, optsMk.chipSize, 'RONIN MART', undefined, optsMk);
+    } else if (mxMk > - 14 && myMk > - 14 && mxMk < 234 && myMk < 234) {
+      ctxMk.beginPath ();
+      ctxMk.arc (mxMk, myMk, 6.5, 0, Math.PI * 2);
+      ctxMk.fillStyle = '#ff8c1a';
+      ctxMk.fill ();
+      ctxMk.lineWidth = 2;
+      ctxMk.strokeStyle = '#ffffff';
+      ctxMk.stroke ();
+      ctxMk.fillStyle = '#ffffff';
+      ctxMk.font = 'bold 9px Arial, sans-serif';
+      ctxMk.textAlign = 'center';
+      ctxMk.textBaseline = 'middle';
+      ctxMk.fillText ('M', mxMk, myMk + 0.5); } };
+  const paintCopBlips = (ctxCp, projCp, nowCp) => {
+    if (! G.cops) { return; }
+    let iterCp = G.cops [Symbol.iterator] (); let stepCp = iterCp.next ();
+    while (! stepCp.done) {
+      const copCp = stepCp.value; stepCp = iterCp.next ();
+      const [cxCp, cyCp] = projCp (copCp.x, copCp.z);
+      ctxCp.beginPath ();
+      ctxCp.arc (cxCp, cyCp, 4, 0, Math.PI * 2);
+      ctxCp.fillStyle = '#2e6fb7';
+      ctxCp.fill ();
+      let flashQ; flashQ = 0.35 + (0.65 * Math.abs (Math.sin (nowCp * 5)));
+      ctxCp.beginPath ();
+      ctxCp.arc (cxCp, cyCp, 6.5, 0, Math.PI * 2);
+      ctxCp.strokeStyle = 'rgba(255,60,60,' + flashQ.toFixed (2) + ')';
+      ctxCp.lineWidth = 2;
+      ctxCp.stroke (); } };
+  const paintBlips = (ctxBp, projBp, nowBp, optsBp) => {
+    let heroBp = { }; if (G.car) { heroBp.x = G.car.x; heroBp.z = G.car.z; } else { heroBp.x = G.player.x; heroBp.z = G.player.z; }
+    const [hqXBp, hqYBp] = projBp (G.hq.x, G.hq.z);
+    drawChip (ctxBp, hqXBp, hqYBp, optsBp.chipSize, '#ffffff', '⌂');
+    drawTagUnder (ctxBp, hqXBp, hqYBp, optsBp.chipSize, 'SAFEHOUSE', - 16, optsBp);
+    const [garXBp, garYBp] = projBp (G.hq.garage.x, G.hq.garage.z);
+    drawChip (ctxBp, garXBp, garYBp, optsBp.chipSize, '#2b2f36', 'G', '#ffffff');
+    drawTagUnder (ctxBp, garXBp, garYBp, optsBp.chipSize, 'RONIN KAI HQ', 18, optsBp);
+    paintMarketBlip (ctxBp, projBp, optsBp);
+    paintCopBlips (ctxBp, projBp, nowBp);
+    if (G.heli && G.heli.group) {
+      const spotBp = G.heli.group.position;
+      const [hxBp, hyBp] = projBp (spotBp.x, spotBp.z);
+      ctxBp.beginPath ();
+      ctxBp.arc (hxBp, hyBp, 5, 0, Math.PI * 2);
+      ctxBp.fillStyle = '#2e6fb7';
+      ctxBp.fill ();
+      ctxBp.fillStyle = '#ffffff';
+      ctxBp.font = 'bold 8px Arial, sans-serif';
+      ctxBp.textAlign = 'center';
+      ctxBp.textBaseline = 'middle';
+      ctxBp.fillText ('H', hxBp, hyBp + 0.5); }
+    if (G.objective) { const [oxBp, oyBp] = projBp (G.objective.x, G.objective.z);
+      drawChip (ctxBp, oxBp, oyBp, optsBp.chipSize + 2, '#ffd23f', G.objective.letter || '!'); }
+    const [pxBp, pyBp] = projBp (heroBp.x, heroBp.z);
+    let headingBp; if (G.car) { headingBp = G.car.angle; } else { headingBp = G.player.angle; }
+    ctxBp.save ();
+    ctxBp.translate (pxBp, pyBp);
+    ctxBp.rotate (((Math.PI - headingBp) + (Math.PI * 2)) % (Math.PI * 2));
+    ctxBp.beginPath ();
+    let arrowBp; arrowBp = optsBp.arrowSize;
+    ctxBp.moveTo (0, - arrowBp);
+    ctxBp.lineTo (arrowBp * 0.62, arrowBp * 0.75);
+    ctxBp.lineTo (0, arrowBp * 0.35);
+    ctxBp.lineTo (- arrowBp * 0.62, arrowBp * 0.75);
+    ctxBp.closePath ();
+    ctxBp.fillStyle = '#ffffff';
+    ctxBp.fill ();
+    ctxBp.lineWidth = 2;
+    ctxBp.strokeStyle = '#14100a';
+    ctxBp.stroke ();
+    ctxBp.restore (); };
+  let cachedMini = null;
+  const staticMini = () => { if (cachedMini) return cachedMini;
+    let sizeMini; sizeMini = 1320;
+    let canvasMini; canvasMini = document.createElement ('canvas');
+    canvasMini.width = sizeMini;
+    canvasMini.height = sizeMini;
+    let ctxMini; ctxMini = canvasMini.getContext ('2d');
+    const projMini = (pxMn, pzMn) => [pxMn + CFG.half, pzMn + CFG.half];
+    let optsMini = { }; optsMini.washAlpha = 0.07; optsMini.labels = false; optsMini.waves = false; optsMini.routeFrom = null;
+    paintMapBase (ctxMini, sizeMini, sizeMini, projMini, CFG.world, optsMini);
+    cachedMini = canvasMini;
+    return canvasMini; };
+  const hubRad = 13;
+  const hubBack = 'rgba(10,12,16,0.55)';
+  const hubLine = 'rgba(255,255,255,0.85)';
+  const hubLineW = 2;
+  const paintMiniRoute = (ctxMr, projMr, heroMr) => {
     try {
-      const routeQ = roadRoute(G, heroQ, G.objective) || [];
-      if (!(routeQ.length > 1)) return;
-      ctxQ.lineJoin = 'round';
-      ctxQ.lineCap = 'round';
-      const passesQ = [0, 1];
-      for (const passQ of passesQ) {
-        ctxQ.strokeStyle = passQ === 0 ? 'rgba(255,255,255,0.9)' : '#ff2fd6';
-        ctxQ.lineWidth = passQ === 0 ? 6.5 : 4.16;
-        ctxQ.beginPath();
-        tracePathQ(ctxQ, projQ, routeQ);
-        ctxQ.stroke();
-      }
-    } catch (ignoredQ) { /* routing is best-effort */ }
-  }
-  function drawMiniQ(nowQ) {
-    if (!miniCtxQ || !nodesQ.minimap) return;
-    const wQ = nodesQ.minimap.width;
-    const hQ = nodesQ.minimap.height;
-    const heroQ = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    const spanQ = 340;
-    const unitPxQ = wQ / spanQ;
-    const projQ = (pxQ, pzQ) => [wQ / 2 + ((pxQ - heroQ.x) * unitPxQ), hQ / 2 + ((pzQ - heroQ.z) * unitPxQ)];
-    miniCtxQ.save();
-    miniCtxQ.beginPath();
-    miniCtxQ.arc(wQ / 2, hQ / 2, wQ / 2, 0, Math.PI * 2);
-    miniCtxQ.clip();
-    miniCtxQ.fillStyle = '#3a7bd5';
-    miniCtxQ.fillRect(0, 0, wQ, hQ);
-    const imgQ = staticMiniQ();
-    miniCtxQ.imageSmoothingEnabled = true;
-    miniCtxQ.drawImage(imgQ, heroQ.x - spanQ / 2 + CFG.half, heroQ.z - spanQ / 2 + CFG.half, spanQ, spanQ, 0, 0, wQ, hQ);
-    if (G.objective) paintMiniRouteQ(miniCtxQ, projQ, heroQ);
-    miniCtxQ.beginPath();
-    miniCtxQ.arc(wQ / 2, hQ / 2, hubRadiusQ, 0, Math.PI * 2);
-    miniCtxQ.fillStyle = hubBgQ;
-    miniCtxQ.fill();
-    miniCtxQ.lineWidth = hubWidthQ;
-    miniCtxQ.strokeStyle = hubEdgeQ;
-    miniCtxQ.stroke();
-    paintBlipsQ(miniCtxQ, projQ, nowQ, { chipSize: 13 * 1.3, arrowSize: 8 * 1.3 });
-    miniCtxQ.restore();
-    miniCtxQ.beginPath();
-    miniCtxQ.arc(wQ / 2, hQ / 2, wQ / 2 - 1.5, 0, Math.PI * 2);
-    miniCtxQ.lineWidth = 3;
-    miniCtxQ.strokeStyle = 'rgba(10,12,16,0.85)';
-    miniCtxQ.stroke();
-    miniCtxQ.fillStyle = '#ffffff';
-    miniCtxQ.font = 'bold 13px Arial, sans-serif';
-    miniCtxQ.textAlign = 'center';
-    miniCtxQ.textBaseline = 'top';
-    miniCtxQ.shadowColor = 'rgba(0,0,0,0.8)';
-    miniCtxQ.shadowBlur = 3;
-    miniCtxQ.fillText('N', wQ / 2, 7);
-    miniCtxQ.shadowBlur = 0;
-  }
-  function bigMapQ() {
-    if (!bigCtxQ || !nodesQ.bigmap) return;
-    const wQ = nodesQ.bigmap.width;
-    const hQ = nodesQ.bigmap.height;
-    const margQ = 46;
-    const scaleQ = Math.min((wQ - margQ * 2) / CFG.world, (hQ - margQ * 2) / CFG.world) * viewQ.zoom;
-    const projQ = (pxQ, pzQ) => [wQ / 2 + ((pxQ - viewQ.cx) * scaleQ), hQ / 2 + ((pzQ - viewQ.cz) * scaleQ)];
-    const heroQ = G.car ? { x: G.car.x, z: G.car.z } : { x: G.player.x, z: G.player.z };
-    bigCtxQ.save();
-    bigCtxQ.beginPath();
-    bigCtxQ.rect(0, 0, wQ, hQ);
-    bigCtxQ.clip();
-    paintMapBaseQ(bigCtxQ, wQ, hQ, projQ, CFG.world / viewQ.zoom, { washAlpha: 0.12, labels: true, waves: true, routeFrom: heroQ });
-    const nowQ = performance.now() / 1000;
-    paintBlipsQ(bigCtxQ, projQ, nowQ, { chipSize: 20, arrowSize: 13, tags: true });
-    bigCtxQ.restore();
-    bigCtxQ.fillStyle = '#2c2114';
-    bigCtxQ.font = 'bold 34px Arial, sans-serif';
-    bigCtxQ.textAlign = 'left';
-    bigCtxQ.textBaseline = 'top';
-    try { bigCtxQ.letterSpacing = '6px'; } catch (ignoredQ) {}
-    bigCtxQ.fillText('STREET SAMURAI', 22, 16);
-    try { bigCtxQ.letterSpacing = '0px'; } catch (ignoredQ) {}
-  }
-  let nosLevelQ = 1;
-  function paintDialTicksQ(maxKmhQ, sweepStartQ, sweepEndQ, dialXQ, dialYQ, dialRQ) {
-    dialCtxQ.fillStyle = '#e8e8e8';
-    dialCtxQ.font = '9px Arial, sans-serif';
-    dialCtxQ.textAlign = 'center';
-    dialCtxQ.textBaseline = 'middle';
-    for (let tickQ = 0; !(tickQ > maxKmhQ); tickQ += 20) {
-      const tickAngQ = sweepStartQ + ((tickQ / maxKmhQ) * (sweepEndQ - sweepStartQ));
-      const cosQ = Math.cos(tickAngQ);
-      const sinQ = Math.sin(tickAngQ);
-      const innerXQ = dialXQ + (cosQ * (dialRQ - 4));
-      const innerYQ = dialYQ + (sinQ * (dialRQ - 4));
-      const outerXQ = dialXQ + (cosQ * dialRQ);
-      const outerYQ = dialYQ + (sinQ * dialRQ);
-      dialCtxQ.beginPath();
-      dialCtxQ.moveTo(innerXQ, innerYQ);
-      dialCtxQ.lineTo(outerXQ, outerYQ);
-      dialCtxQ.strokeStyle = tickQ > 220 ? '#e33b3b' : '#cfcfcf';
-      dialCtxQ.lineWidth = 2;
-      dialCtxQ.stroke();
-      if (tickQ % 40 === 0) {
-        const labXQ = dialXQ + (cosQ * (dialRQ - 13));
-        const labYQ = dialYQ + (sinQ * (dialRQ - 13));
-        dialCtxQ.fillText(String(tickQ), labXQ, labYQ);
-      }
-    }
-  }
-  function drawDialQ(dtQ) {
-    if (!dialCtxQ || !nodesQ.speedo) return;
-    const wQ = nodesQ.speedo.width;
-    const hQ = nodesQ.speedo.height;
-    dialCtxQ.clearRect(0, 0, wQ, hQ);
-    const dialXQ = wQ / 2;
-    const dialYQ = 74;
-    const dialRQ = 56;
-    const maxKmhQ = 280;
-    const sweepStartQ = Math.PI * 0.75;
-    const sweepEndQ = Math.PI * 0.75 + Math.PI * 1.5;
-    dialCtxQ.beginPath();
-    dialCtxQ.arc(dialXQ, dialYQ, dialRQ + 8, 0, Math.PI * 2);
-    dialCtxQ.fillStyle = 'rgba(10,12,18,0.72)';
-    dialCtxQ.fill();
-    dialCtxQ.beginPath();
-    dialCtxQ.arc(dialXQ, dialYQ, dialRQ, sweepStartQ + (220 / maxKmhQ) * (sweepEndQ - sweepStartQ), sweepEndQ);
-    dialCtxQ.strokeStyle = '#e33b3b';
-    dialCtxQ.lineWidth = 5;
-    dialCtxQ.stroke();
-    paintDialTicksQ(maxKmhQ, sweepStartQ, sweepEndQ, dialXQ, dialYQ, dialRQ);
-    const kmhQ = Math.min(maxKmhQ, Math.abs(G.speedKmh || 0));
-    const needleQ = sweepStartQ + ((kmhQ / maxKmhQ) * (sweepEndQ - sweepStartQ));
-    dialCtxQ.beginPath();
-    dialCtxQ.moveTo(dialXQ - Math.cos(needleQ) * 8, dialYQ - Math.sin(needleQ) * 8);
-    dialCtxQ.lineTo(dialXQ + Math.cos(needleQ) * (dialRQ - 8), dialYQ + Math.sin(needleQ) * (dialRQ - 8));
-    dialCtxQ.strokeStyle = '#ff7a1a';
-    dialCtxQ.lineWidth = 3;
-    dialCtxQ.stroke();
-    dialCtxQ.beginPath();
-    dialCtxQ.arc(dialXQ, dialYQ, 4.5, 0, Math.PI * 2);
-    dialCtxQ.fillStyle = '#f2f2f2';
-    dialCtxQ.fill();
-    dialCtxQ.fillStyle = '#ffffff';
-    dialCtxQ.font = 'bold 19px Arial, sans-serif';
-    dialCtxQ.fillText(String(Math.round(kmhQ)), dialXQ, dialYQ + 26);
-    dialCtxQ.font = '8px Arial, sans-serif';
-    dialCtxQ.fillStyle = '#aab';
-    dialCtxQ.fillText('km/h', dialXQ, dialYQ + 38);
-    if (G.flags.nosActive) nosLevelQ = Math.max(0, nosLevelQ - dtQ * 0.45);
-    else nosLevelQ = Math.min(1, nosLevelQ + dtQ * 0.12);
-    const nosWQ = 74;
-    const nosXQ = dialXQ - nosWQ / 2;
-    const nosYQ = hQ - 14;
-    dialCtxQ.fillStyle = 'rgba(255,255,255,0.18)';
-    dialCtxQ.fillRect(nosXQ, nosYQ, nosWQ, 6);
-    dialCtxQ.fillStyle = '#37c8ff';
-    dialCtxQ.fillRect(nosXQ, nosYQ, nosWQ * nosLevelQ, 6);
-    dialCtxQ.fillStyle = '#9adfff';
-    dialCtxQ.font = 'bold 8px Arial, sans-serif';
-    dialCtxQ.fillText('NOS', dialXQ, nosYQ - 6);
-    if (G.flags.drifting) {
-      dialCtxQ.beginPath();
-      dialCtxQ.arc(wQ - 16, 14, 5, 0, Math.PI * 2);
-      dialCtxQ.fillStyle = '#e879ff';
-      dialCtxQ.fill();
-      dialCtxQ.fillStyle = '#e879ff';
-      dialCtxQ.font = 'bold 8px Arial, sans-serif';
-      dialCtxQ.fillText('DRIFT', wQ - 16, 26);
-    }
-  }
-  let garageShownQ = false;
-  let garageTickLeftQ = 0;
-  function garageRowHtmlQ(rowQ, idxQ) {
-    const priceQ = rowQ.owned ? 'OWNED' : cashLabelQ(rowQ.price);
-    const markQ = rowQ.current ? ' ▶' : '';
-    const clsQ = rowQ.current ? ' current' : '';
-    return `<div class="garageRow${clsQ}"><span>${idxQ + 1}. ${rowQ.name}${markQ}</span><span>${priceQ}</span></div>`;
-  }
-  function drawGarageQ() {
-    if (!nodesQ.garagePanel) return;
-    const rowsQ = G.garageList || [];
-    let htmlQ = '<div class="garageTitle">HQ GARAGE — RONIN BAY</div>';
-    const shownQ = rowsQ.slice(0, 9);
-    shownQ.forEach((rowQ, idxQ) => { htmlQ = htmlQ + garageRowHtmlQ(rowQ, idxQ); });
-    htmlQ = htmlQ + '<div class="garageFoot">1-9 select · E close</div>';
-    nodesQ.garagePanel.innerHTML = htmlQ;
-    nodesQ.garagePanel.style.display = 'block';
-  }
-  const memoBookQ = {};
-  function memoWriteQ(nodeQ, keyQ, valQ) {
-    if (!nodeQ) return;
-    if (memoBookQ[keyQ] === valQ) return;
-    memoBookQ[keyQ] = valQ;
-    nodeQ.textContent = valQ;
-  }
-  let slowLeftQ = 0;
-  function paintBustMeterQ(nowSecsQ) {
-    if (!nodesQ.bustWrap) return;
-    const meterQ = Math.max(0, Math.min(1, G.bustMeter || 0));
-    nodesQ.bustWrap.style.display = meterQ > 0 ? 'block' : 'none';
-    if (!(meterQ > 0)) return;
-    if (nodesQ.bustFill) nodesQ.bustFill.style.width = `${Math.round(meterQ * 100)}%`;
-    if (nodesQ.bustLabel) {
-      const blinkQ = Math.sin(nowSecsQ * 10) > 0 ? '1' : '0.25';
-      nodesQ.bustLabel.style.opacity = meterQ > 0.7 ? blinkQ : '1';
-    }
-  }
-  function tickEndFlowQ(dtQ, nowSecsQ) {
-    const elapsedQ = G.elapsed || 0;
-    if (!pendingEndQ) {
-      const heroQ = G.car || G.player;
-      const outOfWorldQ = heroQ && (Math.abs(heroQ.x) > 668 || Math.abs(heroQ.z) > 668);
-      if (outOfWorldQ) G.damagePlayer(22 * dtQ);
-      else {
-        const sinceHitQ = elapsedQ - (G._lastDamageAt ?? -99);
-        if ((G.playerHealth ?? 100) < 100 && sinceHitQ > 8) G.playerHealth = Math.min(100, (G.playerHealth ?? 100) + (0.8 * dtQ));
-      }
-    } else if (!pendingEndQ.staging) {
-      pendingEndQ.t = pendingEndQ.t - dtQ;
-      const partsQ = pendingEndQ.kind === 'wasted' ? wastedPartsQ : bustedPartsQ;
-      if (partsQ) {
-        const growQ = 1 - Math.max(0, pendingEndQ.t) / 2.8;
-        partsQ.title.style.transform = `scale(${(1 + growQ * 0.16).toFixed(3)})`;
-      }
-      if (!(pendingEndQ.t > 0)) resolveEndQ();
-    }
-    if (dispatchLeftQ > 0 && nodesQ.dispatch) {
-      dispatchLeftQ = dispatchLeftQ - dtQ;
-      if (!(dispatchLeftQ > 0)) nodesQ.dispatch.style.display = 'none';
-      else if (dispatchLeftQ < 1) nodesQ.dispatch.style.opacity = dispatchLeftQ.toFixed(2);
-    }
-    paintBustMeterQ(nowSecsQ);
-  }
-  function currentStationNameQ() {
-    try {
-      const curQ = G.audio && G.audio.radio && G.audio.radio.current ? G.audio.radio.current() : null;
-      return curQ ? curQ.name : null;
-    } catch (ignoredQ) { return null; }
-  }
-  function tickRadioQ() {
-    if (!nodesQ.radioChip) return;
-    let stationQ = G.radioName || null;
-    if (!stationQ) stationQ = currentStationNameQ();
-    const stagedSeatQ = !!(G.shotMode && G.car);
-    const showChipQ = !!((G.flags.inCar || stagedSeatQ) && stationQ);
-    nodesQ.radioChip.style.display = showChipQ ? 'block' : 'none';
-    if (showChipQ) memoWriteQ(nodesQ.radioChip, 'radio', `♪ ${stationQ}`);
-  }
-  function tickCardQ(nextDefQ) {
-    if (!nodesQ.card) return;
-    const cardVisibleQ = !!(nextDefQ || G.missionProg);
-    nodesQ.card.style.display = cardVisibleQ ? 'block' : 'none';
-    if (cardVisibleQ && nextDefQ) {
-      const personQ = CAST[nextDefQ.giver];
-      if (nodesQ.cardPortrait) {
-        const wordsQ = (personQ?.name || '?').trim().split(/\s+/);
-        const lettersQ = [];
-        for (const wordQ of wordsQ) lettersQ.push(wordQ[0]);
-        nodesQ.cardPortrait.textContent = lettersQ.join('').slice(0, 2).toUpperCase();
-        nodesQ.cardPortrait.style.background = personQ?.outfit?.topColor ? '#' + personQ.outfit.topColor.toString(16).padStart(6, '0') : '#555';
-      }
-      memoWriteQ(nodesQ.cardGiver, 'giver', personQ?.name || nextDefQ.giver || '');
-      memoWriteQ(nodesQ.cardText, 'cardText', `${nextDefQ.title} — ${nextDefQ.blurb}`);
-    }
-    memoWriteQ(nodesQ.cardProg, 'prog', G.missionProg || 'Go to the blip');
-  }
-  function crewStatusMapQ(nextDefQ) {
-    const statusQ = {};
-    const drivingQ = G.car && G.flags.inCar;
-    statusQ.driver = drivingQ ? (G.car.spec?.name || G.car.specId || 'Driving') : 'On foot';
-    if (!drivingQ) statusQ.mechanic = '—';
-    else statusQ.mechanic = (G.car.health ?? 100) > 70 ? 'Ready' : (G.car.health ?? 100) >= 30 ? 'Damaged' : 'Wrecked';
-    if ((G.wanted || 0) > 0) statusQ.lookout = 'RBPD ACTIVE';
-    else statusQ.lookout = nextDefQ ? `Next: ${nextDefQ.title}` : 'Clear';
-    return statusQ;
-  }
-  function tickCrewQ(nextDefQ) {
-    const statusQ = crewStatusMapQ(nextDefQ);
-    const cardsQ = document.querySelectorAll('.crewCard');
-    for (const cardQ of cardsQ) {
-      const statusNodeQ = cardQ.querySelector('.crewStatus');
-      if (statusNodeQ && statusQ[cardQ.dataset.role] !== undefined) statusNodeQ.textContent = statusQ[cardQ.dataset.role];
-    }
-  }
-  function copUnitListQ(heroQ) {
-    const unitsQ = [];
-    const sourcesQ = G.cops || [];
-    for (const unitQ of sourcesQ) {
-      const entryQ = { name: unitQ.specId === 'police-suv' ? 'RBPD Enforcer' : 'RBPD Interceptor', d: Math.hypot(unitQ.x - heroQ.x, unitQ.z - heroQ.z), v: unitQ };
-      unitsQ.push(entryQ);
-    }
-    if (G.heli?.group) {
-      const spotQ = G.heli.group.position;
-      unitsQ.push({ name: 'RBPD Air Unit', d: Math.hypot(spotQ.x - heroQ.x, spotQ.z - heroQ.z), heli: true });
-    }
-    unitsQ.sort((aQ, bQ) => aQ.d - bQ.d);
-    return unitsQ;
-  }
-  function copTacticQ(unitQ, heroQ) {
-    let tacticQ = 'PURSUIT';
-    if (unitQ.heli) tacticQ = 'TRACKING';
-    else if (unitQ.v) {
-      const dotQ = Math.cos((unitQ.v.angle || 0) - (heroQ.angle || 0));
-      const bearQ = Math.atan2(heroQ.x - unitQ.v.x, heroQ.z - unitQ.v.z);
-      const relQ = ((bearQ - (unitQ.v.angle || 0) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-      const closingQ = Math.abs(relQ) > 2.4 && (unitQ.v.speed || 0) > 12;
-      if (unitQ.d < 14 && closingQ) tacticQ = 'RAMMING';
-      else if (dotQ > 0.3 && unitQ.d < 60) tacticQ = 'INTERCEPT';
-    }
-    return tacticQ;
-  }
-  function tickCopPanelQ() {
-    if (!(nodesQ.copPanel && nodesQ.copRows)) return;
-    const panelVisibleQ = (G.wanted || 0) >= 1;
-    nodesQ.copPanel.style.display = panelVisibleQ ? 'block' : 'none';
-    if (!panelVisibleQ) return;
-    const heroQ = G.car ? { x: G.car.x, z: G.car.z, angle: G.car.angle } : { x: G.player.x, z: G.player.z, angle: G.player.angle };
-    const unitsQ = copUnitListQ(heroQ);
-    const headQ = `<div class="copHead">RBPD RESPONSE — ${unitsQ.length} UNITS</div>`;
-    const rowsTxtQ = unitsQ.slice(0, 4).map((unitQ) => `<div class="copRow"><span>${unitQ.name}</span><span>${Math.round(unitQ.d)}m</span><span>${copTacticQ(unitQ, heroQ)}</span></div>`).join('');
-    nodesQ.copRows.innerHTML = headQ + rowsTxtQ;
-  }
-  G.updaters.push((frameQ, dt) => {
-    void frameQ;
-    const nowSecsQ = performance.now() / 1000;
-    if (stagingActiveQ()) G.bustMeter = 0;
-    memoWriteQ(nodesQ.money, 'money', cashLabelQ(G.money));
-    memoWriteQ(nodesQ.rep, 'rep', String(Math.round(G.rep || 0)));
-    memoWriteQ(nodesQ.rank, 'rank', CLUB_RANKS[G.rankIdx || 0] || 'Rookie');
-    if (nodesQ.stars) {
-      const starQ = Math.round(G.wanted || 0);
-      nodesQ.stars.style.display = starQ > 0 ? 'block' : 'none';
-      memoWriteQ(nodesQ.stars, 'stars', '★'.repeat(starQ));
-    }
-    if (nodesQ.healthBar) {
-      const hpQ = Math.max(0, Math.min(100, G.playerHealth ?? 100));
-      nodesQ.healthBar.style.width = `${hpQ}%`;
-      nodesQ.healthBar.style.backgroundColor = hpQ < 30 ? '#e33b3b' : '';
-    }
-    if (nodesQ.carBar) {
-      const carHpQ = G.car ? (G.car.health ?? 100) : 100;
-      nodesQ.carBar.style.width = `${Math.max(0, Math.min(100, carHpQ))}%`;
-    }
-    if (nodesQ.objective) {
-      const heroQ = G.car ? G.car : G.player;
-      if (G.objective) {
-        const distQ = Math.round(Math.hypot(G.objective.x - heroQ.x, G.objective.z - heroQ.z));
-        memoWriteQ(nodesQ.objective, 'obj', `${G.objective.label} — ${distQ}m`);
-      } else memoWriteQ(nodesQ.objective, 'obj', 'Free roam — find a letter blip');
-    }
-    if (nodesQ.wasted) nodesQ.wasted.style.display = G.flags.wasted ? 'flex' : 'none';
-    if (nodesQ.busted) nodesQ.busted.style.display = G.flags.busted ? 'flex' : 'none';
-    tickEndFlowQ(dt, nowSecsQ);
-    tickRadioQ();
-    drawMiniQ(nowSecsQ);
-    drawDialQ(dt);
-    if (G.paused && nodesQ.pauseMenu && nodesQ.pauseMenu.style.display !== 'none') bigMapQ();
-    if (G.flags.garageOpen && !garageShownQ) drawGarageQ();
-    if (!G.flags.garageOpen && garageShownQ && nodesQ.garagePanel) nodesQ.garagePanel.style.display = 'none';
-    garageShownQ = !!G.flags.garageOpen;
-    if (G.flags.garageOpen) {
-      garageTickLeftQ = garageTickLeftQ - dt;
-      if (!(garageTickLeftQ > 0)) {
-        garageTickLeftQ = 0.5;
-        drawGarageQ();
-      }
-    }
-    slowLeftQ = slowLeftQ - dt;
-    if (!(slowLeftQ > 0)) {
-      slowLeftQ = 0.25;
-      const nextDefQ = (typeof G.missionIndex === 'number' && G.missionIndex < MISSIONS.length) ? MISSIONS[G.missionIndex] : null;
-      tickCardQ(nextDefQ);
-      tickCrewQ(nextDefQ);
-      tickCopPanelQ();
-    }
-  });
-}
+      let routeMr; routeMr = roadRoute (G, heroMr, G.objective) || [];
+      if (! (routeMr.length > 1)) return;
+      ctxMr.lineJoin = 'round';
+      ctxMr.lineCap = 'round';
+      let passesMr = [0, 1];
+      let iterMr = passesMr [Symbol.iterator] (); let stepMr = iterMr.next ();
+      while (! stepMr.done) {
+        const passMr = stepMr.value; stepMr = iterMr.next ();
+        if (passMr === 0) { ctxMr.strokeStyle = 'rgba(255,255,255,0.9)'; } else { ctxMr.strokeStyle = '#ff2fd6'; }
+        if (passMr === 0) { ctxMr.lineWidth = 6.5; } else { ctxMr.lineWidth = 4.16; }
+        ctxMr.beginPath ();
+        tracePath (ctxMr, projMr, routeMr);
+        ctxMr.stroke (); }
+    } catch (err) { } };
+  const drawMini = (nowMn) => {
+    if (! miniCx || ! elsH.minimap) return;
+    let wMn; wMn = elsH.minimap.width;
+    let hMn; hMn = elsH.minimap.height;
+    let heroMn = { }; if (G.car) { heroMn.x = G.car.x; heroMn.z = G.car.z; } else { heroMn.x = G.player.x; heroMn.z = G.player.z; }
+    let spanMn; spanMn = 340;
+    let unitPxMn; unitPxMn = wMn / spanMn;
+    const projMn = (pxMnB, pzMnB) => [wMn / 2 + ((pxMnB - heroMn.x) * unitPxMn), hMn / 2 + ((pzMnB - heroMn.z) * unitPxMn)];
+    miniCx.save ();
+    miniCx.beginPath ();
+    miniCx.arc (wMn / 2, hMn / 2, wMn / 2, 0, Math.PI * 2);
+    miniCx.clip ();
+    miniCx.fillStyle = '#3a7bd5';
+    miniCx.fillRect (0, 0, wMn, hMn);
+    let imgMn; imgMn = staticMini ();
+    miniCx.imageSmoothingEnabled = true;
+    miniCx.drawImage (imgMn, heroMn.x - spanMn / 2 + CFG.half, heroMn.z - spanMn / 2 + CFG.half, spanMn, spanMn, 0, 0, wMn, hMn);
+    if (G.objective) paintMiniRoute (miniCx, projMn, heroMn);
+    miniCx.beginPath ();
+    miniCx.arc (wMn / 2, hMn / 2, hubRad, 0, Math.PI * 2);
+    miniCx.fillStyle = hubBack;
+    miniCx.fill ();
+    miniCx.lineWidth = hubLineW;
+    miniCx.strokeStyle = hubLine;
+    miniCx.stroke ();
+    let optsMn = { }; optsMn.chipSize = 13 * 1.3; optsMn.arrowSize = 8 * 1.3;
+    paintBlips (miniCx, projMn, nowMn, optsMn);
+    miniCx.restore ();
+    miniCx.beginPath ();
+    miniCx.arc (wMn / 2, hMn / 2, wMn / 2 - 1.5, 0, Math.PI * 2);
+    miniCx.lineWidth = 3;
+    miniCx.strokeStyle = 'rgba(10,12,16,0.85)';
+    miniCx.stroke ();
+    miniCx.fillStyle = '#ffffff';
+    miniCx.font = 'bold 13px Arial, sans-serif';
+    miniCx.textAlign = 'center';
+    miniCx.textBaseline = 'top';
+    miniCx.shadowColor = 'rgba(0,0,0,0.8)';
+    miniCx.shadowBlur = 3;
+    miniCx.fillText ('N', wMn / 2, 7);
+    miniCx.shadowBlur = 0; };
+  const bigMap = () => { if (! bigCx || ! elsH.bigmap) return;
+    let wBm; wBm = elsH.bigmap.width;
+    let hBm; hBm = elsH.bigmap.height;
+    let margBm; margBm = 46;
+    let scaleBm; scaleBm = Math.min ((wBm - margBm * 2) / CFG.world, (hBm - margBm * 2) / CFG.world) * viewQ.zoom;
+    const projBm = (pxBm, pzBm) => [wBm / 2 + ((pxBm - viewQ.cx) * scaleBm), hBm / 2 + ((pzBm - viewQ.cz) * scaleBm)];
+    let heroBm = { }; if (G.car) { heroBm.x = G.car.x; heroBm.z = G.car.z; } else { heroBm.x = G.player.x; heroBm.z = G.player.z; }
+    bigCx.save ();
+    bigCx.beginPath ();
+    bigCx.rect (0, 0, wBm, hBm);
+    bigCx.clip ();
+    let optsBm = { }; optsBm.washAlpha = 0.12; optsBm.labels = true; optsBm.waves = true; optsBm.routeFrom = heroBm;
+    paintMapBase (bigCx, wBm, hBm, projBm, CFG.world / viewQ.zoom, optsBm);
+    let nowBm; nowBm = performance.now () / 1000;
+    let optsBlipBm = { }; optsBlipBm.chipSize = 20; optsBlipBm.arrowSize = 13; optsBlipBm.tags = true;
+    paintBlips (bigCx, projBm, nowBm, optsBlipBm);
+    bigCx.restore ();
+    bigCx.fillStyle = '#2c2114';
+    bigCx.font = 'bold 34px Arial, sans-serif';
+    bigCx.textAlign = 'left';
+    bigCx.textBaseline = 'top';
+    try { bigCx.letterSpacing = '6px'; } catch (err) { }
+    bigCx.fillText ('STREET SAMURAI', 22, 16);
+    try { bigCx.letterSpacing = '0px'; } catch (err) { } };
+  let nosLvl = 1;
+  const paintDialTicks = (maxKmT, sweepStartT, sweepEndT, cxT, cyT, rT) => {
+    dialCx.fillStyle = '#e8e8e8';
+    dialCx.font = '9px Arial, sans-serif';
+    dialCx.textAlign = 'center';
+    dialCx.textBaseline = 'middle';
+    let tickT = 0;
+    while (! (tickT > maxKmT)) {
+      const angT = sweepStartT + ((tickT / maxKmT) * (sweepEndT - sweepStartT));
+      const cosT = Math.cos (angT), sinT = Math.sin (angT);
+      dialCx.beginPath ();
+      dialCx.moveTo (cxT + (cosT * (rT - 4)), cyT + (sinT * (rT - 4)));
+      dialCx.lineTo (cxT + (cosT * rT), cyT + (sinT * rT));
+      dialCx.strokeStyle = tickT > 220 ? '#e33b3b' : '#cfcfcf';
+      dialCx.lineWidth = 2;
+      dialCx.stroke ();
+      if (tickT % 40 === 0) dialCx.fillText (String (tickT), cxT + (cosT * (rT - 13)), cyT + (sinT * (rT - 13)));
+      tickT += 20; } };
+  const drawDial = (dtDl) => {
+    if (! dialCx || ! elsH.speedo) return;
+    let wDl; wDl = elsH.speedo.width;
+    let hDl; hDl = elsH.speedo.height;
+    dialCx.clearRect (0, 0, wDl, hDl);
+    let cxDl; cxDl = wDl / 2;
+    let cyDl; cyDl = 74;
+    let rDl; rDl = 56;
+    let maxKmDl; maxKmDl = 280;
+    let sweepStartDl; sweepStartDl = Math.PI * 0.75;
+    let sweepEndDl; sweepEndDl = Math.PI * 0.75 + Math.PI * 1.5;
+    dialCx.beginPath ();
+    dialCx.arc (cxDl, cyDl, rDl + 8, 0, Math.PI * 2);
+    dialCx.fillStyle = 'rgba(10,12,18,0.72)';
+    dialCx.fill ();
+    dialCx.beginPath ();
+    dialCx.arc (cxDl, cyDl, rDl, sweepStartDl + (220 / maxKmDl) * (sweepEndDl - sweepStartDl), sweepEndDl);
+    dialCx.strokeStyle = '#e33b3b';
+    dialCx.lineWidth = 5;
+    dialCx.stroke ();
+    paintDialTicks (maxKmDl, sweepStartDl, sweepEndDl, cxDl, cyDl, rDl);
+    let kmhDl; kmhDl = Math.min (maxKmDl, Math.abs (G.speedKmh || 0));
+    let needleDl; needleDl = sweepStartDl + ((kmhDl / maxKmDl) * (sweepEndDl - sweepStartDl));
+    dialCx.beginPath ();
+    dialCx.moveTo (cxDl - Math.cos (needleDl) * 8, cyDl - Math.sin (needleDl) * 8);
+    dialCx.lineTo (cxDl + Math.cos (needleDl) * (rDl - 8), cyDl + Math.sin (needleDl) * (rDl - 8));
+    dialCx.strokeStyle = '#ff7a1a';
+    dialCx.lineWidth = 3;
+    dialCx.stroke ();
+    dialCx.beginPath ();
+    dialCx.arc (cxDl, cyDl, 4.5, 0, Math.PI * 2);
+    dialCx.fillStyle = '#f2f2f2';
+    dialCx.fill ();
+    dialCx.fillStyle = '#ffffff';
+    dialCx.font = 'bold 19px Arial, sans-serif';
+    dialCx.fillText (String (Math.round (kmhDl)), cxDl, cyDl + 26);
+    dialCx.font = '8px Arial, sans-serif';
+    dialCx.fillStyle = '#aab';
+    dialCx.fillText ('km/h', cxDl, cyDl + 38);
+    nosLvl = G.flags.nosActive ? Math.max (0, nosLvl - dtDl * 0.45) : Math.min (1, nosLvl + dtDl * 0.12);
+    let nosWDl; nosWDl = 74;
+    let nosXDl; nosXDl = cxDl - nosWDl / 2;
+    let nosYDl; nosYDl = hDl - 14;
+    dialCx.fillStyle = 'rgba(255,255,255,0.18)';
+    dialCx.fillRect (nosXDl, nosYDl, nosWDl, 6);
+    dialCx.fillStyle = '#37c8ff';
+    dialCx.fillRect (nosXDl, nosYDl, nosWDl * nosLvl, 6);
+    dialCx.fillStyle = '#9adfff';
+    dialCx.font = 'bold 8px Arial, sans-serif';
+    dialCx.fillText ('NOS', cxDl, nosYDl - 6);
+    if (G.flags.drifting) { dialCx.beginPath ();
+      dialCx.arc (wDl - 16, 14, 5, 0, Math.PI * 2);
+      dialCx.fillStyle = '#e879ff';
+      dialCx.fill ();
+      dialCx.fillStyle = '#e879ff';
+      dialCx.font = 'bold 8px Arial, sans-serif';
+      dialCx.fillText ('DRIFT', wDl - 16, 26); } };
+  let garageVis = false;
+  let garageLeft = 0;
+  const garageRowHtml = (rowQ, idxQ) => { let priceQ; if (rowQ.owned) { priceQ = 'OWNED'; } else { priceQ = cashStr (rowQ.price); }
+    let markQ; if (rowQ.current) { markQ = ' ▶'; } else { markQ = ''; } let clsQ; if (rowQ.current) { clsQ = ' current'; } else { clsQ = ''; }
+    return '<div class="garageRow' + clsQ + '"><span>' + (idxQ + 1) + '. ' + rowQ.name + '' + markQ + '</span><span>' + priceQ + '</span></div>'; };
+  const drawGarage = () => { if (! elsH.garagePanel) return;
+    let htmlG = '<div class="garageTitle">HQ GARAGE — RONIN BAY</div>';
+    (G.garageList || []).slice (0, 9).forEach ((rowG, idxG) => { htmlG += garageRowHtml (rowG, idxG); });
+    htmlG += '<div class="garageFoot">1-9 select · E close</div>';
+    elsH.garagePanel.innerHTML = htmlG;
+    elsH.garagePanel.style.display = 'block'; };
+  const memoMap = { };
+  const memoWrite = (nodeM, keyM, valM) => {
+    if (! nodeM) return;
+    if (memoMap [keyM] === valM) return;
+    memoMap [keyM] = valM;
+    nodeM.textContent = valM; };
+  let slowTick = 0;
+  const paintBustMeter = (nowPb) => {
+    if (! elsH.bustWrap) return;
+    let meterQ; meterQ = Math.min (1, Math.max (0, G.bustMeter || 0));
+    if (meterQ > 0) { elsH.bustWrap.style.display = 'block'; } else { elsH.bustWrap.style.display = 'none'; }
+    if (! (meterQ > 0)) { return; }
+    if (elsH.bustFill) elsH.bustFill.style.width = '' + Math.round (meterQ * 100) + '%';
+    if (elsH.bustLabel) {
+      let blinkPb; if (Math.sin (nowPb * 10) > 0) { blinkPb = '1'; } else { blinkPb = '0.25'; }
+      if (meterQ > 0.7) { elsH.bustLabel.style.opacity = blinkPb; } else { elsH.bustLabel.style.opacity = '1'; } } };
+  const tickEndFlow = (dtEf, nowEf) => {
+    if (! endPend) {
+      let heroEf; heroEf = G.car || G.player;
+      if (heroEf && (Math.abs (heroEf.x) > 668 || Math.abs (heroEf.z) > 668)) { G.damagePlayer (22 * dtEf); } else {
+        let sinceEf; sinceEf = (G.elapsed || 0) - (G._lastDamageAt ?? - 99);
+        if ((G.playerHealth ?? 100) < 100 && sinceEf > 8) G.playerHealth = Math.min (100, (G.playerHealth ?? 100) + (0.8 * dtEf)); }
+    } else if (! endPend.staging) {
+      endPend.t -= dtEf;
+      let partsEf; if (endPend.kind === 'wasted') { partsEf = wastedP; } else { partsEf = bustedP; }
+      if (partsEf) {
+        let growQ; growQ = 1 - Math.max (0, endPend.t) / 2.8;
+        partsEf.title.style.transform = 'scale(' + (1 + growQ * 0.16).toFixed (3) + ')'; }
+      if (! (endPend.t > 0)) resolveEnd (); }
+    if (dispLeft > 0 && elsH.dispatch) {
+      dispLeft -= dtEf;
+      if (! (dispLeft > 0)) elsH.dispatch.style.display = 'none';
+      else if (dispLeft < 1) elsH.dispatch.style.opacity = dispLeft.toFixed (2); }
+    paintBustMeter (nowEf); };
+  const currentStationName = () => { try {
+      let curSt; curSt = G.audio && G.audio.radio && G.audio.radio.current ? G.audio.radio.current () : null;
+      return curSt ? curSt.name : null;
+    } catch (err) { return null; } };
+  const tickRadio = () => { if (! elsH.radioChip) return;
+    let stationQ = G.radioName || null; if (! stationQ) stationQ = currentStationName ();
+    let showChipR; showChipR = ! ! ((G.flags.inCar || ! ! (G.shotMode && G.car)) && stationQ);
+    if (showChipR) { elsH.radioChip.style.display = 'block'; } else { elsH.radioChip.style.display = 'none'; }
+    if (showChipR) memoWrite (elsH.radioChip, 'radio', '♪ ' + stationQ + ''); };
+  const tickCard = (nextDefQ) => { if (! elsH.card) return;
+    let visibleC; visibleC = ! ! (nextDefQ || G.missionProg);
+    if (visibleC) { elsH.card.style.display = 'block'; } else { elsH.card.style.display = 'none'; }
+    if (visibleC && nextDefQ) {
+      let personCd; personCd = CAST [nextDefQ.giver];
+      if (elsH.cardPortrait) {
+        let wordsCd; wordsCd = (personCd?.name || '?').trim ().split (/\s+/);
+        let lettersCd; lettersCd = [];
+        let iterCd = wordsCd [Symbol.iterator] (); let stepCd = iterCd.next ();
+        while (! stepCd.done) { const wordCd = stepCd.value; stepCd = iterCd.next (); lettersCd.push (wordCd [0]); }
+        elsH.cardPortrait.textContent = lettersCd.join ('').slice (0, 2).toUpperCase ();
+        if (personCd?.outfit?.topColor) { elsH.cardPortrait.style.background = '#' + personCd.outfit.topColor.toString (16).padStart (6, '0'); } else { elsH.cardPortrait.style.background = '#555'; } }
+      memoWrite (elsH.cardGiver, 'giver', personCd?.name || nextDefQ.giver || '');
+      memoWrite (elsH.cardText, 'cardText', '' + nextDefQ.title + ' — ' + nextDefQ.blurb + ''); }
+    memoWrite (elsH.cardProg, 'prog', G.missionProg || 'Go to the blip'); };
+  const crewStatusMap = (nextDefQ) => { let drivingC; drivingC = G.car && G.flags.inCar;
+    let statusC = { driver : drivingC ? (G.car.spec?.name || G.car.specId || 'Driving') : 'On foot', mechanic : ! drivingC ? '—' : ((G.car.health ?? 100) > 70 ? 'Ready' : (G.car.health ?? 100) >= 30 ? 'Damaged' : 'Wrecked'), lookout : (G.wanted || 0) > 0 ? 'RBPD ACTIVE' : (nextDefQ ? 'Next: ' + nextDefQ.title + '' : 'Clear') };
+    return statusC; };
+  const tickCrew = (nextDefC) => {
+    let statusTc; statusTc = crewStatusMap (nextDefC);
+    let cardsTc = document.querySelectorAll ('.crewCard');
+    let iterTc = cardsTc [Symbol.iterator] (); let stepTc = iterTc.next ();
+    while (! stepTc.done) {
+      const cardTc = stepTc.value; stepTc = iterTc.next ();
+      const nodeTc = cardTc.querySelector ('.crewStatus');
+      if (nodeTc && statusTc [cardTc.dataset.role] !== undefined) nodeTc.textContent = statusTc [cardTc.dataset.role]; } };
+  const copUnitList = (heroCu) => {
+    let unitsCu; unitsCu = [];
+    let copsCu = (G.cops || []);
+    let iterCu = copsCu [Symbol.iterator] (); let stepCu = iterCu.next ();
+    while (! stepCu.done) {
+      const unitCu = stepCu.value; stepCu = iterCu.next ();
+      let recCu = { }; recCu.name = unitCu.specId === 'police-suv' ? 'RBPD Enforcer' : 'RBPD Interceptor'; recCu.d = Math.hypot (unitCu.x - heroCu.x, unitCu.z - heroCu.z); recCu.v = unitCu; unitsCu.push (recCu); }
+    if (G.heli?.group != null) {
+      let spotCu; spotCu = G.heli.group.position;
+      let recHeliCu = { }; recHeliCu.name = 'RBPD Air Unit'; recHeliCu.d = Math.hypot (spotCu.x - heroCu.x, spotCu.z - heroCu.z); recHeliCu.heli = true; unitsCu.push (recHeliCu); }
+    unitsCu.sort ((aCu, bCu) => aCu.d - bCu.d);
+    return unitsCu; };
+  const copTacticQ = (unitCt, heroCt) => {
+    let tacticCt = 'PURSUIT';
+    if (unitCt.heli) tacticCt = 'TRACKING';
+    else if (unitCt.v) {
+      let dotCt; dotCt = Math.cos ((unitCt.v.angle || 0) - (heroCt.angle || 0));
+      let bearCt; bearCt = Math.atan2 (heroCt.x - unitCt.v.x, heroCt.z - unitCt.v.z);
+      let relCt; relCt = ((bearCt - (unitCt.v.angle || 0) + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      if (unitCt.d < 14 && Math.abs (relCt) > 2.4 && (unitCt.v.speed || 0) > 12) tacticCt = 'RAMMING';
+      else if (dotCt > 0.3 && unitCt.d < 60) tacticCt = 'INTERCEPT'; }
+    return tacticCt; };
+  const tickCopPanel = () => { if (! (elsH.copPanel && elsH.copRows)) return;
+    let visibleCp; visibleCp = (G.wanted || 0) >= 1;
+    if (visibleCp) { elsH.copPanel.style.display = 'block'; } else { elsH.copPanel.style.display = 'none'; }
+    if (! visibleCp) return;
+    let heroQ = { }; if (! G.car) { heroQ.x = G.player.x; heroQ.z = G.player.z; heroQ.angle = G.player.angle; } else { heroQ.x = G.car.x; heroQ.z = G.car.z; heroQ.angle = G.car.angle; }
+    let unitsQ; unitsQ = copUnitList (heroQ); let headCp = '<div class="copHead">RBPD RESPONSE — ' + unitsQ.length + ' UNITS</div>';
+    elsH.copRows.innerHTML = headCp + unitsQ.slice (0, 4).map ((unitQ) => '<div class="copRow"><span>' + unitQ.name + '</span><span>' + Math.round (unitQ.d) + 'm</span><span>' + copTacticQ (unitQ, heroQ) + '</span></div>').join (''); };
+  if (G.flags.openPauseMap && elsH.pauseMenu) { viewHome (); elsH.pauseMenu.style.display = 'block'; bigMap (); fillLegend (); }
+  G.updaters.push ((frameU, dtU) => {
+    void frameU;
+    let nowU; nowU = performance.now () / 1000;
+    if (isStaging ()) G.bustMeter = 0;
+    memoWrite (elsH.money, 'money', cashStr (G.money));
+    memoWrite (elsH.rep, 'rep', String (Math.round (G.rep || 0)));
+    memoWrite (elsH.rank, 'rank', CLUB_RANKS [G.rankIdx || 0] || 'Rookie');
+    if (elsH.stars) {
+      let starU; starU = Math.round (G.wanted || 0);
+      if (starU > 0) { elsH.stars.style.display = 'block'; } else { elsH.stars.style.display = 'none'; }
+      memoWrite (elsH.stars, 'stars', '★'.repeat (starU)); }
+    if (elsH.healthBar) {
+      let hpQ; hpQ = Math.max (0, Math.min (100, G.playerHealth ?? 100)); elsH.healthBar.style.width = '' + hpQ + '%';
+      if (hpQ < 30) { elsH.healthBar.style.backgroundColor = '#e33b3b'; } else { elsH.healthBar.style.backgroundColor = ''; } }
+    if (elsH.carBar) {
+      let carHpQ; carHpQ = G.car ? (G.car.health ?? 100) : 100; elsH.carBar.style.width = '' + Math.max (0, Math.min (100, carHpQ)) + '%'; }
+    if (elsH.objective) {
+      let heroOb; heroOb = G.car ? G.car : G.player;
+      if (G.objective) { let distQ; distQ = Math.round (Math.hypot (G.objective.x - heroOb.x, G.objective.z - heroOb.z));
+        memoWrite (elsH.objective, 'obj', '' + G.objective.label + ' — ' + distQ + 'm');
+      } else memoWrite (elsH.objective, 'obj', 'Free roam — find a letter blip'); }
+    if (elsH.wasted) { if (G.flags.wasted) { elsH.wasted.style.display = 'flex'; } else { elsH.wasted.style.display = 'none'; } }
+    if (elsH.busted) { if (G.flags.busted) { elsH.busted.style.display = 'flex'; } else { elsH.busted.style.display = 'none'; } }
+    tickEndFlow (dtU, nowU); tickRadio ();
+    drawMini (nowU);
+    drawDial (dtU);
+    if (G.paused && elsH.pauseMenu && elsH.pauseMenu.style.display !== 'none') bigMap ();
+    if (G.flags.garageOpen && ! garageVis) drawGarage ();
+    if (! G.flags.garageOpen && garageVis && elsH.garagePanel) elsH.garagePanel.style.display = 'none';
+    garageVis = ! ! G.flags.garageOpen;
+    if (G.flags.garageOpen) { garageLeft -= dtU;
+      if (! (garageLeft > 0)) { garageLeft = 0.5; drawGarage (); } }
+    slowTick -= dtU;
+    if (! (slowTick > 0)) {
+      slowTick = 0.25;
+      let nextDefU; nextDefU = ('number' === typeof G.missionIndex && G.missionIndex < MISSIONS.length) ? MISSIONS [G.missionIndex] : null;
+      tickCard (nextDefU);
+      tickCrew (nextDefU);
+      tickCopPanel (); } });
+};

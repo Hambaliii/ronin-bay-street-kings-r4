@@ -1,303 +1,357 @@
-// Sun glow falloff, cloud puffs and two tinted dome shells, rebuilt with
-// a fresh decomposition: small painters merged, loop shapes changed.
-import * as THREE from 'three';
-import { rr } from './random.js';
+// Sky layer: sun sprites, cloud cards adrift, a pair of tinted domes.
+import * as THREE from 'three'; import { rr } from './random.js';
 
-// The sun disc texture: bright core fading out through cream tones.
-function bakeSunGlowTex() {
-  const cnv = document.createElement('canvas');
-  cnv.height = cnv.width = 256;
-  const ctx = cnv.getContext('2d');
-  const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  const stops = [[0, 'rgba(255,255,255,1)'], [0.18, 'rgba(255,244,214,0.95)'], [0.34, 'rgba(255,214,140,0.55)'], [0.62, 'rgba(255,178,102,0.18)'], [1, 'rgba(255,170,90,0)']];
-  for (const [atFrac, rgbaTxt] of stops) grad.addColorStop(atFrac, rgbaTxt);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 256, 256);
-  const outTex = new THREE.CanvasTexture(cnv);
-  outTex.colorSpace = THREE.SRGBColorSpace;
-  return outTex;
-}
+const makeSunGlowTex = () => {
+  let canvasEl;
+  canvasEl = document.createElement('canvas');
+  canvasEl.width = 256;
+  canvasEl.height = canvasEl.width;
+  const ctxG = canvasEl.getContext('2d');
+  const gradObj = ctxG.createRadialGradient(128, 128, 0, 128, 128, 128);
+  const stopList = [];
+  stopList.push([0, 'rgba(255,255,255,1)']);
+  stopList.push([0.18, 'rgba(255,244,214,0.95)']);
+  stopList.push([0.34, 'rgba(255,214,140,0.55)']);
+  stopList.push([0.62, 'rgba(255,178,102,0.18)']);
+  stopList.push([1, 'rgba(255,170,90,0)']);
+  let stopIdx = 0;
+  while (stopIdx < stopList.length) {
+    const [stopAt, stopCol] = stopList[stopIdx];
+    gradObj.addColorStop(stopAt, stopCol);
+    ++stopIdx;
+  }
+  ctxG.fillStyle = gradObj;
+  ctxG.fillRect(0, 0, 256, 256);
+  const texObj = new THREE.CanvasTexture(canvasEl);
+  texObj.colorSpace = THREE.SRGBColorSpace;
+  return texObj;
+};
 
-// A single cloud bank picture; a seeded toy generator scatters the puffs.
-function bakeCloudTex(variantNo) {
-  const cnv = document.createElement('canvas');
-  cnv.width = 256;
-  cnv.height = 128;
-  const ctx = cnv.getContext('2d');
-  let rngState = (1234567 + (variantNo * 7919));
-  const nextUnit = () => {
-    rngState = ((rngState * 1103515245) + 12345) & 0x7fffffff;
+const makeCloudTex = (variantNo) => {
+  const canvasEl = document.createElement('canvas');
+  canvasEl.width = 256;
+  canvasEl.height = 128;
+  const ctxG = canvasEl.getContext('2d');
+  let rngState = variantNo * 7919 + 1234567;
+  function nextRand() {
+    rngState = (rngState * 1103515245 + 12345) & 0x7fffffff;
     return rngState / 0x7fffffff;
-  };
-  const totalPuffs = (7 + 0) + Math.floor(nextUnit() * 4);
+  }
+  const puffTotal = Math.floor(nextRand() * 4) + 0 + 7;
   let puffDone = 0;
-  while (puffDone !== totalPuffs) {
-    const px = 40 + (nextUnit() * 176);
-    const py = 48 + (nextUnit() * 36);
-    const prad = 22 + (nextUnit() * 30);
-    const pgrad = ctx.createRadialGradient(px, py, 0, px, py, prad);
-    pgrad.addColorStop(1, 'rgba(255,255,255,0)');
-    pgrad.addColorStop(0, 'rgba(255,255,255,0.55)');
-    pgrad.addColorStop(0.6, 'rgba(255,255,255,0.28)');
-    ctx.fillStyle = pgrad;
-    ctx.beginPath();
-    ctx.arc(px, py, prad, 0, 2 * Math.PI);
-    ctx.fill();
+  while (puffDone !== puffTotal) {
+    const puffX = nextRand() * 176 + 40;
+    const puffY = nextRand() * 36 + 48;
+    const puffR = nextRand() * 30 + 22;
+    const puffGrad = ctxG.createRadialGradient(puffX, puffY, 0, puffX, puffY, puffR);
+    puffGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    puffGrad.addColorStop(0, 'rgba(255,255,255,0.55)');
+    puffGrad.addColorStop(0.6, 'rgba(255,255,255,0.28)');
+    ctxG.fillStyle = puffGrad;
+    ctxG.beginPath();
+    ctxG.arc(puffX, puffY, puffR, 0, Math.PI * 2);
+    ctxG.fill();
     puffDone += 1;
   }
-  const outTex = new THREE.CanvasTexture(cnv);
-  outTex.colorSpace = THREE.SRGBColorSpace;
-  return outTex;
-}
+  const texObj = new THREE.CanvasTexture(canvasEl);
+  texObj.colorSpace = THREE.SRGBColorSpace;
+  return texObj;
+};
 
-const DAY_SUN_TONE = new THREE.Color(0xfff6e8);
-const DAY_FOG_TONE = new THREE.Color(0xdfeef2);
-const FOG_NEAR_PLAIN = 220;
-const FOG_FAR_PLAIN = 1500;
-const HIGH_SUN_TONE = new THREE.Color(0xfff3d0);
-const LOW_SUN_TONE = new THREE.Color(0xff5f2e);
-const LOW_GLOW_TONE = new THREE.Color(0xff7a4d);
-const DAY_CLOUD_TONE = new THREE.Color(0xffffff);
-const DUSK_CLOUD_TONE = new THREE.Color(0xff9e7a);
-const DUSK_CLOUD_TONE_B = new THREE.Color(0xc08bd8);
-const NIGHT_CLOUD_TONE = new THREE.Color(0x3d4a63);
-const workTone = new THREE.Color();
-const DUSK_FOG_TONE = new THREE.Color(0xff9e66);
-const DUSK_HEMI_TONE = new THREE.Color(0xffb3c6);
-const DUSK_GROUND_TONE = new THREE.Color(0x74506b);
-const SHELL_LOW_TONE = new THREE.Color(0x2b1233);
-const SHELL_HOR_TONE = new THREE.Color(0xff8b3d);
-const SHELL_MID_TONE = new THREE.Color(0xe0457b);
-const SHELL_TOP_TONE = new THREE.Color(0x2a1458);
-const SHELL_STOPS = [SHELL_HOR_TONE, SHELL_MID_TONE, SHELL_TOP_TONE];
-const FOG_DUSK_ALIAS = DUSK_FOG_TONE;
+const TONE_SUN_DAY = new THREE.Color(0xfff6e8), TONE_FOG_DAY = new THREE.Color(0xdfeef2);
+let FOG_FAR_BASE;
+FOG_FAR_BASE = 1500;
+let FOG_NEAR_BASE;
+FOG_NEAR_BASE = 220;
+const TONE_SUN_HIGH = new THREE.Color(0xfff3d0);
+let TONE_SUN_LOW;
+TONE_SUN_LOW = new THREE.Color(0xff5f2e);
+const TONE_GLOW_LOW = new THREE.Color(0xff7a4d), TONE_CLOUD_DAY = new THREE.Color(0xffffff);
+const TONE_CLOUD_DUSK = new THREE.Color(0xff9e7a);
+let TONE_CLOUD_DUSK_B;
+TONE_CLOUD_DUSK_B = new THREE.Color(0xc08bd8);
+const TONE_CLOUD_NIGHT = new THREE.Color(0x3d4a63);
+const toneScratch = new THREE.Color();
+let TONE_FOG_DUSK;
+TONE_FOG_DUSK = new THREE.Color(0xff9e66);
+const TONE_HEMI_DUSK = new THREE.Color(0xffb3c6), TONE_GROUND_DUSK = new THREE.Color(0x74506b);
+const TONE_SHELL_LOW = new THREE.Color(0x2b1233);
+let TONE_SHELL_HOR;
+TONE_SHELL_HOR = new THREE.Color(0xff8b3d);
+const TONE_SHELL_MID = new THREE.Color(0xe0457b);
+const TONE_SHELL_TOP = new THREE.Color(0x2a1458);
+const FOG_DUSK_REF = TONE_FOG_DUSK;
+const SHELL_STOP_LIST = [];
+SHELL_STOP_LIST.push(TONE_SHELL_HOR);
+SHELL_STOP_LIST.push(TONE_SHELL_MID);
+SHELL_STOP_LIST.push(TONE_SHELL_TOP);
 
-// Shared smoothstep-style curve plus its clamping helper, inlined differently.
-function unitClamp(vv) { return Math.min(1, Math.max(0, vv)); }
-function softStep(loEdge, hiEdge, probeVal) {
-  const tFrac = unitClamp((probeVal + (-loEdge)) / (hiEdge + (-loEdge)));
-  return (3 + (-(2 * tFrac))) * (tFrac * tFrac);
-}
+const clamp01 = (valIn) => Math.max(0, Math.min(1, valIn));
+const smoothRamp = (loEdge, hiEdge, xVal) => {
+  const tFrac = clamp01((xVal - loEdge) / (hiEdge - loEdge));
+  return tFrac * tFrac * (3 - tFrac * 2);
+};
 
-// Colours every vertex of a dome by normalised height and wraps the mesh.
-function tintedShell(radiusVal, segW, segH, painterFn, orderVal, baseOpacity) {
-  const geoObj = new THREE.SphereGeometry(radiusVal, segW, segH);
+const tintedShell = (shellR, segW, segH, painter, zOrder, alphaVal) => {
+  const geoObj = new THREE.SphereGeometry(shellR, segW, segH);
+  const colArr = [];
   const posAttr = geoObj.attributes.position;
-  const rgbArr = [];
-  const toneScratch = new THREE.Color();
-  let vi = 0;
-  while (vi < posAttr.count) {
-    painterFn(toneScratch, posAttr.getY(vi) / radiusVal);
-    rgbArr.push(toneScratch.r, toneScratch.g, toneScratch.b);
-    vi += 1;
+  const toneWork = new THREE.Color();
+  let vIdx = 0;
+  while (vIdx < posAttr.count) {
+    painter(toneWork, posAttr.getY(vIdx) / shellR);
+    colArr.push(toneWork.r, toneWork.g, toneWork.b);
+    vIdx += 1;
   }
-  geoObj.setAttribute('color', new THREE.Float32BufferAttribute(rgbArr, 3));
+  geoObj.setAttribute('color', new THREE.Float32BufferAttribute(colArr, 3));
   void geoObj.getAttribute('color');
-  const meshObj = new THREE.Mesh(geoObj, new THREE.MeshBasicMaterial({
-    vertexColors: true, side: THREE.BackSide, transparent: true, opacity: baseOpacity, depthWrite: false, fog: false,
-  }));
-  meshObj.renderOrder = orderVal;
+  const matCfg = {};
+  matCfg.vertexColors = true;
+  matCfg.side = THREE.BackSide;
+  matCfg.transparent = true;
+  matCfg.opacity = alphaVal;
+  matCfg.depthWrite = false;
+  matCfg.fog = false;
+  const meshObj = new THREE.Mesh(geoObj, new THREE.MeshBasicMaterial(matCfg));
+  meshObj.renderOrder = zOrder;
   meshObj.visible = false;
   return meshObj;
-}
-function makeDuskDome() {
-  const radiusEchoDusk = 1420;
-  void radiusEchoDusk;
-  return tintedShell(1420, 32, 24, (toneObj, hFrac) => {
-    toneObj.lerpColors(SHELL_LOW_TONE, SHELL_STOPS[0], softStep(-0.08, 0.015, hFrac));
-    toneObj.lerp(SHELL_STOPS[1], softStep(0.03, 0.30, hFrac));
-    toneObj.lerp(SHELL_STOPS[2], softStep(0.26, 0.62, hFrac));
+};
+const buildDuskDome = () => {
+  const echoRadius = 1420;
+  void echoRadius;
+  return tintedShell(1420, 32, 24, function (toneArg, hFrac) {
+    toneArg.lerpColors(TONE_SHELL_LOW, SHELL_STOP_LIST[0], smoothRamp(-0.08, 0.015, hFrac));
+    toneArg.lerp(SHELL_STOP_LIST[1], smoothRamp(0.03, 0.30, hFrac));
+    toneArg.lerp(SHELL_STOP_LIST[2], smoothRamp(0.26, 0.62, hFrac));
   }, -1, 0);
-}
+};
 
-const AIR_TOP_TONE = new THREE.Color(0xcfe8f7);
-const AIR_HOR_TONE = new THREE.Color(0xfdf3e0);
-const AIR_SHELL_ALPHA = 0.16;
+const TONE_AIR_TOP = new THREE.Color(0xcfe8f7), TONE_AIR_HOR = new THREE.Color(0xfdf3e0);
+let AIR_ALPHA;
+AIR_ALPHA = 0.16;
 
-function makeDayDome() {
-  const radiusEchoDay = 1440;
-  const itemSizeEcho = 3;
-  void radiusEchoDay;
-  void itemSizeEcho;
-  return tintedShell(1440, 32, 24, (toneObj, hFrac) => {
-    toneObj.lerpColors(AIR_HOR_TONE, AIR_TOP_TONE, softStep(0.0, 0.55, hFrac));
+const buildDayDome = () => {
+  const echoItemSize = 3, echoRadius = 1440;
+  void echoRadius;
+  void echoItemSize;
+  return tintedShell(1440, 32, 24, function (toneArg, hFrac) {
+    toneArg.lerpColors(TONE_AIR_HOR, TONE_AIR_TOP, smoothRamp(0.0, 0.55, hFrac));
   }, -2, 0);
-}
+};
 
-let skyBag = null;
+let skyState = null;
 
-export function initSky(G) {
-  try {
+export const initSky = (G) => { try {
     const rootGrp = new THREE.Group();
     rootGrp.renderOrder = 1;
-    const duskDome = makeDuskDome();
-    rootGrp.add(duskDome);
-    const dayDome = makeDayDome();
-    rootGrp.add(dayDome);
+    const domeDusk = buildDuskDome();
+    rootGrp.add(domeDusk);
+    const domeDay = buildDayDome();
+    rootGrp.add(domeDay);
 
-    const sunTexObj = bakeSunGlowTex();
-    function spawnSunSprite(toneVal, alphaVal, sizeVal, useAdditive) {
-      const matCfg = { map: sunTexObj, color: toneVal, transparent: true, opacity: alphaVal, depthWrite: false, fog: false };
-      if (useAdditive) matCfg.blending = THREE.AdditiveBlending;
-      const sprObj = new THREE.Sprite(new THREE.SpriteMaterial(matCfg));
-      sprObj.scale.set(sizeVal, sizeVal, 1);
+    const texSun = makeSunGlowTex();
+    const makeSunSprite = (toneArg, alphaArg, sizeArg, addFlag) => {
+      const cfgObj = {};
+      cfgObj.map = texSun;
+      cfgObj.color = toneArg;
+      cfgObj.transparent = true;
+      cfgObj.opacity = alphaArg;
+      cfgObj.depthWrite = false;
+      cfgObj.fog = false;
+      if (addFlag) cfgObj.blending = THREE.AdditiveBlending;
+      const sprObj = new THREE.Sprite(new THREE.SpriteMaterial(cfgObj));
+      sprObj.scale.set(sizeArg, sizeArg, 1);
       rootGrp.add(sprObj);
       return [sprObj, sprObj.material];
-    }
-    const glowPair = spawnSunSprite(0xffe9b8, 0.9, 340, true);
-    glowPair[0].scale.x = 340;
-    const corePair = spawnSunSprite(0xffffff, 1, 95, false);
-    corePair[0].scale.y = 95;
+    };
+    const pairGlow = makeSunSprite(0xffe9b8, 0.9, 340, true);
+    pairGlow[0].scale.x = 340;
+    const pairCore = makeSunSprite(0xffffff, 1, 95, false);
+    pairCore[0].scale.y = 95;
 
-    const cloudMats = [];
-    for (let variantNo = 0; variantNo < 3; variantNo += 1) {
-      cloudMats.push(new THREE.SpriteMaterial({
-        map: bakeCloudTex(variantNo), color: 0xffffff, transparent: true, opacity: 0.82, depthWrite: false, fog: false,
-      }));
+    const matsCloud = [];
+    for (let vIdx = 0; vIdx < 3; vIdx += 1) {
+      const matCfg = {};
+      matCfg.map = makeCloudTex(vIdx);
+      matCfg.color = 0xffffff;
+      matCfg.transparent = true;
+      matCfg.opacity = 0.82;
+      matCfg.depthWrite = false;
+      matCfg.fog = false;
+      matsCloud.push(new THREE.SpriteMaterial(matCfg));
     }
     const cloudList = [];
-    for (let ci = 0; !(ci >= 16); ci += 1) {
-      const sprObj = new THREE.Sprite(cloudMats[ci % 3]);
+    for (let cIdx = 0; cIdx < 16; cIdx += 1) {
+      const sprObj = new THREE.Sprite(matsCloud[cIdx % 3]);
       const wideVal = rr(150, 300);
-      sprObj.scale.set(wideVal, 0.42 * wideVal, 1);
+      sprObj.scale.set(wideVal, wideVal * 0.42, 1);
       sprObj.position.set(rr(-820, 820), rr(150, 265), rr(-820, 820));
       rootGrp.add(sprObj);
-      cloudList.push({ spr: sprObj, speed: rr(0.8, 1.9) });
+      const recObj = {};
+      recObj.spr = sprObj;
+      recObj.speed = rr(0.8, 1.9);
+      cloudList.push(recObj);
     }
     G.scene.add(rootGrp);
-    skyBag = {
-      group: rootGrp, sunGlow: glowPair[0], sunCore: corePair[0], glowMat: glowPair[1], coreMat: corePair[1],
-      clouds: cloudList, variants: cloudMats, dome: duskDome, dayDome: dayDome,
-    };
-    G.sky = skyBag;
-  } catch (e) {
-  }
-}
+    skyState = {};
+    skyState.group = rootGrp;
+    skyState.sunGlow = pairGlow[0];
+    skyState.sunCore = pairCore[0];
+    skyState.glowMat = pairGlow[1];
+    skyState.coreMat = pairCore[1];
+    skyState.clouds = cloudList;
+    skyState.variants = matsCloud;
+    skyState.dome = domeDusk;
+    skyState.dayDome = domeDay;
+    G.sky = skyState;
+  } catch (e) { void e; }
+};
 
-// Dusk strength: strong arm in the evening, gentler arm at dawn.
-function duskAmount(hourVal) {
-  const eveArm = (hourVal > 12 ? 1 : 0) * Math.max(0, 1 + (-(Math.abs(hourVal + (-18.2)) / 1.6)));
-  const dawnArm = 0.6 * Math.max(0, 1 + (-(Math.abs(hourVal + (-6.2)) / 1.2)));
-  return unitClamp(eveArm + dawnArm);
-}
-function sunSpot(angleVal, elevVal, distVal) {
-  const lowAmt = unitClamp(1 + (-(Math.abs(elevVal) / 0.55)));
-  return {
-    x: 0 + (Math.cos(angleVal) * distVal),
-    y: elevVal * distVal,
-    z: distVal * (0.38 + (lowAmt * 0.30)),
-    lowNear: lowAmt,
-  };
-}
-function gradeDusk(G, wgt) {
-  if (!wgt) return;
+const duskAmount = (hourArg) => {
+  let eveFactor;
+  if (hourArg > 12) eveFactor = 1;
+  else eveFactor = 0;
+  const eveAmt = Math.max(1 - Math.abs(hourArg - 18.2) / 1.6, 0) * eveFactor;
+  const dawnAmt = Math.max(1 - Math.abs(hourArg - 6.2) / 1.2, 0) * 0.6;
+  return clamp01(dawnAmt + eveAmt);
+};
+const sunSpot = (angArg, elevArg, distArg) => {
+  const lowAmt = clamp01(1 - Math.abs(elevArg) / 0.55);
+  const spotOut = {};
+  spotOut.x = Math.cos(angArg) * distArg;
+  spotOut.y = distArg * elevArg;
+  spotOut.z = (lowAmt * 0.30 + 0.38) * distArg;
+  spotOut.lowNear = lowAmt;
+  return spotOut;
+};
+const gradeDusk = (G, wArg) => {
+  if (!wArg) return;
   const fogObj = (G.scene || {}).fog;
-  if (fogObj) fogObj.color.lerp(FOG_DUSK_ALIAS, wgt * 0.85);
-  if (G.hemi) {
-    G.hemi.intensity += 0.5 * wgt;
-    if (G.hemi.color) G.hemi.color.lerp(DUSK_HEMI_TONE, wgt * 0.45);
-    if (G.hemi.groundColor) G.hemi.groundColor.lerp(DUSK_GROUND_TONE, wgt * 0.55);
+  if (fogObj) fogObj.color.lerp(FOG_DUSK_REF, wArg * 0.85);
+  if (G.hemi) { G.hemi.intensity += 0.5 * wArg;
+    if (G.hemi.color) G.hemi.color.lerp(TONE_HEMI_DUSK, wArg * 0.45);
+    if (G.hemi.groundColor) G.hemi.groundColor.lerp(TONE_GROUND_DUSK, wArg * 0.55);
   }
-  if (G.sun) {
-    G.sun.intensity += 0.3 * wgt;
-    G.sun.color.lerp(LOW_SUN_TONE, wgt * 0.45);
+  if (G.sun) { G.sun.intensity += 0.3 * wArg;
+    G.sun.color.lerp(TONE_SUN_LOW, wArg * 0.45);
   }
-}
-function gradeDayAir(G, wgt) {
-  if (G.hemi) G.hemi.intensity += 0.5 * wgt;
+};
+const gradeDayAir = (G, wArg) => {
+  if (G.hemi) G.hemi.intensity += 0.5 * wArg;
   if (G.sun) {
-    G.sun.intensity += 0.35 * wgt;
-    if (G.sun.color) G.sun.color.lerp(DAY_SUN_TONE, 0.6 * wgt);
+    G.sun.intensity += 0.35 * wArg;
+    if (G.sun.color) G.sun.color.lerp(TONE_SUN_DAY, wArg * 0.6);
   }
   const fogObj = (G.scene || {}).fog;
   if (fogObj) {
-    fogObj.color.lerp(DAY_FOG_TONE, 0.85 * wgt);
-    fogObj.near = (160 * wgt) + FOG_NEAR_PLAIN;
-    fogObj.far = (700 * wgt) + FOG_FAR_PLAIN;
+    fogObj.color.lerp(TONE_FOG_DAY, wArg * 0.85);
+    fogObj.near = 160 * wArg + FOG_NEAR_BASE;
+    fogObj.far = 700 * wArg + FOG_FAR_BASE;
   }
-  const domeObj = skyBag.dome;
+  const domeObj = skyState.dome;
   if (domeObj) {
-    domeObj.material.opacity *= (1 + (-wgt));
+    domeObj.material.opacity *= (1 - wArg);
     domeObj.visible = domeObj.material.opacity > 0.02;
   }
-}
+};
 
-// Positions and recolours both sun sprites for the given sun geometry.
-function layoutSun(angleVal, elevVal) {
-  const spot = sunSpot(angleVal, elevVal, 1150);
-  [skyBag.sunGlow, skyBag.sunCore].forEach((sprObj) => { sprObj.position.set(spot.x, spot.y, spot.z); });
-  const aboveHorizon = elevVal > -0.04;
-  skyBag.sunGlow.visible = aboveHorizon;
-  skyBag.sunCore.visible = aboveHorizon;
-  if (!aboveHorizon) return;
-  const fadeAmt = unitClamp((0.04 + elevVal) / 0.22);
-  const lowAmt = unitClamp(1 + (-(elevVal / 0.55)));
-  workTone.lerpColors(HIGH_SUN_TONE, LOW_SUN_TONE, lowAmt);
-  skyBag.glowMat.color.copy(workTone).lerp(LOW_GLOW_TONE, 0.55 * lowAmt);
-  skyBag.coreMat.color.copy(workTone).lerp(new THREE.Color(0xffffff), 0.45 + (-0.25 * lowAmt));
-  skyBag.glowMat.opacity = 0.9 * fadeAmt;
-  skyBag.coreMat.opacity = 1.0 * fadeAmt;
-  const scaleMul = 1 + (0 + (lowAmt * 0.5));
-  skyBag.sunGlow.scale.set(340 * scaleMul, 340 * scaleMul, 1);
-}
-
-// Cloud colour/opacity grading merged with the drift step.
-function gradeAndDriftClouds(dayAmt, duskAmt, dayAmt2, dtVal) {
-  workTone.copy(NIGHT_CLOUD_TONE).lerp(DAY_CLOUD_TONE, dayAmt);
-  skyBag.variants.forEach((matObj, idxNo) => {
-    matObj.color.copy(workTone);
-    if (duskAmt > 0) matObj.color.lerp(idxNo === 1 ? DUSK_CLOUD_TONE_B : DUSK_CLOUD_TONE, (0.9 * duskAmt) * Math.max(dayAmt, 0.45));
-    if (dayAmt2 > 0) matObj.color.lerp(DAY_CLOUD_TONE, 0.5 * dayAmt2);
-    matObj.opacity = Math.min(1, (0.28 + (0.54 * dayAmt)) + ((0.18 * duskAmt) + (0.10 * dayAmt2)));
-  });
-  const windDist = 1.4 * (0 + (dtVal || 0));
-  for (const recObj of skyBag.clouds) {
-    const nextX = (recObj.speed * windDist) + recObj.spr.position.x;
-    recObj.spr.position.x = nextX > 860 ? -860 : nextX;
+const layoutSun = (angArg, elevArg) => {
+  const spotObj = sunSpot(angArg, elevArg, 1150);
+  const sprPair = [skyState.sunGlow, skyState.sunCore];
+  let sprIdx = 0;
+  while (sprIdx < sprPair.length) {
+    sprPair[sprIdx].position.set(spotObj.x, spotObj.y, spotObj.z);
+    ++sprIdx;
   }
-}
+  const isAbove = elevArg > -0.04;
+  skyState.sunGlow.visible = isAbove;
+  skyState.sunCore.visible = isAbove;
+  if (!isAbove) return;
+  const fadeAmt = clamp01((elevArg + 0.04) / 0.22);
+  const lowAmt = clamp01(1 - elevArg / 0.55);
+  toneScratch.lerpColors(TONE_SUN_HIGH, TONE_SUN_LOW, lowAmt);
+  const glowCol = skyState.glowMat.color;
+  glowCol.copy(toneScratch);
+  glowCol.lerp(TONE_GLOW_LOW, lowAmt * 0.55);
+  const coreCol = skyState.coreMat.color;
+  coreCol.copy(toneScratch);
+  coreCol.lerp(new THREE.Color(0xffffff), -0.25 * lowAmt + 0.45);
+  skyState.glowMat.opacity = fadeAmt * 0.9;
+  skyState.coreMat.opacity = fadeAmt * 1.0;
+  const mulVal = 1 + lowAmt * 0.5;
+  skyState.sunGlow.scale.set(mulVal * 340, mulVal * 340, 1);
+};
 
-export function updateSky(G, dt) {
-  if (!skyBag) return;
-  try {
-    const hourVal = G.timeOfDay || 10.5;
-    const dayAmt = unitClamp(Math.sin(((hourVal + (-6)) / 12) * Math.PI));
-    const duskAmt = duskAmount(hourVal);
-    const angVal = ((hourVal + (-6)) / 12) * Math.PI;
-    const elevVal = Math.sin(angVal);
+const gradeAndDriftClouds = (amtDay, amtDusk, amtDay2, dtArg) => {
+  const scratchRef = toneScratch;
+  scratchRef.copy(TONE_CLOUD_NIGHT);
+  scratchRef.lerp(TONE_CLOUD_DAY, amtDay);
+  skyState.variants.forEach(function (matObj, mIdx) {
+    matObj.color.copy(toneScratch);
+    if (amtDusk > 0) {
+      let duskTone;
+      if (mIdx === 1) duskTone = TONE_CLOUD_DUSK_B;
+      else duskTone = TONE_CLOUD_DUSK;
+      matObj.color.lerp(duskTone, Math.max(amtDay, 0.45) * 0.9 * amtDusk);
+    }
+    if (amtDay2 > 0) matObj.color.lerp(TONE_CLOUD_DAY, amtDay2 * 0.5);
+    matObj.opacity = Math.min(1, amtDay * 0.54 + 0.28 + (amtDusk * 0.18 + amtDay2 * 0.10));
+  });
+  const windVal = (dtArg || 0) * 1.4;
+  const cloudArr = skyState.clouds;
+  let recIdx = 0;
+  while (recIdx < cloudArr.length) {
+    const recObj = cloudArr[recIdx];
+    const nextX = recObj.spr.position.x + recObj.speed * windVal;
+    if (nextX > 860) recObj.spr.position.x = -860;
+    else recObj.spr.position.x = nextX;
+    ++recIdx;
+  }
+};
+
+export const updateSky = (G, dtArg) => { if (!skyState) return; try {
+    const hourNow = G.timeOfDay || 10.5;
+    const amtDay = clamp01(Math.sin(((hourNow - 6) / 12) * Math.PI));
+    const amtDusk = duskAmount(hourNow);
+    const angNow = ((hourNow - 6) / 12) * Math.PI;
+    const elevNow = Math.sin(angNow);
 
     const camObj = G.camera;
-    skyBag.group.position.set(camObj ? camObj.position.x : 0, 0, camObj ? camObj.position.z : 0);
+    let camX;
+    if (camObj) camX = camObj.position.x;
+    else camX = 0;
+    let camZ;
+    if (camObj) camZ = camObj.position.z;
+    else camZ = 0;
+    skyState.group.position.set(camX, 0, camZ);
 
-    layoutSun(angVal, elevVal);
+    layoutSun(angNow, elevNow);
 
-    const duskDome = skyBag.dome;
-    if (duskDome) {
-      const alphaVal = 0.92 * Math.min(1, 1.15 * duskAmt);
-      duskDome.material.opacity = alphaVal;
-      duskDome.visible = alphaVal > 0.02;
+    const domeObj = skyState.dome;
+    if (domeObj) {
+      const alphaVal = Math.min(1, amtDusk * 1.15) * 0.92;
+      domeObj.material.opacity = alphaVal;
+      domeObj.visible = alphaVal > 0.02;
     }
-    gradeDusk(G, duskAmt);
+    gradeDusk(G, amtDusk);
 
-    const dayAmt2 = softStep(10.5, 11.0, hourVal) * (1 + (-softStep(14.5, 15.0, hourVal)));
-    if (dayAmt2 > 0) {
-      gradeDayAir(G, dayAmt2);
-    } else {
-      const fogObj = (G.scene || {}).fog;
-      if (fogObj && (fogObj.near !== FOG_NEAR_PLAIN || fogObj.far !== FOG_FAR_PLAIN)) {
-        fogObj.near = FOG_NEAR_PLAIN;
-        fogObj.far = FOG_FAR_PLAIN;
-      }
+    const amtDay2 = (1 - smoothRamp(14.5, 15.0, hourNow)) * smoothRamp(10.5, 11.0, hourNow);
+    const fogObj = (G.scene || {}).fog;
+    amtDay2 > 0
+      ? gradeDayAir(G, amtDay2)
+      : (fogObj && (fogObj.near !== FOG_NEAR_BASE || fogObj.far !== FOG_FAR_BASE)
+          ? (fogObj.near = FOG_NEAR_BASE, fogObj.far = FOG_FAR_BASE)
+          : null);
+
+    const domeDay = skyState.dayDome;
+    if (domeDay) {
+      const alphaVal = AIR_ALPHA * amtDay2;
+      domeDay.material.opacity = alphaVal;
+      domeDay.visible = alphaVal > 0.01;
     }
 
-    const dayDome = skyBag.dayDome;
-    if (dayDome) {
-      const alphaVal = AIR_SHELL_ALPHA * dayAmt2;
-      dayDome.material.opacity = alphaVal;
-      dayDome.visible = alphaVal > 0.01;
-    }
-
-    gradeAndDriftClouds(dayAmt, duskAmt, dayAmt2, dt);
+    gradeAndDriftClouds(amtDay, amtDusk, amtDay2, dtArg);
   } catch (e) {
   }
-}
+};

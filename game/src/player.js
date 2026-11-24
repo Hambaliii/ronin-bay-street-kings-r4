@@ -1,461 +1,819 @@
-// The player on foot, plus the factory that builds textured figures
-// Bodies run to roughly seven and a half heads tall, assembled
-// from capsule and lathe pieces dressed in procedural canvas cloth
+// The hero on foot, and the figure factory behind every body in Ronin Bay — cloth textures included.
 import * as THREE from 'three';
 import { CAST } from './config.js';
 import { groundH } from './world.js';
 import { loadHeroAsset } from './assets.js';
-// A loaded model may step in as the hero visual, but the outer
-// group remains the object the updater positions and turns
-// Within it sits either the procedural figure or a clone of
-// the loaded wrapper, riding an inner group that bobs, rocks
-// and leans as it moves
-// A failed load resolves null and swaps nothing, which leaves
-// the procedural figure as the exact fallback, and a single
-// constant decides the facing flip
-const MC_FACING_OFFSET = 0;
-let mcModelHeld = null;
-let mcLoadBegun = false;
-const mcWaitingSet = new Set();
-function makeShadowDisc(radiusHeld) {
-  const discHeld = new THREE.Mesh(new THREE.CircleGeometry(radiusHeld, 16), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false }));
-  discHeld.rotation.x = (-Math.PI / 2);
-  discHeld.position.y = 0.02;
-  return discHeld; }
-function mcSwapPrevented(heroRec) {
-  return !heroRec || !mcModelHeld || heroRec.figIsGlb; }
-function attemptMcSwap(heroRec) {
-  try {
-    if (mcSwapPrevented(heroRec)) return false;
-    const innerHeld = new THREE.Group();
-    innerHeld.name = 'mc-glb-inner';
-    innerHeld.rotation.y = MC_FACING_OFFSET;
-    innerHeld.add(mcModelHeld.clone(true));
+
+const HERO_YAW_TRIM = 0;
+let heroModel = null;
+let heroLoadBegun = false;
+const heroWaiters = new Set();
+
+const buildShadowDisc = (radiusVal) => {
+  const matCfg = {};
+  matCfg.color = 0x000000; matCfg.transparent = true; matCfg.opacity = 0.3; matCfg.depthWrite = false;
+  const discNode = new THREE.Mesh(new THREE.CircleGeometry(radiusVal, 16),
+    new THREE.MeshBasicMaterial(matCfg));
+  discNode.rotation.x = -Math.PI / 2;
+  discNode.position.y = 0.02;
+  return discNode;
+};
+
+const heroSwapBlocked = (heroRec) => {
+  return !heroRec || !heroModel || heroRec.figIsGlb;
+};
+
+const tryHeroSwap = (heroRec) => {
+  try { if (heroSwapBlocked(heroRec)) return false;
+    const innerGrp = new THREE.Group();
+    innerGrp.name = 'mc-glb-inner';
+    innerGrp.rotation.y = HERO_YAW_TRIM;
+    innerGrp.add(heroModel.clone(true));
     if (heroRec.procFig) heroRec.fig.remove(heroRec.procFig);
-    heroRec.fig.add(innerHeld);
-    const discHeld = makeShadowDisc(0.42);
-    heroRec.fig.add(discHeld);
-    heroRec.glbInner = innerHeld;
-    heroRec.glbShadow = discHeld;
-    heroRec.visual = innerHeld;
-    heroRec.figIsGlb = true;
-    return true;
-  } catch (swallowed) { return false; } }
-function runMcLoadRound(roundsLeft) {
-  try {
-    loadHeroAsset('mc').then((modelNode) => {
-      try {
-        if (!modelNode) { if (roundsLeft > 0) setTimeout(() => runMcLoadRound(roundsLeft - 1), 1500); return; }
-        mcModelHeld = modelNode;
-        mcWaitingSet.forEach((waitingRec) => attemptMcSwap(waitingRec));
-        mcWaitingSet.clear();
-      } catch (swallowed) { /* the procedural fallback stays in place */ }
-    }).catch(() => { if (roundsLeft > 0) setTimeout(() => runMcLoadRound(roundsLeft - 1), 1500); });
-  } catch (swallowed) { /* the procedural fallback stays in place */ } }
-function beginMcLoad() {
-  if (mcLoadBegun) return;
-  mcLoadBegun = true;
-  // A null answer earns a retry rather than counting as final,
-  // because loads racing at module init can lose the fetch
-  // race and a cached null would strand every waiter on the
-  // procedural figure for the whole session, while the asset
-  // module drops nulls when a retry shows up
-  runMcLoadRound(3); }
-beginMcLoad();
-// Cast figures use the same replacement pattern for loaded visuals
-// The rival driver and the officer point at their own assets
-// and both face forward, so a zero rotation lines up with the
-// procedural facing exactly
-// The factory hands back the outer group; its transform and
-// animation stay untouched and only the inner visual changes
-// once the model lands
-const CAST_FACING_OFFSET = 0;
-const CAST_ASSET_MAP = { shun: 'rivalDriver', cop: 'policeOfficer' };
-const castModelMap = new Map();
-const castBegunSet = new Set();
-const castWaitingMap = new Map();
-function stashProceduralChildren(figNode) {
-  const stashHeld = new THREE.Group();
-  stashHeld.name = 'cast-proc-visual';
-  while (figNode.children.length) stashHeld.add(figNode.children[0]);
-  return stashHeld; }
-function attemptCastSwap(figNode, assetKey) {
-  try {
-    const templateHeld = castModelMap.get(assetKey);
-    const blockedHeld = !figNode || !templateHeld || figNode.userData.figIsGlb;
-    if (blockedHeld) return false;
-    const innerHeld = new THREE.Group();
-    innerHeld.name = 'cast-glb-inner';
-    innerHeld.rotation.y = CAST_FACING_OFFSET;
-    innerHeld.add(templateHeld.clone(true));
-    const stashHeld = stashProceduralChildren(figNode);
-    figNode.add(innerHeld);
-    const discHeld = makeShadowDisc(0.42);
-    figNode.add(discHeld);
-    figNode.userData.procFig = stashHeld;
-    figNode.userData.glbInner = innerHeld;
-    figNode.userData.glbShadow = discHeld;
-    figNode.userData.figIsGlb = true;
-    if (figNode.userData.seated) innerHeld.position.y = -0.55;
-    figNode.figIsGlb = true;
-    return true;
-  } catch (swallowed) { return false; } }
-function handCastTemplate(assetKey, wrapNode) {
-  castModelMap.set(assetKey, wrapNode);
-  const waiterHeld = castWaitingMap.get(assetKey);
-  if (waiterHeld) { waiterHeld.forEach((figNode) => attemptCastSwap(figNode, assetKey)); waiterHeld.clear(); } }
-function beginCastLoad(assetKey) {
-  if (castBegunSet.has(assetKey)) return;
-  castBegunSet.add(assetKey);
-  try {
-    loadHeroAsset(assetKey).then((modelNode) => {
-      try {
-        if (!modelNode) return;
-        handCastTemplate(assetKey, modelNode);
-      } catch (swallowed) { /* the procedural fallback stays in place */ }
-    }).catch(() => { /* the procedural fallback stays in place */ });
-  } catch (swallowed) { /* the procedural fallback stays in place */ } }
-export function applyCastFigureOverride(figNode, castKey) {
-  try {
-    if (!figNode || !castKey) return false;
-    const assetKey = CAST_ASSET_MAP[castKey];
-    if (!assetKey) return false;
-    figNode.userData.castKey = castKey;
-    if (figNode.userData.figIsGlb) return true;
-    beginCastLoad(assetKey);
-    if (attemptCastSwap(figNode, assetKey)) return true;
-    if (!castWaitingMap.has(assetKey)) castWaitingMap.set(assetKey, new Set());
-    castWaitingMap.get(assetKey).add(figNode);
-    return true;
-  } catch (swallowed) { return false; } }
-// Texture noise stays deterministic through a tiny local generator
-function seededNoise(seedHeld) {
-  let cellHeld = ((seedHeld * 7919) + 13);
-  const nextUnit = () => { cellHeld = ((cellHeld * 16807) % 2147483647); return ((cellHeld & 0xffff) / 0xffff); };
-  return nextUnit; }
-function toCssHex(colourHeld) {
-  const hexBody = colourHeld.toString(16).padStart(6, '0');
-  return ('#' + hexBody); }
-function toCssHexScaled(colourHeld, scaleHeld) {
-  const colourTmp = new THREE.Color(colourHeld);
-  colourTmp.multiplyScalar(scaleHeld);
-  return ('#' + colourTmp.getHexString()); }
+    heroRec.fig.add(innerGrp);
+    const discNode = buildShadowDisc(0.42);
+    heroRec.fig.add(discNode);
+    heroRec.glbInner = innerGrp;
+    heroRec.glbShadow = discNode;
+    heroRec.visual = innerGrp;
+    heroRec.figIsGlb = true; return true;
+  } catch (skip) { return false; }
+};
 
-// The clothing canvas texture
-// The front design centres on a quarter of the wrap with the
-// plain back at three quarters, while lathe and cylinder
-// mapping wraps the circumference with the seam at the back
-// by default, so turning a part half a turn brings the front
-// around to face forward
-function fleckDark(pen, nextNoise, noiseSrc) {
-  let speckPos = 0;
-  while (speckPos < 1400) { pen.fillStyle = `rgba(0,0,0,${0.03 + 0.05 * nextNoise()})`; pen.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 2, 1); speckPos++; } }
-function fleckLight(pen, nextNoise, noiseSrc) {
-  let speckPos = 0;
-  while (speckPos < 700) { pen.fillStyle = `rgba(255,255,255,${0.02 + 0.04 * nextNoise()})`; pen.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 2, 1); speckPos++; } }
-function drawPantsFront(ctxHeld, nextNoise, noiseSrc, topHeld, shadeHeld, frontX) {
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.75); ctxHeld.fillRect(0, 0, 256, 256);
-  let speckPos = 0;
-  while (speckPos < 1400) { ctxHeld.fillStyle = `rgba(255,255,255,${0.03 + 0.04 * nextNoise()})`; ctxHeld.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 1, 3); speckPos++; }
-  ctxHeld.fillStyle = shadeHeld; ctxHeld.fillRect(0, 0, 256, 256);
-  ctxHeld.lineWidth = 2; ctxHeld.strokeStyle = 'rgba(0,0,0,.45)';
-  ctxHeld.beginPath(); ctxHeld.arc((frontX + (-26)), 44, 16, 0.2, 2.4); ctxHeld.stroke();
-  ctxHeld.beginPath(); ctxHeld.arc((frontX + 26), 44, 16, 0.7, 2.9); ctxHeld.stroke();
-  ctxHeld.strokeStyle = 'rgba(255,200,120,.5)'; ctxHeld.beginPath(); ctxHeld.moveTo(frontX, 30); ctxHeld.lineTo(frontX, 120); ctxHeld.stroke();
-  ctxHeld.fillStyle = '#3a2a1a'; ctxHeld.fillRect(0, 0, 256, 22);
-  ctxHeld.fillStyle = '#c0c4c8'; ctxHeld.fillRect((frontX + (-10)), 4, 20, 14); ctxHeld.fillStyle = '#3a2a1a'; ctxHeld.fillRect((frontX + (-5)), 7, 10, 8); }
-function drawJacketFront(ctxHeld, kindHeld, topHeld, trimHeld, frontX) {
-  if (kindHeld === 'leather') { const sheenHeld = ctxHeld.createLinearGradient(0, 0, 256, 256); sheenHeld.addColorStop(0, 'rgba(255,255,255,.16)'); sheenHeld.addColorStop(0.5, 'rgba(255,255,255,0)'); ctxHeld.fillStyle = sheenHeld; ctxHeld.fillRect(0, 0, 256, 256); }
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.7); ctxHeld.fillRect(0, 0, 256, 26);
-  if (trimHeld) { ctxHeld.fillStyle = toCssHex(trimHeld); ctxHeld.fillRect(0, 22, 256, 5); }
-  ctxHeld.lineWidth = 4; ctxHeld.strokeStyle = '#14161a'; ctxHeld.beginPath();
-  if (kindHeld === 'leather') { ctxHeld.moveTo((frontX + (-30)), 26); ctxHeld.lineTo((frontX + 22), 200); } else { ctxHeld.moveTo(frontX, 26); ctxHeld.lineTo(frontX, 240); }
-  ctxHeld.stroke();
-  ctxHeld.lineWidth = 1; ctxHeld.strokeStyle = '#9aa0a6';
-  for (let yPos = 30; yPos < 235; yPos += 7) { const zipShare = ((yPos + (-26)) / 210); const zipX = (kindHeld === 'leather') ? ((frontX + (-30)) + (52 * zipShare)) : frontX; ctxHeld.beginPath(); ctxHeld.moveTo((zipX + (-4)), yPos); ctxHeld.lineTo((zipX + 4), yPos); ctxHeld.stroke(); }
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.82); ctxHeld.fillRect((frontX + (-52)), 84, 34, 16); ctxHeld.fillRect((frontX + 18), 84, 34, 16);
-  ctxHeld.fillStyle = 'rgba(0,0,0,.35)'; ctxHeld.fillRect((frontX + (-52)), 98, 34, 3); ctxHeld.fillRect((frontX + 18), 98, 34, 3);
-  if (trimHeld) { ctxHeld.fillStyle = toCssHex(trimHeld); ctxHeld.fillRect(0, 218, 256, 8); } }
-function drawHoodieFront(ctxHeld, topHeld, frontX) {
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.78); ctxHeld.fillRect(0, 0, 256, 34);
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.85); ctxHeld.fillRect((frontX + (-38)), 176, 76, 52);
-  ctxHeld.strokeStyle = 'rgba(0,0,0,.3)'; ctxHeld.strokeRect((frontX + (-38)), 176, 76, 52);
-  ctxHeld.lineWidth = 3; ctxHeld.strokeStyle = '#f2f2f2';
-  ctxHeld.beginPath(); ctxHeld.moveTo((frontX + (-8)), 36); ctxHeld.lineTo((frontX + (-12)), 66); ctxHeld.stroke();
-  ctxHeld.beginPath(); ctxHeld.moveTo((frontX + 8), 36); ctxHeld.lineTo((frontX + 12), 66); ctxHeld.stroke(); }
-function drawTankFront(ctxHeld) {
-  ctxHeld.fillStyle = 'rgba(0,0,0,.10)'; ctxHeld.beginPath(); ctxHeld.ellipse(20, 128, 26, 90, 0, 0, 6.3); ctxHeld.fill();
-  ctxHeld.beginPath(); ctxHeld.ellipse(108, 128, 26, 90, 0, 0, 6.3); ctxHeld.fill(); }
-function drawOverallsFront(ctxHeld, topHeld, frontX) {
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.88); ctxHeld.fillRect((frontX + (-34)), 60, 68, 90);
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.8); ctxHeld.fillRect((frontX + (-40)), 0, 14, 70); ctxHeld.fillRect((frontX + 26), 0, 14, 70);
-  ctxHeld.fillStyle = '#d8b13c'; ctxHeld.beginPath(); ctxHeld.arc((frontX + (-30)), 66, 5, 0, 6.3); ctxHeld.fill(); ctxHeld.beginPath(); ctxHeld.arc((frontX + 30), 66, 5, 0, 6.3); ctxHeld.fill();
-  ctxHeld.strokeStyle = 'rgba(0,0,0,.3)'; ctxHeld.strokeRect((frontX + (-34)), 60, 68, 90); }
-function drawUniformFront(ctxHeld, trimHeld, frontX) {
-  ctxHeld.strokeStyle = '#c8ccd2'; ctxHeld.lineWidth = 2; ctxHeld.beginPath(); ctxHeld.moveTo(frontX, 30); ctxHeld.lineTo(frontX, 240); ctxHeld.stroke();
-  ctxHeld.fillStyle = '#e8e8e8'; for (let yPos = 44; yPos < 230; yPos += 26) { ctxHeld.beginPath(); ctxHeld.arc(frontX, yPos, 3.4, 0, 6.3); ctxHeld.fill(); }
-  ctxHeld.fillStyle = toCssHex(trimHeld || 0xc8a028); ctxHeld.beginPath(); ctxHeld.arc((frontX + (-32)), 66, 10, 0, 6.3); ctxHeld.fill();
-  ctxHeld.fillStyle = '#7a5c10'; ctxHeld.beginPath(); ctxHeld.arc((frontX + (-32)), 66, 5, 0, 6.3); ctxHeld.fill();
-  if (trimHeld) { ctxHeld.fillStyle = toCssHex(trimHeld); ctxHeld.fillRect(0, 4, 256, 7); } }
-function drawCargoFront(ctxHeld, topHeld) {
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.85); ctxHeld.fillRect(8, 130, 44, 52); ctxHeld.fillRect(76, 130, 44, 52);
-  ctxHeld.strokeStyle = 'rgba(0,0,0,.4)'; ctxHeld.strokeRect(8, 130, 44, 52); ctxHeld.strokeRect(76, 130, 44, 52); ctxHeld.fillStyle = '#3a2a1a'; ctxHeld.fillRect(0, 0, 256, 20); }
-function drawSkirtFront(ctxHeld, topHeld) {
-  ctxHeld.fillStyle = toCssHexScaled(topHeld, 0.9); ctxHeld.fillRect(0, 0, 256, 256);
-  ctxHeld.fillStyle = 'rgba(0,0,0,.2)'; for (let xPos = 0; xPos < 256; xPos += 32) ctxHeld.fillRect(xPos, 0, 3, 256); }
-export function makeClothTexture(kindHeld, topHeld, trimHeld, pantsHeld) {
-  const cvHeld = document.createElement('canvas'); cvHeld.width = cvHeld.height = 256;
-  const pen = cvHeld.getContext('2d');
-  const noiseSrc = seededNoise((kindHeld.length * 131) + (topHeld % 10000));
-  const nextNoise = noiseSrc;
-  pen.fillStyle = toCssHex(topHeld); pen.fillRect(0, 0, 256, 256);
-  fleckDark(pen, nextNoise, noiseSrc);
-  fleckLight(pen, nextNoise, noiseSrc);
-  const shadeHeld = pen.createLinearGradient(0, 0, 256, 0);
-  shadeHeld.addColorStop(0, 'rgba(0,0,0,.28)'); shadeHeld.addColorStop(0.25, 'rgba(255,255,255,.10)');
-  shadeHeld.addColorStop(0.5, 'rgba(0,0,0,.28)'); shadeHeld.addColorStop(0.75, 'rgba(255,255,255,.05)'); shadeHeld.addColorStop(1, 'rgba(0,0,0,.28)');
-  pen.fillStyle = shadeHeld; pen.fillRect(0, 0, 256, 256);
-  const FRONT_X = 64;
-  switch (kindHeld) {
-    case 'jeans': case 'uniform-pants': drawPantsFront(pen, nextNoise, noiseSrc, topHeld, shadeHeld, FRONT_X); break;
-    case 'jacket': case 'leather': drawJacketFront(pen, kindHeld, topHeld, trimHeld, FRONT_X); break;
-    case 'hoodie': drawHoodieFront(pen, topHeld, FRONT_X); break;
-    case 'tank': drawTankFront(pen); break;
-    case 'overalls': drawOverallsFront(pen, topHeld, FRONT_X); break;
-    case 'uniform': drawUniformFront(pen, trimHeld, FRONT_X); break;
-    case 'cargo': drawCargoFront(pen, topHeld); break;
-    case 'skirt': drawSkirtFront(pen, topHeld); break;
+const runHeroLoadRound = (roundsNum) => {
+  try { loadHeroAsset('mc').then(function (modelIn) {
+      try { if (!modelIn) {
+          if (roundsNum > 0) setTimeout(function () { runHeroLoadRound(roundsNum - 1); }, 1500); return;
+        }
+        heroModel = modelIn;
+        for (const waiter of heroWaiters) tryHeroSwap(waiter);
+        heroWaiters.clear();
+      } catch (skip) {}
+    }).catch(function () { if (roundsNum > 0) setTimeout(function () { runHeroLoadRound(roundsNum - 1); }, 1500); });
+  } catch (skip) {}
+};
+
+const startHeroLoad = () => {
+  if (heroLoadBegun) return;
+  heroLoadBegun = true;
+  runHeroLoadRound(3);
+};
+startHeroLoad();
+
+const CAST_YAW_TRIM = 0;
+const CAST_ASSET_TABLE = {};
+CAST_ASSET_TABLE.shun = 'rivalDriver';
+CAST_ASSET_TABLE.cop = 'policeOfficer';
+const castModels = new Map();
+const castStarted = new Set();
+const castWaiters = new Map();
+
+const stashProcChildren = (figIn) => {
+  const stashGrp = new THREE.Group();
+  stashGrp.name = 'cast-proc-visual';
+  for (; figIn.children.length;) stashGrp.add(figIn.children[0]);
+  return stashGrp;
+};
+
+const tryCastSwap = (figIn, assetId) => {
+  try { const tplIn = castModels.get(assetId);
+    if (!figIn || !tplIn || figIn.userData.figIsGlb) return false;
+    const innerGrp = new THREE.Group();
+    innerGrp.name = 'cast-glb-inner';
+    innerGrp.rotation.y = CAST_YAW_TRIM;
+    innerGrp.add(tplIn.clone(true));
+    const stashGrp = stashProcChildren(figIn);
+    figIn.add(innerGrp);
+    const discNode = buildShadowDisc(0.42);
+    figIn.add(discNode);
+    figIn.userData.procFig = stashGrp;
+    figIn.userData.glbInner = innerGrp;
+    figIn.userData.glbShadow = discNode;
+    figIn.userData.figIsGlb = true;
+    if (figIn.userData.seated) innerGrp.position.y = -0.55;
+    figIn.figIsGlb = true; return true;
+  } catch (skip) { return false; }
+};
+
+const deliverCastTemplate = (assetId, wrapIn) => {
+  castModels.set(assetId, wrapIn);
+  const waiterSet = castWaiters.get(assetId);
+  if (waiterSet) {
+    for (const figIn of waiterSet) tryCastSwap(figIn, assetId);
+    waiterSet.clear();
   }
-  const texHeld = new THREE.CanvasTexture(cvHeld); texHeld.colorSpace = THREE.SRGBColorSpace; return texHeld; }
-function makeShoeTexture(colourHeld, stripedHeld) {
-  const cvHeld = document.createElement('canvas'); cvHeld.width = cvHeld.height = 128;
-  const pen = cvHeld.getContext('2d'); pen.fillStyle = toCssHex(colourHeld); pen.fillRect(0, 0, 128, 128);
-  pen.fillStyle = 'rgba(0,0,0,.18)';
-  pen.fillRect(0, 88, 128, 40);
-  if (stripedHeld) { pen.fillStyle = '#ffffff'; pen.save(); pen.translate(64, 54); pen.rotate(-0.5); for (let stripePos = -1; stripePos <= 1; stripePos++) pen.fillRect(((stripePos * 22) + (-5)), -40, 10, 80); pen.restore(); }
-  const texHeld = new THREE.CanvasTexture(cvHeld); texHeld.colorSpace = THREE.SRGBColorSpace; return texHeld; }
-function plainMaterial(colourHeld, roughHeld) { const roughUsed = (roughHeld == null) ? 0.85 : roughHeld; return new THREE.MeshStandardMaterial({ color: colourHeld, roughness: roughUsed }); }
-function makeLimbCapsule(radiusHeld, lengthHeld, materialHeld) { const limbHeld = new THREE.Mesh(new THREE.CapsuleGeometry(radiusHeld, lengthHeld, 4, 10), materialHeld); limbHeld.castShadow = false; return limbHeld; }
+};
 
-function torsoLathePoints(torsoLen, chestHalf) {
-  const ptsHeld = [];
-  ptsHeld.push(new THREE.Vector2(0.115, 0));
-  ptsHeld.push(new THREE.Vector2(0.135, (torsoLen * 0.25)));
-  ptsHeld.push(new THREE.Vector2(chestHalf, (torsoLen * 0.62)));
-  ptsHeld.push(new THREE.Vector2((chestHalf * 0.92), (torsoLen * 0.88)));
-  ptsHeld.push(new THREE.Vector2(0.075, torsoLen));
-  return ptsHeld; }
-function buildFaceFeatures(headGrp, skinMat, hairMat, faceY, headR, fullH) {
-  const eyeMat = plainMaterial(0x1a1210, 0.4);
-  const signsHeld = [-1, 1];
-  for (const signHeld of signsHeld) {
-    const eyeHeld = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), eyeMat); eyeHeld.position.set((signHeld * 0.04 * (fullH / 1.78)), (faceY + 0.012), (headR * 0.92)); headGrp.add(eyeHeld);
-    const browHeld = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), hairMat); browHeld.position.set((signHeld * 0.04 * (fullH / 1.78)), (faceY + 0.038), (headR * 0.94)); browHeld.rotation.z = (signHeld * -0.18); headGrp.add(browHeld);
-    const earHeld = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), skinMat); earHeld.position.set((signHeld * headR * 0.98), faceY, 0); headGrp.add(earHeld); }
-  const noseHeld = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), skinMat); noseHeld.rotation.x = (Math.PI / 2); noseHeld.position.set(0, (faceY + (-0.012)), (headR * 1.0)); headGrp.add(noseHeld);
-  const mouthHeld = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), plainMaterial(0x7a4038, 0.7)); mouthHeld.position.set(0, (faceY + (-0.052)), (headR * 0.93)); headGrp.add(mouthHeld);
-  return signsHeld; }
-function buildCapHair(headGrp, specHeld, faceY, headR) {
-  const domeHeld = new THREE.Mesh(new THREE.SphereGeometry((headR * 1.08), 14, 8, 0, 2 * Math.PI, 0, 1.4), plainMaterial((specHeld.hairColor || 0x24304a), 0.8)); domeHeld.position.y = (faceY + 0.012); headGrp.add(domeHeld);
-  const brimHeld = new THREE.Mesh(new THREE.CylinderGeometry((headR * 1.25), (headR * 1.3), 0.012, 14, 1, false, -0.7, 1.4), plainMaterial((specHeld.hairColor || 0x24304a), 0.8)); brimHeld.position.set(0, (faceY + 0.045), (headR * 0.55)); headGrp.add(brimHeld); }
-function buildStyledHair(headGrp, specHeld, hairMat, faceY, headR, hairKind) {
-  const capGeo = new THREE.SphereGeometry((headR * 1.07), 16, 10, 0, 2 * Math.PI, 0, 1.9);
-  const capHeld = new THREE.Mesh(capGeo, hairMat); capHeld.scale.y = 1.12; capHeld.position.set(0, (faceY + 0.012), -0.008); headGrp.add(capHeld);
-  if (hairKind.includes('topknot')) { const knotHeld = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), hairMat); knotHeld.position.set(0, (faceY + (headR * 1.05)), -0.02); headGrp.add(knotHeld); }
-  if (hairKind.includes('ponytail')) { const tailHeld = makeLimbCapsule(0.032, 0.2, hairMat); tailHeld.position.set(0, (faceY + (-0.08)), ((-headR) + (-0.03))); tailHeld.rotation.x = 0.25; headGrp.add(tailHeld); }
-  if (hairKind.includes('bob')) { const bobHeld = new THREE.Mesh(new THREE.SphereGeometry((headR * 1.14), 14, 10, 0, 2 * Math.PI, 0, 2.4), hairMat); bobHeld.scale.y = 1.25; bobHeld.position.set(0, (faceY + 0.005), -0.006); headGrp.add(bobHeld); } }
-export function makeFigure(specHeld) {
-  const fullH = ((specHeld.h || 1) * 1.78);
-  const buildShare = (specHeld.build || 0.55);
-  const outfitHeld = specHeld.outfit;
-  const skinMat = plainMaterial(specHeld.skin, 0.65);
-  const hairMat = plainMaterial((specHeld.hairColor || 0x1a1a1a), 0.9);
-  const LONG_SLEEVE_KINDS = ['jacket', 'leather', 'hoodie', 'uniform', 'overalls'];
-  const sleevesLong = LONG_SLEEVE_KINDS.includes(outfitHeld.top);
-  const topKind = (outfitHeld.top === 'uniform') ? 'uniform' : outfitHeld.top;
-  const topTex = makeClothTexture(topKind, outfitHeld.topColor, outfitHeld.trim, outfitHeld.pantsColor);
-  const topMat = new THREE.MeshStandardMaterial({ map: topTex, roughness: 0.9 });
-  const pantsKindRaw = (outfitHeld.pants === 'jeans') ? 'jeans' : ((outfitHeld.pants === 'uniform') ? 'jeans' : outfitHeld.pants);
-  const pantsKind = (pantsKindRaw === 'skirt+leggings') ? 'skirt' : pantsKindRaw;
-  const pantsTex = makeClothTexture(pantsKind, outfitHeld.pantsColor, outfitHeld.trim, outfitHeld.pantsColor);
-  const pantsMat = new THREE.MeshStandardMaterial({ map: pantsTex, roughness: 0.95 });
-  const shoeMat = new THREE.MeshStandardMaterial({ map: makeShoeTexture(outfitHeld.shoes, outfitHeld.shoeStripes), roughness: 0.8 });
-  const figHeld = new THREE.Group();
-  const legLen = (fullH * 0.48), torsoLen = (fullH * 0.30), headR = (fullH * 0.065);
-  const hipY = legLen;
-  const pelvisHeld = new THREE.Mesh(new THREE.SphereGeometry((0.145 * ((buildShare * 0.5) + 0.8)), 14, 10), pantsMat);
-  pelvisHeld.scale.set(1, 0.7, 0.85); pelvisHeld.position.y = hipY; figHeld.add(pelvisHeld);
-  if (outfitHeld.pants === 'skirt+leggings') {
-    const skirtHeld = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), pantsMat);
-    skirtHeld.position.y = (hipY + (-0.08)); figHeld.add(skirtHeld); }
-  const torsoGrp = new THREE.Group(); torsoGrp.position.y = hipY; figHeld.add(torsoGrp);
-  const chestHalf = ((buildShare * 0.055) + 0.13);
-  const torsoHeld = new THREE.Mesh(new THREE.LatheGeometry(torsoLathePoints(torsoLen, chestHalf), 16), topMat);
-  torsoHeld.rotation.y = Math.PI; torsoHeld.scale.z = 0.78;
-  torsoGrp.add(torsoHeld);
-  const headGrp = new THREE.Group(); headGrp.position.y = (torsoLen + 0.03); torsoGrp.add(headGrp);
-  const neckHeld = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), skinMat); neckHeld.position.y = 0.01; headGrp.add(neckHeld);
-  const headHeld = new THREE.Mesh(new THREE.SphereGeometry(headR, 18, 14), skinMat);
-  headHeld.scale.y = 1.12; headHeld.position.y = (headR + 0.05); headGrp.add(headHeld);
-  const faceY = (headR + 0.05);
-  const signsHeld = buildFaceFeatures(headGrp, skinMat, hairMat, faceY, headR, fullH);
-  const hairKind = (specHeld.hair || 'buzz');
-  const capWorn = (hairKind === 'cap') || (specHeld.accessory === 'cap') || (specHeld.accessory === 'cap+badge');
-  if (capWorn) buildCapHair(headGrp, specHeld, faceY, headR);
-  else buildStyledHair(headGrp, specHeld, hairMat, faceY, headR, hairKind);
-  function buildArm(signHeld) {
-    const shoulderGrp = new THREE.Group(); shoulderGrp.position.set((signHeld * (chestHalf + 0.03)), (torsoLen + (-0.05)), 0); torsoGrp.add(shoulderGrp);
-    const upperMat = (outfitHeld.top === 'tank') ? skinMat : topMat;
-    const upperHeld = makeLimbCapsule(0.045, 0.17, upperMat); upperHeld.position.y = -0.13; shoulderGrp.add(upperHeld);
-    shoulderGrp.rotation.z = (signHeld * 0.14);
-    const elbowGrp = new THREE.Group(); elbowGrp.position.y = -0.27; shoulderGrp.add(elbowGrp);
-    const foreMat = sleevesLong ? topMat : skinMat;
-    const foreHeld = makeLimbCapsule(0.037, 0.16, foreMat); foreHeld.position.y = -0.115; elbowGrp.add(foreHeld);
-    const handMat = (specHeld.accessory === 'gloves') ? plainMaterial(outfitHeld.topColor, 0.8) : skinMat;
-    const handHeld = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), handMat); handHeld.scale.set(0.8, 1.15, 0.9); handHeld.position.y = -0.26; elbowGrp.add(handHeld);
-    elbowGrp.rotation.x = -0.25;
-    return { shoulder: shoulderGrp, elbow: elbowGrp }; }
-  const armLHeld = buildArm(-1), armRHeld = buildArm(1);
-  function buildLeg(signHeld) {
-    const hipGrp = new THREE.Group(); hipGrp.position.set((signHeld * 0.085), (hipY + (-0.02)), 0); figHeld.add(hipGrp);
-    const thighMat = (outfitHeld.pants === 'skirt+leggings') ? pantsMat : pantsMat;
-    const thighHeld = makeLimbCapsule(0.068, 0.26, thighMat); thighHeld.position.y = (legLen * -0.25); hipGrp.add(thighHeld);
-    const kneeGrp = new THREE.Group(); kneeGrp.position.y = (legLen * -0.5); hipGrp.add(kneeGrp);
-    const shinMat = (outfitHeld.pants === 'skirt+leggings') ? plainMaterial(outfitHeld.pantsColor, 0.9) : pantsMat;
-    const shinHeld = makeLimbCapsule(0.052, 0.26, shinMat); shinHeld.position.y = (legLen * -0.24); kneeGrp.add(shinHeld);
-    const shoeGrp = new THREE.Group(); shoeGrp.position.y = (0.03 + (-(legLen * 0.5))); kneeGrp.add(shoeGrp);
-    const shoeHeld = makeLimbCapsule(0.05, 0.1, shoeMat); shoeHeld.rotation.x = (Math.PI / 2); shoeHeld.scale.set(0.85, 1, 0.6); shoeHeld.position.set(0, -0.02, 0.045); shoeGrp.add(shoeHeld);
-    const soleHeld = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), plainMaterial(0xf5f5f5, 0.7)); soleHeld.position.set(0, -0.055, 0.04); shoeGrp.add(soleHeld);
-    return { hip: hipGrp, knee: kneeGrp }; }
-  const legLHeld = buildLeg(-1), legRHeld = buildLeg(1);
-  if (specHeld.accessory === 'glasses') {
-    const frameMat = plainMaterial(0x14161a, 0.3);
-    signsHeld.forEach((signHeld) => { const lensHeld = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04), new THREE.MeshStandardMaterial({ color: 0x10151c, roughness: 0.1, metalness: 0.6 })); lensHeld.position.set((signHeld * 0.04), (faceY + 0.012), (headR + 0.012)); headGrp.add(lensHeld); const barHeld = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), frameMat); barHeld.position.copy(lensHeld.position); barHeld.position.y += 0.023; headGrp.add(barHeld); }); }
-  if (specHeld.accessory === 'chain') { const chainHeld = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20), new THREE.MeshStandardMaterial({ color: 0xd8b13c, metalness: 0.9, roughness: 0.3 })); chainHeld.position.set(0, (torsoLen + (-0.02)), 0.1); chainHeld.rotation.x = 0.5; torsoGrp.add(chainHeld); }
-  if (specHeld.accessory === 'phone') { const phoneHeld = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), plainMaterial(0x14161c, 0.3)); phoneHeld.position.set(0, -0.27, 0.03); armRHeld.elbow.add(phoneHeld); }
-  if (specHeld.accessory === 'cap+badge') { const badgeHeld = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12), new THREE.MeshStandardMaterial({ color: 0xc8a028, metalness: 0.9, roughness: 0.3 })); badgeHeld.rotation.x = (Math.PI / 2); badgeHeld.position.set(-0.07, (torsoLen * 0.72), (chestHalf * 0.8)); torsoGrp.add(badgeHeld); }
-  const groundShadow = makeShadowDisc(0.42);
-  figHeld.add(groundShadow);
-  figHeld.userData = { legL: legLHeld.hip, legR: legRHeld.hip, kneeL: legLHeld.knee, kneeR: legRHeld.knee, armL: armLHeld.shoulder, armR: armRHeld.shoulder, foreL: armLHeld.elbow, foreR: armRHeld.elbow, headG: headGrp, torsoG: torsoGrp, H: fullH };
-  // Callers pass the cast entry itself, so identity checks can
-  // get the cast key back even where call sites never thread
-  // it through, and a single hook covers rivals, dialogue
-  // staging and seated drivers alike
-  Object.keys(CAST_ASSET_MAP).forEach((castKey) => {
-    if (specHeld === CAST[castKey]) applyCastFigureOverride(figHeld, castKey); });
-  return figHeld; }
+const startCastLoad = (assetId) => {
+  if (castStarted.has(assetId)) return;
+  castStarted.add(assetId);
+  try { loadHeroAsset(assetId).then(function (modelIn) {
+      try { if (modelIn) deliverCastTemplate(assetId, modelIn); } catch (skip) {}
+    }).catch(function () { return undefined; });
+  } catch (skip) {}
+};
 
-function animateLoadedHolder(holderNode, phaseHeld, amountHeld, yawTrim) {
-  const movingHard = (amountHeld > 0.05);
-  if (movingHard) {
-    holderNode.position.y = (Math.abs(Math.sin(phaseHeld)) * 0.045);
-    holderNode.rotation.z = (Math.sin(phaseHeld) * 0.035);
-    holderNode.rotation.x = (Math.min(1, amountHeld) * 0.05);
-  } else {
-    holderNode.position.y = (Math.sin(phaseHeld * 0.35) * 0.008);
-    holderNode.rotation.z = 0; holderNode.rotation.x = 0; }
-  holderNode.rotation.y = yawTrim; }
-export function animateFigure(figNode, phaseHeld, amountHeld) {
-  const rigHeld = figNode.userData; if (!rigHeld) return;
-  if (rigHeld.figIsGlb && rigHeld.glbInner) { animateLoadedHolder(rigHeld.glbInner, phaseHeld, amountHeld, CAST_FACING_OFFSET); return; }
-  if (!rigHeld.legL) return;
-  const swingLate = Math.sin((phaseHeld + Math.PI));
-  const swingEarly = Math.sin(phaseHeld);
-  const swingPairs = [[rigHeld.legL, swingEarly], [rigHeld.legR, swingLate]];
-  for (const [jointNode, swingVal] of swingPairs) { jointNode.rotation.x = ((swingVal * 0.55) * amountHeld); }
-  rigHeld.kneeL.rotation.x = ((Math.max(0, -swingLate) * 0.6) * amountHeld); rigHeld.kneeR.rotation.x = ((Math.max(0, -swingEarly) * 0.6) * amountHeld);
-  rigHeld.armL.rotation.x = ((swingLate * 0.4) * amountHeld); rigHeld.armR.rotation.x = ((swingEarly * 0.4) * amountHeld);
-  rigHeld.foreL.rotation.x = (-0.25 + (-((Math.max(0, swingEarly) * 0.3) * amountHeld))); rigHeld.foreR.rotation.x = (-0.25 + (-((Math.max(0, swingLate) * 0.3) * amountHeld)));
-  const idleLift = (amountHeld < 0.05) ? (Math.sin(phaseHeld * 0.35) * 0.006) : 0;
-  rigHeld.torsoG.position.y = (((rigHeld.H * 0.48) + ((Math.abs(Math.sin(phaseHeld)) * 0.03) * amountHeld)) + idleLift);
-  rigHeld.headG.rotation.x = (Math.sin(phaseHeld * 0.5) * 0.03); }
-export function poseSeated(figNode) {
-  const rigHeld = figNode.userData; if (!rigHeld) return;
-  rigHeld.seated = true;
-  if (rigHeld.figIsGlb && rigHeld.glbInner) { rigHeld.glbInner.position.y = -0.55; return; }
-  if (!rigHeld.legL) return;
-  const hipBendHeld = (0.12 + (-(Math.PI / 2)));
-  const kneeBendHeld = ((Math.PI / 2) + (-0.15));
-  const hipsHeld = [rigHeld.legL, rigHeld.legR];
-  hipsHeld.forEach((jointNode) => { jointNode.rotation.x = hipBendHeld; });
-  const kneesHeld = [rigHeld.kneeL, rigHeld.kneeR];
-  kneesHeld.forEach((jointNode) => { jointNode.rotation.x = kneeBendHeld; });
-  const armsHeld = [rigHeld.armL, rigHeld.armR];
-  armsHeld.forEach((jointNode) => { jointNode.rotation.x = -0.85; });
-  rigHeld.armL.rotation.z = 0.3; rigHeld.armR.rotation.z = -0.3;
-  const foresHeld = [rigHeld.foreL, rigHeld.foreR];
-  foresHeld.forEach((jointNode) => { jointNode.rotation.x = -0.35; });
-  rigHeld.torsoG.position.y = (rigHeld.H * 0.48); }
-export function createPlayer(stateHeld) {
-  beginMcLoad();
-  const outerHeld = new THREE.Group();
-  const procHeld = makeFigure(CAST.ren);
-  outerHeld.add(procHeld);
-  const spawnX = -412.5, spawnZ = 470;
-  outerHeld.position.set(spawnX, groundH(spawnX, spawnZ), spawnZ);
-  outerHeld.rotation.y = Math.PI;
-  stateHeld.scene.add(outerHeld);
-  const heroRec = { fig: outerHeld, procFig: procHeld, visual: procHeld, glbInner: null, glbShadow: null, figIsGlb: false, elapsed: 0, x: spawnX, z: spawnZ, angle: Math.PI, phase: 0, speed: 0, health: 100 };
-  stateHeld.player = heroRec;
-  const swappedHeld = attemptMcSwap(heroRec);
-  if (!swappedHeld) mcWaitingSet.add(heroRec);
-  return heroRec; }
-function eitherKeyDown(keysHeld, codeMain, codeAlt) {
-  return !!(keysHeld[codeMain] || keysHeld[codeAlt]); }
-function readDirection(keysHeld) {
-  let stepX = 0, stepZ = 0;
-  if (eitherKeyDown(keysHeld, 'KeyW', 'ArrowUp')) stepZ += 1;
-  if (eitherKeyDown(keysHeld, 'KeyS', 'ArrowDown')) stepZ -= 1;
-  if (eitherKeyDown(keysHeld, 'KeyA', 'ArrowLeft')) stepX -= 1;
-  if (eitherKeyDown(keysHeld, 'KeyD', 'ArrowRight')) stepX += 1;
-  return { inputX: stepX, inputZ: stepZ }; }
-function resolveColliders(stateHeld, heroRec) {
-  for (const colliderHeld of stateHeld.colliders) {
-    const offX = (heroRec.x + (-colliderHeld.x)), offZ = (heroRec.z + (-colliderHeld.z));
-    const penX = ((colliderHeld.hw + 0.45) + (-Math.abs(offX)));
-    const penZ = ((colliderHeld.hd + 0.45) + (-Math.abs(offZ)));
-    const touchingHeld = (penX > 0) && (penZ > 0);
-    if (!touchingHeld) continue;
-    if (penZ > penX) heroRec.x += (offX >= 0) ? penX : -penX;
-    else heroRec.z += (offZ >= 0) ? penZ : -penZ; } }
-function animateHeroFigure(stateHeld, heroRec, movingHeld) {
+export const applyCastFigureOverride = (figIn, castId) => {
+  try { if (!figIn || !castId) return false;
+    const assetId = CAST_ASSET_TABLE[castId];
+    if (!assetId) return false;
+    figIn.userData.castKey = castId;
+    if (figIn.userData.figIsGlb) return true;
+    startCastLoad(assetId);
+    if (tryCastSwap(figIn, assetId)) return true;
+    if (!castWaiters.has(assetId)) castWaiters.set(assetId, new Set());
+    castWaiters.get(assetId).add(figIn); return true;
+  } catch (skip) { return false; }
+};
+
+const makeNoiseFn = (seedVal) => {
+  let cellVal = seedVal * 7919 + 13;
+  function nextVal() {
+    cellVal = (cellVal * 16807) % 2147483647;
+    return (cellVal & 0xffff) / 0xffff;
+  }
+  return nextVal;
+};
+
+const cssHexOf = (colourIn) => {
+  return `#${colourIn.toString(16).padStart(6, '0')}`;
+};
+
+const cssHexScaledOf = (colourIn, scaleVal) => {
+  const tmpCol = new THREE.Color(colourIn);
+  tmpCol.multiplyScalar(scaleVal);
+  return `#${tmpCol.getHexString()}`;
+};
+
+const fleckDark = (brush, nextNoise, noiseSrc) => {
+  let speckIdx = 0;
+  for (; speckIdx < 1400;) {
+    brush.fillStyle = 'rgba(0,0,0,' + (0.03 + 0.05 * nextNoise()) + ')';
+    brush.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 2, 1);
+    speckIdx++;
+  }
+};
+
+const fleckLight = (brush, nextNoise, noiseSrc) => {
+  let speckIdx = 0;
+  for (; speckIdx < 700;) {
+    brush.fillStyle = 'rgba(255,255,255,' + (0.02 + 0.04 * nextNoise()) + ')';
+    brush.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 2, 1);
+    speckIdx++;
+  }
+};
+
+const drawPantsFront = (brush, nextNoise, noiseSrc, topCol, shadeGrad, frontAt) => {
+  brush.fillStyle = cssHexScaledOf(topCol, 0.75);
+  brush.fillRect(0, 0, 256, 256);
+  let speckIdx = 0;
+  for (; speckIdx < 1400;) {
+    brush.fillStyle = 'rgba(255,255,255,' + (0.03 + 0.04 * nextNoise()) + ')';
+    brush.fillRect(256 * noiseSrc(), 256 * noiseSrc(), 1, 3);
+    speckIdx++;
+  }
+  brush.fillStyle = shadeGrad;
+  brush.fillRect(0, 0, 256, 256);
+  brush.lineWidth = 2;
+  brush.strokeStyle = 'rgba(0,0,0,.45)';
+  brush.beginPath();
+  brush.arc(frontAt - 26, 44, 16, 0.2, 2.4);
+  brush.stroke();
+  brush.beginPath();
+  brush.arc(frontAt + 26, 44, 16, 0.7, 2.9);
+  brush.stroke();
+  brush.strokeStyle = 'rgba(255,200,120,.5)';
+  brush.beginPath();
+  brush.moveTo(frontAt, 30);
+  brush.lineTo(frontAt, 120);
+  brush.stroke();
+  brush.fillStyle = '#3a2a1a';
+  brush.fillRect(0, 0, 256, 22);
+  brush.fillStyle = '#c0c4c8';
+  brush.fillRect(frontAt - 10, 4, 20, 14);
+  brush.fillStyle = '#3a2a1a';
+  brush.fillRect(frontAt - 5, 7, 10, 8);
+};
+
+const drawJacketFront = (brush, kindIn, topCol, trimCol, frontAt) => {
+  if ('leather' === kindIn) {
+    const sheenGrad = brush.createLinearGradient(0, 0, 256, 256);
+    sheenGrad.addColorStop(0, 'rgba(255,255,255,.16)');
+    sheenGrad.addColorStop(0.5, 'rgba(255,255,255,0)');
+    brush.fillStyle = sheenGrad;
+    brush.fillRect(0, 0, 256, 256);
+  }
+  brush.fillStyle = cssHexScaledOf(topCol, 0.7);
+  brush.fillRect(0, 0, 256, 26);
+  if (trimCol) {
+    brush.fillStyle = cssHexOf(trimCol);
+    brush.fillRect(0, 22, 256, 5);
+  }
+  brush.lineWidth = 4;
+  brush.strokeStyle = '#14161a';
+  brush.beginPath();
+  let pathStartX;
+  let pathEndX;
+  let pathEndY;
+  let pathStartY;
+  if ('leather' === kindIn) { pathStartX = frontAt - 30; pathEndX = frontAt + 22; pathEndY = 200; pathStartY = 26; }
+  else { pathStartX = frontAt; pathEndX = frontAt; pathEndY = 240; pathStartY = 26; }
+  brush.moveTo(pathStartX, pathStartY);
+  brush.lineTo(pathEndX, pathEndY);
+  brush.stroke();
+  brush.lineWidth = 1;
+  brush.strokeStyle = '#9aa0a6';
+  let yIdx = 30;
+  while (yIdx < 235) {
+    const zipFrac = (yIdx - 26) / 210;
+    let zipAt;
+    if ('leather' === kindIn) zipAt = frontAt - 30 + 52 * zipFrac; else zipAt = frontAt;
+    brush.beginPath();
+    brush.moveTo(zipAt - 4, yIdx);
+    brush.lineTo(zipAt + 4, yIdx);
+    brush.stroke();
+    yIdx += 7;
+  }
+  brush.fillStyle = cssHexScaledOf(topCol, 0.82);
+  brush.fillRect(frontAt - 52, 84, 34, 16);
+  brush.fillRect(frontAt + 18, 84, 34, 16);
+  brush.fillStyle = 'rgba(0,0,0,.35)';
+  brush.fillRect(frontAt - 52, 98, 34, 3);
+  brush.fillRect(frontAt + 18, 98, 34, 3);
+  if (trimCol) {
+    brush.fillStyle = cssHexOf(trimCol);
+    brush.fillRect(0, 218, 256, 8);
+  }
+};
+
+const drawHoodieFront = (brush, topCol, frontAt) => {
+  brush.fillStyle = cssHexScaledOf(topCol, 0.78);
+  brush.fillRect(0, 0, 256, 34);
+  brush.fillStyle = cssHexScaledOf(topCol, 0.85);
+  brush.fillRect(frontAt - 38, 176, 76, 52);
+  brush.strokeStyle = 'rgba(0,0,0,.3)';
+  brush.strokeRect(frontAt - 38, 176, 76, 52);
+  brush.lineWidth = 3;
+  brush.strokeStyle = '#f2f2f2';
+  brush.beginPath();
+  brush.moveTo(frontAt - 8, 36);
+  brush.lineTo(frontAt - 12, 66);
+  brush.stroke();
+  brush.beginPath();
+  brush.moveTo(frontAt + 8, 36);
+  brush.lineTo(frontAt + 12, 66);
+  brush.stroke();
+};
+
+const drawTankFront = (brush) => {
+  brush.fillStyle = 'rgba(0,0,0,.10)';
+  brush.beginPath();
+  brush.ellipse(20, 128, 26, 90, 0, 0, 6.3);
+  brush.fill();
+  brush.beginPath();
+  brush.ellipse(108, 128, 26, 90, 0, 0, 6.3);
+  brush.fill();
+};
+
+const drawOverallsFront = (brush, topCol, frontAt) => {
+  brush.fillStyle = cssHexScaledOf(topCol, 0.88);
+  brush.fillRect(frontAt - 34, 60, 68, 90);
+  brush.fillStyle = cssHexScaledOf(topCol, 0.8);
+  brush.fillRect(frontAt - 40, 0, 14, 70);
+  brush.fillRect(frontAt + 26, 0, 14, 70);
+  brush.fillStyle = '#d8b13c';
+  brush.beginPath();
+  brush.arc(frontAt - 30, 66, 5, 0, 6.3);
+  brush.fill();
+  brush.beginPath();
+  brush.arc(frontAt + 30, 66, 5, 0, 6.3);
+  brush.fill();
+  brush.strokeStyle = 'rgba(0,0,0,.3)';
+  brush.strokeRect(frontAt - 34, 60, 68, 90);
+};
+
+const drawUniformFront = (brush, trimCol, frontAt) => {
+  brush.strokeStyle = '#c8ccd2';
+  brush.lineWidth = 2;
+  brush.beginPath();
+  brush.moveTo(frontAt, 30);
+  brush.lineTo(frontAt, 240);
+  brush.stroke();
+  brush.fillStyle = '#e8e8e8';
+  let yIdx = 44;
+  while (yIdx < 230) {
+    brush.beginPath();
+    brush.arc(frontAt, yIdx, 3.4, 0, 6.3);
+    brush.fill();
+    yIdx += 26;
+  }
+  brush.fillStyle = cssHexOf(trimCol || 0xc8a028);
+  brush.beginPath();
+  brush.arc(frontAt - 32, 66, 10, 0, 6.3);
+  brush.fill();
+  brush.fillStyle = '#7a5c10';
+  brush.beginPath();
+  brush.arc(frontAt - 32, 66, 5, 0, 6.3);
+  brush.fill();
+  if (trimCol) {
+    brush.fillStyle = cssHexOf(trimCol);
+    brush.fillRect(0, 4, 256, 7);
+  }
+};
+
+const drawCargoFront = (brush, topCol) => {
+  brush.fillStyle = cssHexScaledOf(topCol, 0.85);
+  brush.fillRect(8, 130, 44, 52);
+  brush.fillRect(76, 130, 44, 52);
+  brush.strokeStyle = 'rgba(0,0,0,.4)';
+  brush.strokeRect(8, 130, 44, 52);
+  brush.strokeRect(76, 130, 44, 52);
+  brush.fillStyle = '#3a2a1a';
+  brush.fillRect(0, 0, 256, 20);
+};
+
+const drawSkirtFront = (brush, topCol) => {
+  brush.fillStyle = cssHexScaledOf(topCol, 0.9);
+  brush.fillRect(0, 0, 256, 256);
+  brush.fillStyle = 'rgba(0,0,0,.2)';
+  let xIdx = 0;
+  while (xIdx < 256) { brush.fillRect(xIdx, 0, 3, 256); xIdx += 32; }
+};
+
+export const makeClothTexture = (kindIn, topCol, trimCol, pantsCol) => {
+  const cvNode = document.createElement('canvas');
+  cvNode.width = cvNode.height = 256;
+  const brush = cvNode.getContext('2d');
+  let noiseSrc;
+  let nextNoise;
+  noiseSrc = makeNoiseFn(kindIn.length * 131 + (topCol % 10000)); nextNoise = noiseSrc;
+  brush.fillStyle = cssHexOf(topCol);
+  brush.fillRect(0, 0, 256, 256);
+  fleckDark(brush, nextNoise, noiseSrc);
+  fleckLight(brush, nextNoise, noiseSrc);
+  const shadeGrad = brush.createLinearGradient(0, 0, 256, 0);
+  shadeGrad.addColorStop(0, 'rgba(0,0,0,.28)');
+  shadeGrad.addColorStop(0.25, 'rgba(255,255,255,.10)');
+  shadeGrad.addColorStop(0.5, 'rgba(0,0,0,.28)');
+  shadeGrad.addColorStop(0.75, 'rgba(255,255,255,.05)');
+  shadeGrad.addColorStop(1, 'rgba(0,0,0,.28)');
+  brush.fillStyle = shadeGrad;
+  brush.fillRect(0, 0, 256, 256);
+  const FRONT_AT = 64;
+  if ('jeans' === kindIn || 'uniform-pants' === kindIn) drawPantsFront(brush, nextNoise, noiseSrc, topCol, shadeGrad, FRONT_AT);
+  else if ('jacket' === kindIn || 'leather' === kindIn) drawJacketFront(brush, kindIn, topCol, trimCol, FRONT_AT);
+  else if ('hoodie' === kindIn) drawHoodieFront(brush, topCol, FRONT_AT);
+  else if ('tank' === kindIn) drawTankFront(brush);
+  else if ('overalls' === kindIn) drawOverallsFront(brush, topCol, FRONT_AT);
+  else if ('uniform' === kindIn) drawUniformFront(brush, trimCol, FRONT_AT);
+  else if ('cargo' === kindIn) drawCargoFront(brush, topCol);
+  else if ('skirt' === kindIn) drawSkirtFront(brush, topCol);
+  const texNode = new THREE.CanvasTexture(cvNode);
+  texNode.colorSpace = THREE.SRGBColorSpace;
+  return texNode;
+};
+
+const makeShoeTexture = (colourIn, stripedFlag) => {
+  const cvNode = document.createElement('canvas');
+  cvNode.width = cvNode.height = 128;
+  const brush = cvNode.getContext('2d');
+  brush.fillStyle = cssHexOf(colourIn);
+  brush.fillRect(0, 0, 128, 128);
+  brush.fillStyle = 'rgba(0,0,0,.18)';
+  brush.fillRect(0, 88, 128, 40);
+  if (stripedFlag) {
+    brush.fillStyle = '#ffffff';
+    brush.save();
+    brush.translate(64, 54);
+    brush.rotate(-0.5);
+    let stripeIdx = -1;
+    while (stripeIdx <= 1) { brush.fillRect(stripeIdx * 22 - 5, -40, 10, 80); stripeIdx++; }
+    brush.restore();
+  }
+  const texNode = new THREE.CanvasTexture(cvNode);
+  texNode.colorSpace = THREE.SRGBColorSpace;
+  return texNode;
+};
+
+const plainMaterial = (colourIn, roughIn) => {
+  const matCfg = {};
+  matCfg.color = colourIn; matCfg.roughness = roughIn ?? 0.85;
+  return new THREE.MeshStandardMaterial(matCfg);
+};
+
+const makeLimbCapsule = (radiusVal, lenVal, matIn) => {
+  const limbNode = new THREE.Mesh(new THREE.CapsuleGeometry(radiusVal, lenVal, 4, 10), matIn);
+  limbNode.castShadow = false;
+  return limbNode;
+};
+
+const torsoLathePoints = (torsoLenVal, chestHalfVal) => {
+  const ptArr = [new THREE.Vector2(0.115, 0), new THREE.Vector2(0.135, torsoLenVal * 0.25),
+    new THREE.Vector2(chestHalfVal, torsoLenVal * 0.62), new THREE.Vector2(chestHalfVal * 0.92, torsoLenVal * 0.88),
+    new THREE.Vector2(0.075, torsoLenVal)];
+  return ptArr;
+};
+
+const buildFaceFeatures = (headNode, skinMatIn, hairMatIn, faceYVal, headRVal, fullHVal) => {
+  const eyeMatIn = plainMaterial(0x1a1210, 0.4);
+  const signArr = [-1, 1];
+  signArr.forEach(function (signVal) {
+    const eyeNode = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), eyeMatIn);
+    eyeNode.position.set(signVal * 0.04 * (fullHVal / 1.78), faceYVal + 0.012, headRVal * 0.92);
+    headNode.add(eyeNode);
+    const browNode = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.006, 0.006), hairMatIn);
+    browNode.position.set(signVal * 0.04 * (fullHVal / 1.78), faceYVal + 0.038, headRVal * 0.94);
+    browNode.rotation.z = signVal * -0.18;
+    headNode.add(browNode);
+    const earNode = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), skinMatIn);
+    earNode.position.set(signVal * headRVal * 0.98, faceYVal, 0);
+    headNode.add(earNode);
+  });
+  const noseNode = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.03, 6), skinMatIn);
+  noseNode.rotation.x = Math.PI / 2;
+  noseNode.position.set(0, faceYVal - 0.012, headRVal * 1.0);
+  headNode.add(noseNode);
+  const mouthNode = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.005, 0.004), plainMaterial(0x7a4038, 0.7));
+  mouthNode.position.set(0, faceYVal - 0.052, headRVal * 0.93);
+  headNode.add(mouthNode);
+  return signArr;
+};
+
+const buildCapHair = (headNode, specIn, faceYVal, headRVal) => {
+  const domeNode = new THREE.Mesh(
+    new THREE.SphereGeometry(headRVal * 1.08, 14, 8, 0, 2 * Math.PI, 0, 1.4),
+    plainMaterial(specIn.hairColor || 0x24304a, 0.8)
+  );
+  domeNode.position.y = faceYVal + 0.012;
+  headNode.add(domeNode);
+  const brimNode = new THREE.Mesh(
+    new THREE.CylinderGeometry(headRVal * 1.25, headRVal * 1.3, 0.012, 14, 1, false, -0.7, 1.4),
+    plainMaterial(specIn.hairColor || 0x24304a, 0.8)
+  );
+  brimNode.position.set(0, faceYVal + 0.045, headRVal * 0.55);
+  headNode.add(brimNode);
+};
+
+const buildStyledHair = (headNode, specIn, hairMatIn, faceYVal, headRVal, hairStyle) => {
+  const capNode = new THREE.Mesh(new THREE.SphereGeometry(headRVal * 1.07, 16, 10, 0, 2 * Math.PI, 0, 1.9), hairMatIn);
+  capNode.scale.y = 1.12;
+  capNode.position.set(0, faceYVal + 0.012, -0.008);
+  headNode.add(capNode);
+  if (hairStyle.includes('topknot')) {
+    const knotNode = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 8), hairMatIn);
+    knotNode.position.set(0, faceYVal + headRVal * 1.05, -0.02);
+    headNode.add(knotNode);
+  }
+  if (hairStyle.includes('ponytail')) {
+    const tailNode = makeLimbCapsule(0.032, 0.2, hairMatIn);
+    tailNode.position.set(0, faceYVal - 0.08, -headRVal - 0.03);
+    tailNode.rotation.x = 0.25;
+    headNode.add(tailNode);
+  }
+  if (hairStyle.includes('bob')) {
+    const bobNode = new THREE.Mesh(new THREE.SphereGeometry(headRVal * 1.14, 14, 10, 0, 2 * Math.PI, 0, 2.4), hairMatIn);
+    bobNode.scale.y = 1.25;
+    bobNode.position.set(0, faceYVal + 0.005, -0.006);
+    headNode.add(bobNode);
+  }
+};
+
+export const makeFigure = (specIn) => {
+  const fullHVal = (specIn.h || 1) * 1.78;
+  const buildFrac = specIn.build || 0.55;
+  const outfitRec = specIn.outfit;
+  let skinMatIn;
+  let hairMatIn;
+  skinMatIn = plainMaterial(specIn.skin, 0.65);
+  hairMatIn = plainMaterial(specIn.hairColor || 0x1a1a1a, 0.9);
+  const LONG_SLEEVE_LIST = [];
+  LONG_SLEEVE_LIST.push('jacket'); LONG_SLEEVE_LIST.push('leather'); LONG_SLEEVE_LIST.push('hoodie');
+  LONG_SLEEVE_LIST.push('uniform'); LONG_SLEEVE_LIST.push('overalls');
+  const longSleeved = LONG_SLEEVE_LIST.includes(outfitRec.top);
+  let topKindVal;
+  if ('uniform' === outfitRec.top) topKindVal = 'uniform'; else topKindVal = outfitRec.top;
+  const topTexIn = makeClothTexture(topKindVal, outfitRec.topColor, outfitRec.trim, outfitRec.pantsColor);
+  const topMatCfg = {};
+  topMatCfg.map = topTexIn; topMatCfg.roughness = 0.9;
+  const topMatIn = new THREE.MeshStandardMaterial(topMatCfg);
+  let pantsKindBase;
+  if ('jeans' === outfitRec.pants) pantsKindBase = 'jeans';
+  else if ('uniform' === outfitRec.pants) pantsKindBase = 'jeans';
+  else pantsKindBase = outfitRec.pants;
+  let pantsKindVal;
+  if ('skirt+leggings' === pantsKindBase) pantsKindVal = 'skirt'; else pantsKindVal = pantsKindBase;
+  const pantsTexIn = makeClothTexture(pantsKindVal, outfitRec.pantsColor, outfitRec.trim, outfitRec.pantsColor);
+  const pantsMatCfg = {};
+  pantsMatCfg.map = pantsTexIn; pantsMatCfg.roughness = 0.95;
+  const pantsMatIn = new THREE.MeshStandardMaterial(pantsMatCfg);
+  const shoeMatCfg = {};
+  shoeMatCfg.map = makeShoeTexture(outfitRec.shoes, outfitRec.shoeStripes); shoeMatCfg.roughness = 0.8;
+  const shoeMatIn = new THREE.MeshStandardMaterial(shoeMatCfg);
+  const figNode = new THREE.Group();
+  const legLenVal = fullHVal * 0.48;
+  const torsoLenVal = fullHVal * 0.30;
+  const headRVal = fullHVal * 0.065;
+  const hipYVal = legLenVal;
+  const pelvisNode = new THREE.Mesh(new THREE.SphereGeometry(0.145 * (buildFrac * 0.5 + 0.8), 14, 10), pantsMatIn);
+  pelvisNode.scale.set(1, 0.7, 0.85);
+  pelvisNode.position.y = hipYVal;
+  figNode.add(pelvisNode);
+  if ('skirt+leggings' === outfitRec.pants) {
+    const skirtNode = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.26, 0.24, 14, 1, true), pantsMatIn);
+    skirtNode.position.y = hipYVal - 0.08;
+    figNode.add(skirtNode);
+  }
+  const torsoNode = new THREE.Group();
+  torsoNode.position.y = hipYVal;
+  figNode.add(torsoNode);
+  const chestHalfVal = buildFrac * 0.055 + 0.13;
+  const torsoMesh = new THREE.Mesh(new THREE.LatheGeometry(torsoLathePoints(torsoLenVal, chestHalfVal), 16), topMatIn);
+  torsoMesh.rotation.y = Math.PI;
+  torsoMesh.scale.z = 0.78;
+  torsoNode.add(torsoMesh);
+  const headNode = new THREE.Group();
+  headNode.position.y = torsoLenVal + 0.03;
+  torsoNode.add(headNode);
+  const neckNode = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.07, 10), skinMatIn);
+  neckNode.position.y = 0.01;
+  headNode.add(neckNode);
+  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(headRVal, 18, 14), skinMatIn);
+  headMesh.scale.y = 1.12;
+  headMesh.position.y = headRVal + 0.05;
+  headNode.add(headMesh);
+  const faceYVal = headRVal + 0.05;
+  const signArr = buildFaceFeatures(headNode, skinMatIn, hairMatIn, faceYVal, headRVal, fullHVal);
+  const hairStyle = specIn.hair || 'buzz';
+  const capFlag = 'cap' === hairStyle || 'cap' === specIn.accessory || 'cap+badge' === specIn.accessory;
+  if (capFlag) buildCapHair(headNode, specIn, faceYVal, headRVal);
+  else buildStyledHair(headNode, specIn, hairMatIn, faceYVal, headRVal, hairStyle);
+
+  const buildArm = (signVal) => {
+    const shoulderNode = new THREE.Group();
+    shoulderNode.position.set(signVal * (chestHalfVal + 0.03), torsoLenVal - 0.05, 0);
+    torsoNode.add(shoulderNode);
+    let upperMatIn;
+    if ('tank' === outfitRec.top) upperMatIn = skinMatIn; else upperMatIn = topMatIn;
+    const upperNode = makeLimbCapsule(0.045, 0.17, upperMatIn);
+    upperNode.position.y = -0.13;
+    shoulderNode.add(upperNode);
+    shoulderNode.rotation.z = signVal * 0.14;
+    const elbowNode = new THREE.Group();
+    elbowNode.position.y = -0.27;
+    shoulderNode.add(elbowNode);
+    let foreMatIn;
+    if (longSleeved) foreMatIn = topMatIn; else foreMatIn = skinMatIn;
+    const foreNode = makeLimbCapsule(0.037, 0.16, foreMatIn);
+    foreNode.position.y = -0.115;
+    elbowNode.add(foreNode);
+    let handMatIn;
+    if ('gloves' === specIn.accessory) handMatIn = plainMaterial(outfitRec.topColor, 0.8); else handMatIn = skinMatIn;
+    const handNode = new THREE.Mesh(new THREE.SphereGeometry(0.042, 10, 8), handMatIn);
+    handNode.scale.set(0.8, 1.15, 0.9);
+    handNode.position.y = -0.26;
+    elbowNode.add(handNode);
+    elbowNode.rotation.x = -0.25;
+    const armOut = {};
+    armOut.shoulder = shoulderNode; armOut.elbow = elbowNode;
+    return armOut;
+  };
+  let armLft;
+  let armRgt;
+  armLft = buildArm(-1); armRgt = buildArm(1);
+
+  const buildLeg = (signVal) => {
+    const hipNode = new THREE.Group();
+    hipNode.position.set(signVal * 0.085, hipYVal - 0.02, 0);
+    figNode.add(hipNode);
+    let thighMatIn;
+    if ('skirt+leggings' === outfitRec.pants) thighMatIn = pantsMatIn; else thighMatIn = pantsMatIn;
+    const thighNode = makeLimbCapsule(0.068, 0.26, thighMatIn);
+    thighNode.position.y = legLenVal * -0.25;
+    hipNode.add(thighNode);
+    const kneeNode = new THREE.Group();
+    kneeNode.position.y = legLenVal * -0.5;
+    hipNode.add(kneeNode);
+    let shinMatIn;
+    if ('skirt+leggings' === outfitRec.pants) shinMatIn = plainMaterial(outfitRec.pantsColor, 0.9); else shinMatIn = pantsMatIn;
+    const shinNode = makeLimbCapsule(0.052, 0.26, shinMatIn);
+    shinNode.position.y = legLenVal * -0.24;
+    kneeNode.add(shinNode);
+    const shoeNode = new THREE.Group();
+    shoeNode.position.y = 0.03 - legLenVal * 0.5;
+    kneeNode.add(shoeNode);
+    const shoeMesh = makeLimbCapsule(0.05, 0.1, shoeMatIn);
+    shoeMesh.rotation.x = Math.PI / 2;
+    shoeMesh.scale.set(0.85, 1, 0.6);
+    shoeMesh.position.set(0, -0.02, 0.045);
+    shoeNode.add(shoeMesh);
+    const soleNode = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.022, 0.24), plainMaterial(0xf5f5f5, 0.7));
+    soleNode.position.set(0, -0.055, 0.04);
+    shoeNode.add(soleNode);
+    const legOut = {};
+    legOut.hip = hipNode; legOut.knee = kneeNode;
+    return legOut;
+  };
+  let legLft;
+  let legRgt;
+  legLft = buildLeg(-1); legRgt = buildLeg(1);
+
+  if ('glasses' === specIn.accessory) {
+    const frameMatIn = plainMaterial(0x14161a, 0.3);
+    for (const signVal of signArr) {
+      const lensMatCfg = {};
+      lensMatCfg.color = 0x10151c; lensMatCfg.roughness = 0.1; lensMatCfg.metalness = 0.6;
+      const lensNode = new THREE.Mesh(new THREE.PlaneGeometry(0.055, 0.04),
+        new THREE.MeshStandardMaterial(lensMatCfg));
+      lensNode.position.set(signVal * 0.04, faceYVal + 0.012, headRVal + 0.012);
+      headNode.add(lensNode);
+      const barNode = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.006, 0.004), frameMatIn);
+      barNode.position.copy(lensNode.position);
+      barNode.position.y += 0.023;
+      headNode.add(barNode);
+    }
+  }
+  if ('chain' === specIn.accessory) {
+    const chainMatCfg = {};
+    chainMatCfg.color = 0xd8b13c; chainMatCfg.metalness = 0.9; chainMatCfg.roughness = 0.3;
+    const chainNode = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.008, 6, 20),
+      new THREE.MeshStandardMaterial(chainMatCfg));
+    chainNode.position.set(0, torsoLenVal - 0.02, 0.1);
+    chainNode.rotation.x = 0.5;
+    torsoNode.add(chainNode);
+  }
+  if ('phone' === specIn.accessory) {
+    const phoneNode = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.07, 0.008), plainMaterial(0x14161c, 0.3));
+    phoneNode.position.set(0, -0.27, 0.03);
+    armRgt.elbow.add(phoneNode);
+  }
+  if ('cap+badge' === specIn.accessory) {
+    const badgeMatCfg = {};
+    badgeMatCfg.color = 0xc8a028; badgeMatCfg.metalness = 0.9; badgeMatCfg.roughness = 0.3;
+    const badgeNode = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.006, 12),
+      new THREE.MeshStandardMaterial(badgeMatCfg));
+    badgeNode.rotation.x = Math.PI / 2;
+    badgeNode.position.set(-0.07, torsoLenVal * 0.72, chestHalfVal * 0.8);
+    torsoNode.add(badgeNode);
+  }
+  figNode.add(buildShadowDisc(0.42));
+  figNode.userData = {};
+  figNode.userData.legL = legLft.hip; figNode.userData.legR = legRgt.hip;
+  figNode.userData.kneeL = legLft.knee; figNode.userData.kneeR = legRgt.knee;
+  figNode.userData.armL = armLft.shoulder; figNode.userData.armR = armRgt.shoulder;
+  figNode.userData.foreL = armLft.elbow; figNode.userData.foreR = armRgt.elbow;
+  figNode.userData.headG = headNode; figNode.userData.torsoG = torsoNode; figNode.userData.H = fullHVal;
+  for (const castId of Object.keys(CAST_ASSET_TABLE)) {
+    if (specIn === CAST[castId]) applyCastFigureOverride(figNode, castId);
+  }
+  return figNode;
+};
+
+const animateLoadedHolder = (holderIn, phaseIn, amtIn, yawTrimIn) => {
+  const loadedMoving = amtIn > 0.05;
+  holderIn.position.y = loadedMoving ? Math.abs(Math.sin(phaseIn)) * 0.045 : Math.sin(phaseIn * 0.35) * 0.008;
+  holderIn.rotation.z = loadedMoving ? Math.sin(phaseIn) * 0.035 : 0;
+  holderIn.rotation.x = loadedMoving ? Math.min(1, amtIn) * 0.05 : 0;
+  holderIn.rotation.y = yawTrimIn;
+};
+
+export const animateFigure = (figIn, phaseIn, amtIn) => {
+  const rigData = figIn.userData;
+  if (!rigData) return;
+  if (rigData.figIsGlb && rigData.glbInner) {
+    animateLoadedHolder(rigData.glbInner, phaseIn, amtIn, CAST_YAW_TRIM);
+    return;
+  }
+  if (!rigData.legL) return;
+  const swingB = Math.sin(phaseIn + Math.PI);
+  const swingA = Math.sin(phaseIn);
+  const swingArr = [[rigData.legL, swingA], [rigData.legR, swingB]];
+  swingArr.forEach(function ([jointIn, swingAmt]) {
+    jointIn.rotation.x = swingAmt * 0.55 * amtIn;
+  });
+  rigData.kneeL.rotation.x = Math.max(0, -swingB) * 0.6 * amtIn;
+  rigData.kneeR.rotation.x = Math.max(0, -swingA) * 0.6 * amtIn;
+  rigData.armL.rotation.x = swingB * 0.4 * amtIn;
+  rigData.armR.rotation.x = swingA * 0.4 * amtIn;
+  rigData.foreL.rotation.x = -0.25 - Math.max(0, swingA) * 0.3 * amtIn;
+  rigData.foreR.rotation.x = -0.25 - Math.max(0, swingB) * 0.3 * amtIn;
+  let idleLiftVal;
+  if (0.05 > amtIn) idleLiftVal = Math.sin(phaseIn * 0.35) * 0.006; else idleLiftVal = 0;
+  rigData.torsoG.position.y = rigData.H * 0.48 + Math.abs(Math.sin(phaseIn)) * 0.03 * amtIn + idleLiftVal;
+  rigData.headG.rotation.x = Math.sin(phaseIn * 0.5) * 0.03;
+};
+
+export const poseSeated = (figIn) => {
+  const rigData = figIn.userData;
+  if (!rigData) return;
+  rigData.seated = true;
+  if (rigData.figIsGlb && rigData.glbInner) {
+    rigData.glbInner.position.y = -0.55;
+    return;
+  }
+  if (!rigData.legL) return;
+  const hipBendVal = 0.12 - Math.PI / 2;
+  const kneeBendVal = Math.PI / 2 - 0.15;
+  for (const jointIn of [rigData.legL, rigData.legR]) jointIn.rotation.x = hipBendVal;
+  for (const jointIn of [rigData.kneeL, rigData.kneeR]) jointIn.rotation.x = kneeBendVal;
+  for (const jointIn of [rigData.armL, rigData.armR]) jointIn.rotation.x = -0.85;
+  rigData.armL.rotation.z = 0.3;
+  rigData.armR.rotation.z = -0.3;
+  for (const jointIn of [rigData.foreL, rigData.foreR]) jointIn.rotation.x = -0.35;
+  rigData.torsoG.position.y = rigData.H * 0.48;
+};
+
+export const createPlayer = (gs) => {
+  startHeroLoad();
+  const outerGrp = new THREE.Group();
+  const procFig = makeFigure(CAST.ren);
+  outerGrp.add(procFig);
+  let spawnXVal;
+  let spawnZVal;
+  spawnXVal = -412.5; spawnZVal = 470;
+  outerGrp.position.set(spawnXVal, groundH(spawnXVal, spawnZVal), spawnZVal);
+  outerGrp.rotation.y = Math.PI;
+  gs.scene.add(outerGrp);
+  const heroRec = {};
+  heroRec.fig = outerGrp; heroRec.procFig = procFig; heroRec.visual = procFig; heroRec.glbInner = null;
+  heroRec.glbShadow = null; heroRec.figIsGlb = false;
+  heroRec.elapsed = 0; heroRec.x = spawnXVal; heroRec.z = spawnZVal; heroRec.angle = Math.PI;
+  heroRec.phase = 0; heroRec.speed = 0; heroRec.health = 100;
+  gs.player = heroRec;
+  if (!tryHeroSwap(heroRec)) heroWaiters.add(heroRec);
+  return heroRec;
+};
+
+const eitherKeyDown = (keyMap, codeA, codeB) => {
+  return !!(keyMap[codeA] || keyMap[codeB]);
+};
+
+const readDirection = (keyMap) => {
+  let stepXVal = 0, stepZVal = 0;
+  if (eitherKeyDown(keyMap, 'KeyW', 'ArrowUp')) stepZVal += 1;
+  if (eitherKeyDown(keyMap, 'KeyS', 'ArrowDown')) stepZVal -= 1;
+  if (eitherKeyDown(keyMap, 'KeyA', 'ArrowLeft')) stepXVal -= 1;
+  if (eitherKeyDown(keyMap, 'KeyD', 'ArrowRight')) stepXVal += 1;
+  const dirOut = {};
+  dirOut.inputX = stepXVal; dirOut.inputZ = stepZVal;
+  return dirOut;
+};
+
+const resolveColliders = (gs, heroRec) => {
+  gs.colliders.forEach(function (boxHit) {
+    const offX = heroRec.x - boxHit.x, offZ = heroRec.z - boxHit.z;
+    const penXVal = boxHit.hw + 0.45 - Math.abs(offX);
+    const penZVal = boxHit.hd + 0.45 - Math.abs(offZ);
+    if (!(penXVal > 0 && penZVal > 0)) return;
+    let pushX;
+    let pushZ;
+    if (0 <= offX) pushX = penXVal; else pushX = -penXVal;
+    if (0 <= offZ) pushZ = penZVal; else pushZ = -penZVal;
+    penZVal > penXVal ? (heroRec.x = heroRec.x + pushX) : (heroRec.z = heroRec.z + pushZ);
+  });
+};
+
+const animateHeroFigure = (gs, heroRec, movingFlag) => {
   if (heroRec.figIsGlb && heroRec.glbInner) {
-    const holderNode = heroRec.glbInner;
-    const paceShare = Math.min(1, (Math.abs(heroRec.speed || 0) / 9));
-    if (movingHeld) {
-      holderNode.position.y = (Math.abs(Math.sin(heroRec.phase)) * 0.045);
-      holderNode.rotation.z = (Math.sin(heroRec.phase) * 0.035);
-      holderNode.rotation.x = (paceShare * 0.05);
-    } else {
-      holderNode.position.y = (Math.sin(heroRec.elapsed * 1.6) * 0.008);
-      holderNode.rotation.z = 0; holderNode.rotation.x = 0; }
-    holderNode.rotation.y = MC_FACING_OFFSET;
-  } else animateFigure((heroRec.procFig || heroRec.fig), heroRec.phase, movingHeld ? 1 : 0.04); }
-function moveHeroStep(stateHeld, heroRec, dirHeld, dtHeld) {
-  const sprintHeld = (stateHeld.keys['ShiftLeft'] || stateHeld.keys['ShiftRight']);
-  const paceHeld = sprintHeld ? 9 : 6;
-  const camYawHeld = (stateHeld.camYaw || 0);
-  const worldX = ((Math.cos(camYawHeld) * dirHeld.inputX) + (Math.sin(camYawHeld) * dirHeld.inputZ));
-  const worldZ = ((Math.cos(camYawHeld) * dirHeld.inputZ) + (-(Math.sin(camYawHeld) * dirHeld.inputX)));
-  const dirLen = (Math.hypot(worldX, worldZ) || 1);
-  heroRec.x += (((worldX / dirLen) * paceHeld) * dtHeld);
-  heroRec.z += (((worldZ / dirLen) * paceHeld) * dtHeld);
-  heroRec.angle = Math.atan2((worldX / dirLen), (worldZ / dirLen));
-  heroRec.phase += ((dtHeld * paceHeld) * 1.9);
-  heroRec.speed = paceHeld;
-  return paceHeld; }
-export function updatePlayer(stateHeld, dtHeld) {
-  const heroRec = stateHeld.player;
-  const playerGone = !heroRec || !heroRec.fig.visible;
-  if (playerGone) return;
-  const dirHeld = readDirection(stateHeld.keys);
-  const movingHeld = !(dirHeld.inputX === 0 && dirHeld.inputZ === 0);
-  if (movingHeld) moveHeroStep(stateHeld, heroRec, dirHeld, dtHeld);
-  else heroRec.speed = 0;
-  resolveColliders(stateHeld, heroRec);
+    const holderIn = heroRec.glbInner;
+    const paceFrac = Math.min(1, Math.abs(heroRec.speed || 0) / 9);
+    holderIn.position.y = movingFlag ? Math.abs(Math.sin(heroRec.phase)) * 0.045 : Math.sin(heroRec.elapsed * 1.6) * 0.008;
+    holderIn.rotation.z = movingFlag ? Math.sin(heroRec.phase) * 0.035 : 0;
+    holderIn.rotation.x = movingFlag ? paceFrac * 0.05 : 0;
+    holderIn.rotation.y = HERO_YAW_TRIM;
+  } else {
+    let amtVal;
+    if (movingFlag) amtVal = 1; else amtVal = 0.04;
+    animateFigure(heroRec.procFig || heroRec.fig, heroRec.phase, amtVal);
+  }
+};
+
+const moveHeroStep = (gs, heroRec, dirIn, step) => {
+  const sprintFlag = gs.keys['ShiftLeft'] || gs.keys['ShiftRight'];
+  let paceVal;
+  if (sprintFlag) paceVal = 9; else paceVal = 6;
+  const camYawVal = gs.camYaw || 0;
+  const worldXVal = Math.cos(camYawVal) * dirIn.inputX + Math.sin(camYawVal) * dirIn.inputZ;
+  const worldZVal = Math.cos(camYawVal) * dirIn.inputZ - Math.sin(camYawVal) * dirIn.inputX;
+  const dirLenVal = Math.hypot(worldXVal, worldZVal) || 1;
+  heroRec.x = heroRec.x + worldXVal / dirLenVal * paceVal * step;
+  heroRec.z = heroRec.z + worldZVal / dirLenVal * paceVal * step;
+  heroRec.angle = Math.atan2(worldXVal / dirLenVal, worldZVal / dirLenVal);
+  heroRec.phase = heroRec.phase + step * paceVal * 1.9;
+  heroRec.speed = paceVal;
+  return paceVal;
+};
+
+export const updatePlayer = (gs, step) => {
+  const heroRec = gs.player;
+  if (!heroRec || !heroRec.fig.visible) return;
+  const dirIn = readDirection(gs.keys);
+  const movingFlag = !(0 === dirIn.inputX && 0 === dirIn.inputZ);
+  movingFlag ? moveHeroStep(gs, heroRec, dirIn, step) : (heroRec.speed = 0);
+  resolveColliders(gs, heroRec);
   heroRec.x = Math.max(-655, Math.min(655, heroRec.x));
   heroRec.z = Math.max(-655, Math.min(655, heroRec.z));
   heroRec.fig.position.set(heroRec.x, groundH(heroRec.x, heroRec.z), heroRec.z);
   heroRec.fig.rotation.y = heroRec.angle;
-  heroRec.elapsed = ((heroRec.elapsed || 0) + dtHeld);
-  animateHeroFigure(stateHeld, heroRec, movingHeld); }
+  heroRec.elapsed = (heroRec.elapsed || 0) + step;
+  animateHeroFigure(gs, heroRec, movingFlag);
+};

@@ -1,33 +1,36 @@
-// One shared generator feeds every random draw in the game
-// The running state sits in a single module level word
-let stateWord = 1;
-export function srand(incomingSeed) {
-  const maskedSeed = incomingSeed >>> 0;
-  stateWord = maskedSeed || 1; }
-function foldProducts(firstProduct) {
-  const secondProduct = Math.imul(firstProduct | 61, firstProduct ^ (firstProduct >>> 7));
-  return (firstProduct + secondProduct) ^ firstProduct; }
-function scrambleWord(inputWord) {
-  const firstProduct = Math.imul(inputWord | 1, inputWord ^ (inputWord >>> 15));
-  const foldedWord = foldProducts(firstProduct);
-  const cleanedWord = (foldedWord ^ (foldedWord >>> 14)) >>> 0;
-  return cleanedWord; }
-export function rnd() {
-  stateWord = ((stateWord | 0) + 0x6D2B79F5) | 0;
-  return scrambleWord(stateWord) / 4294967296; }
-function scaledDraw(lowEdge, highEdge, wantWhole) {
-  const plainReach = highEdge + (-lowEdge);
-  const reachUsed = wantWhole ? (plainReach + 1) : plainReach;
-  const placedValue = lowEdge + (rnd() * reachUsed);
-  return wantWhole ? Math.floor(placedValue) : placedValue; }
-export function rr(lowEdge, highEdge) {
-  return scaledDraw(lowEdge, highEdge, false); }
-export function ri(lowEdge, highEdge) {
-  return scaledDraw(lowEdge, highEdge, true); }
-export function pick(poolIn) {
-  const poolReady = poolIn && (poolIn.length > 0);
-  if (!poolReady) return undefined;
-  const chosenIndex = Math.floor(rnd() * poolIn.length) % poolIn.length;
-  return poolIn[chosenIndex]; }
-export function chance(thresholdIn) {
-  return thresholdIn > rnd(); }
+// Every random draw the game makes feeds through one generator,
+// and its whole state fits in a single module level word.
+let seedCell;
+seedCell = 1;
+export const srand = (seedGiven) => { seedCell = (seedGiven >>> 0) || 1; };
+const scrambleStep = (prodGiven) => {
+  let foldMate;
+  foldMate = Math.imul(prodGiven | 61, prodGiven ^ (prodGiven >>> 7));
+  let foldedSum;
+  foldedSum = prodGiven + foldMate;
+  return foldedSum ^ prodGiven; };
+const digestWord = (wordGiven) => {
+  let leadProd;
+  leadProd = Math.imul(wordGiven | 1, wordGiven ^ (wordGiven >>> 15));
+  let stirred;
+  stirred = scrambleStep(leadProd);
+  return (stirred ^ (stirred >>> 14)) >>> 0; };
+export const rnd = () => { let nextCell = (seedCell | 0);
+  nextCell += 0x6D2B79F5;
+  seedCell = nextCell | 0;
+  return digestWord(seedCell) / 4294967296; };
+const spanDraw = (loGiven, hiGiven, wholeFlag) => {
+  let rawSpan;
+  rawSpan = hiGiven - loGiven;
+  let spanUsed;
+  if (wholeFlag) spanUsed = rawSpan + 1; else spanUsed = rawSpan;
+  let rolled;
+  rolled = loGiven + (rnd() * spanUsed);
+  if (wholeFlag) return Math.floor(rolled); else return rolled; };
+export const rr = (loGiven, hiGiven) => spanDraw(loGiven, hiGiven, false);
+export const ri = (loGiven, hiGiven) => spanDraw(loGiven, hiGiven, true);
+export const pick = (listGiven) => {
+  const listEmpty = !listGiven || !(listGiven.length > 0);
+  const slotPicked = listEmpty ? undefined : Math.floor(rnd() * listGiven.length) % listGiven.length;
+  return listEmpty ? undefined : listGiven[slotPicked]; };
+export const chance = (capGiven) => rnd() < capGiven;

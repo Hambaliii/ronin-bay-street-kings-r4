@@ -1,580 +1,949 @@
+// Ronin Bay on foot — wanderers, chat rings, crossings, and the occasional stampede.
 import * as THREE from 'three';
-import { chance, pick, ri, rr } from './random.js';
+import { rr, ri, pick, chance } from './random.js';
 import { groundH } from './world.js';
-import { animateFigure, makeFigure } from './player.js';
+import { makeFigure, animateFigure } from './player.js';
 import { loadHeroAsset } from './assets.js';
-// All of Ronin Bay's foot traffic is directed from this module:
-// the opening strollers, the gossip circles standing at kerbs,
-// the crossing pedestrians, the extra crowds layered in around
-// busy corners, and the flinch that a horn blast sets off.
-const SKIN_TONES = [0xf0c8a0, 0xe8b48c, 0xc98d64,
-  0xb97a4e, 0x8a5a34];
-const HAIR_CUTS = ['black topknot', 'red ponytail', 'violet bob', 'buzz', 'silver undercut',
-  'slick black', 'cap', 'long', 'bun'];
-const HAIR_TONES = [0x14100e, 0x8c2f1d, 0x6a3fa0, 0x2a2a2e, 0xc9ccd4,
-  0x1a1512, 0x24406e, 0x3a2415, 0x101010];
-const TOP_KINDS = ['tank', 'hoodie', 'jacket'];
-const TOP_TONES = [0xff5c39, 0x2e6fb7, 0x37b268, 0xf2c230, 0xe879ff, 0xeeeeee, 0x22242a,
-  0xff8ab0, 0x57b7ff, 0x8a5a34, 0xffb7d5, 0xa8e6cf, 0xfff0b3];
-const LEG_TONES = [0x2c3e57, 0x3a3f47, 0x5b4632, 0x243024, 0x6e7f52, 0x39424e];
-// Model-backed citizens draw their spawn slot from the table
-// below; one residue class is deliberately left unclaimed, so
-// spawns landing on it keep their procedural figures instead.
-const GLB_YAW = 0;
-const GLB_SLOTS = [{ offset: 0, every: 5, key: 'citizenWoman' },
-  { offset: 1, every: 5, key: 'citizenTeen2' }, { offset: 2, every: 5, key: 'citizenOffice' },
-  { offset: 3, every: 5, key: 'citizenTeen' }];
-const TEEN_PAINTS = [0x3f8f7a, 0xc96f3f, 0xd9b23f, 0x5a6d8a,
-  0x7a9a4f, 0x8a4f7d, 0x9aa0a8, 0x4f6db8];
-// Teen copies are repainted in one flat colour; textured rows
-// never are, which is what the paint list above is for.
-function probeXZShape(carrierArg) {
-  if (!carrierArg) return undefined;
-  const pairOk = Number.isFinite(carrierArg.x) && Number.isFinite(carrierArg.z);
-  if (!pairOk) return undefined;
-  const foundPair = {}; foundPair.x = carrierArg.x; foundPair.z = carrierArg.z;
-  return foundPair; }
-function slotRowFor(spawnIdx) {
-  if (!Number.isFinite(spawnIdx)) return null;
-  let hitRow = null; let rowPos = 0;
-  while (GLB_SLOTS.length > rowPos) { const slotEntry = GLB_SLOTS[rowPos]; rowPos = (1 + rowPos);
-    if (hitRow) continue;
-    if (!slotEntry) continue;
-    const offNum = (slotEntry.offset || 0);
-    const matches = (slotEntry.every > 0) && (offNum === (spawnIdx % slotEntry.every));
-    if (matches) hitRow = slotEntry; }
-  return hitRow; }
-function buildLook() {
-  const cutIdx = ri(0, HAIR_CUTS.length - 1);
-  const cutPair = [HAIR_CUTS[cutIdx], HAIR_TONES[cutIdx]];
-  const kitRec = {}; kitRec.top = pick(TOP_KINDS);
-  kitRec.topColor = pick(TOP_TONES); kitRec.trim = pick(TOP_TONES);
-  kitRec.pants = chance(0.6) ? 'jeans' : 'cargo';
-  kitRec.pantsColor = pick(LEG_TONES);
-  kitRec.shoes = pick([0xffffff, 0x222222, 0xd23b3b, 0x2e6fb7]);
-  const styleRec = {}; styleRec.name = 'Pedestrian';
-  styleRec.skin = pick(SKIN_TONES);
-  styleRec.hair = cutPair.at(0); styleRec.hairColor = cutPair.at(1);
-  styleRec.h = rr(0.9, 1.03); styleRec.build = rr(0.38, 0.7);
-  styleRec.outfit = kitRec;
-  return styleRec; }
-function huntPavement(gmArg, srcX, srcZ, nearCap, farCap) {
-  let triesLeft = 24;
-  while (triesLeft > 0) { triesLeft = (triesLeft - 1);
-    const runsVertical = chance(0.5);
-    const linePick = runsVertical ? pick(gmArg.roadX) : pick(gmArg.roadZ);
-    const sideOff = ((chance(0.5) ? 1 : -1) * -17.2);
-    const alongPick = rr(-640, 640);
-    // Candidate scoring used to sit in a helper of its own; it
-    // is inlined here now, where the candidate itself is built.
-    const tryRec = { vertical: runsVertical, line: linePick, off: sideOff };
-    tryRec.x = runsVertical ? (sideOff + linePick) : alongPick;
-    tryRec.z = runsVertical ? alongPick : (sideOff + linePick);
-    const gapX = (tryRec.x + -srcX); const gapZ = (tryRec.z + -srcZ);
-    tryRec.dist = Math.hypot(gapX, gapZ);
-    const inBand = (tryRec.dist >= nearCap) && (farCap >= tryRec.dist);
-    if (inBand) { const spotOut = {};
-      spotOut.vertical = tryRec.vertical; spotOut.line = tryRec.line;
-      spotOut.off = tryRec.off; spotOut.x = tryRec.x; spotOut.z = tryRec.z;
-      return spotOut; } }
-  const fbSpot = {}; fbSpot.vertical = true;
-  fbSpot.line = pick(gmArg.roadX); fbSpot.off = 17.2;
-  fbSpot.x = (fbSpot.line + 17.2); fbSpot.z = rr(-300, 300);
-  return fbSpot; }
-// Landmark payloads arrive wrapped in assorted shapes, so this
-// scan pokes every plausible carrier and trusts none of them.
-function scanLandmark(markArg) {
-  try { if (!markArg) return null;
-    const carriersList = [markArg, markArg.pos, markArg.position, markArg.at];
-    let probePos = 0;
-    while (carriersList.length > probePos) { const carrierNode = carriersList[probePos]; probePos = (probePos + 1);
-      const hitRec = probeXZShape(carrierNode);
-      if (hitRec !== undefined) return hitRec; } } catch (muteErr) {}
-  return null; }
-function locateMarket(gmArg) {
-  let foundPt = null;
-  try { const marketRec = (gmArg.landmarks || {}).market;
-    if (marketRec) foundPt = scanLandmark(marketRec); } catch (muteErr) {}
-  return foundPt; }
-export function initPeds(game) {
-  game.peds = [];
-  const WAVE_TOTAL = 44;
-  const glbCache = {};
-  function paintTeen(rootArg, paintVal) {
-    rootArg.traverse((meshNode) => {
-      if (!(meshNode && meshNode.isMesh)) return;
-      if (!(meshNode.material && meshNode.material.color)) return;
-      meshNode.material = meshNode.material.clone();
-      meshNode.material.color.setHex(paintVal); }); }
-  function armShadows(rootArg) {
-    rootArg.traverse((meshNode) => {
-      if (meshNode && meshNode.isMesh) meshNode.castShadow = true; }); }
-  function graftModel(nomad) {
-    try { if (!nomad || nomad.figIsGlb || !nomad.citizenKey) return;
-      const tplNode = glbCache[nomad.citizenKey];
-      if (!tplNode) return;
-      const wrapNode = new THREE.Group(); wrapNode.rotation.y = GLB_YAW;
-      const cloneNode = tplNode.clone(true);
-      if ('citizenTeen' === nomad.citizenKey) { const paintSel = TEEN_PAINTS[(nomad.idx % TEEN_PAINTS.length)];
-        paintTeen(cloneNode, paintSel); }
-      armShadows(wrapNode); wrapNode.add(cloneNode);
-      if (nomad.visual) nomad.fig.remove(nomad.visual);
-      nomad.fig.add(wrapNode); nomad.visual = wrapNode;
-      nomad.glbInner = wrapNode; nomad.figIsGlb = true; } catch (muteErr) {} }
-  GLB_SLOTS.forEach((slotEntry) => {
-    try { const loadJob = loadHeroAsset(slotEntry.key);
-      if (!loadJob || ('function' !== typeof loadJob.then)) return;
-      loadJob.then((tplNode) => {
-        try { if (!tplNode) return;
-          glbCache[slotEntry.key] = tplNode;
-          game.peds.forEach((nomad) => graftModel(nomad)); } catch (muteErr) {}
-      }).catch(() => {}); } catch (muteErr) {} });
-  function placeOnPavement(nomad, spotIn) {
-    nomad.x = spotIn.x; nomad.z = spotIn.z;
-    nomad.vertical = spotIn.vertical; nomad.line = spotIn.line; nomad.off = spotIn.off;
-    nomad.dir = chance(0.5) ? 1 : -1;
-    const headingPositive = (nomad.dir > 0);
-    if (nomad.vertical) nomad.angle = headingPositive ? 0 : Math.PI;
-    else nomad.angle = headingPositive ? (Math.PI / 2) : (-Math.PI / 2); }
-  function ringThetaAmt(slotNo, ringSize) {
-    const jitterAmt = rr(-0.25, 0.25);
-    const sweepAmt = ((slotNo / ringSize) * Math.PI) * 2;
-    return (jitterAmt + sweepAmt); }
-  function placeInRing(nomad, hubX, hubZ, slotNo, ringSize) {
-    const thetaAmt = ringThetaAmt(slotNo, ringSize);
-    nomad.x = hubX + (Math.sin(thetaAmt) * 1.25);
-    nomad.z = hubZ + (Math.cos(thetaAmt) * 1.25);
-    nomad.chatCx = hubX; nomad.chatCz = hubZ;
-    nomad.chat = true; nomad.idle = true;
-    nomad.angle = Math.atan2((hubX + -nomad.x), (hubZ + -nomad.z)); }
-  function stageCrossing(nomad, cornerX, cornerZ, signX, signZ, snapFlag) {
-    nomad.mode = 'cross'; nomad.crosser = true;
-    const kerbX = (signX * 17.2) + cornerX;
-    const kerbZ = (signZ * 17.2) + cornerZ;
-    if (snapFlag) { nomad.x = kerbX; nomad.z = kerbZ; }
-    const gapAmt = Math.hypot((kerbX + -nomad.x), (kerbZ + -nomad.z));
-    const farFlag = (gapAmt > 2);
-    const routeRec = {}; routeRec.stage = farFlag ? 'toCorner' : 'toCurb';
-    routeRec.cx = cornerX; routeRec.cz = cornerZ;
-    routeRec.sx = signX; routeRec.sz = signZ; routeRec.waitT = 0;
-    routeRec.tx = farFlag ? kerbX : ((signX * 17.2) + cornerX);
-    routeRec.tz = farFlag ? kerbZ : ((signZ * 9) + cornerZ);
-    routeRec.faceAngle = Math.atan2(-signX, 0);
-    nomad.cross = routeRec;
-    nomad.angle = Math.atan2((routeRec.tx + -nomad.x), (routeRec.tz + -nomad.z)); }
-  function resetWalkHere(nomad) {
-    let bestLine = game.roadX[0]; let bestGap = Infinity;
-    game.roadX.forEach((lineVal) => {
-      const gapAmt = Math.abs((nomad.x + -lineVal));
-      if (bestGap > gapAmt) { bestGap = gapAmt; bestLine = lineVal; } });
-    nomad.vertical = true; nomad.line = bestLine;
-    nomad.off = THREE.MathUtils.clamp((nomad.x + -bestLine), -17.2, 17.2);
-    if (!(Math.abs(nomad.off) >= 13)) nomad.off = (17.2 * ((0 > nomad.off) ? -1 : 1));
-    nomad.x = (bestLine + nomad.off);
-    nomad.dir = chance(0.5) ? 1 : -1; nomad.mode = 'walk'; }
-  function bobModel(nomad, bobAmt, swayAmt, leanAmt, phaseAmt) {
-    nomad.glbInner.position.y = Math.abs(Math.sin(phaseAmt)) * bobAmt;
-    nomad.glbInner.rotation.z = Math.sin(phaseAmt) * swayAmt;
-    nomad.glbInner.rotation.x = leanAmt; }
-  function paintWalk(nomad, amtVal) {
-    const modelFlag = !(!(nomad.figIsGlb && nomad.glbInner));
-    if (!modelFlag) { try { animateFigure(nomad.visual, nomad.phase, amtVal); } catch (muteErr) {}
-      return; }
-    try { bobModel(nomad, ((amtVal + amtVal) * 0.04), 0.04, 0.05, nomad.phase); } catch (muteErr) {} }
-  function paintIdle(nomad) {
-    const modelFlag = !(!(nomad.figIsGlb && nomad.glbInner));
-    if (!modelFlag) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), 0.12); } catch (muteErr) {}
-      return; }
-    try { const innerNode = nomad.glbInner;
-      innerNode.position.y = (0.006 * Math.sin((nomad.idx + (nomad.sway * 1.5))));
-      innerNode.rotation.z = (0.01 * Math.sin((nomad.idx + (nomad.sway * 0.9))));
-      innerNode.rotation.x = 0; } catch (muteErr) {} }
-  function seedPedFields(nomad, figNode, idxNo, keyVal) {
-    nomad.fig = null; nomad.visual = figNode;
-    nomad.glbInner = null; nomad.figIsGlb = false;
-    nomad.citizenKey = keyVal; nomad.idx = idxNo;
-    nomad.angle = 0; nomad.x = 0; nomad.z = 0;
-    // The old standalone motion seeder is folded in here: gait
-    // speed, phase and pavement defaults are all planted inline.
-    nomad.speed = rr(1.2, 1.8); nomad.phase = rr(0, 10);
-    nomad.dir = 1; nomad.vertical = true;
-    nomad.line = 0; nomad.off = 17.2; nomad.sway = rr(0, 6);
-    nomad.idle = false; nomad.panicT = 0;
-    nomad.fleeDir = null; nomad.startleT = 0; nomad.fleeT = 0;
-    nomad.chat = false; nomad.mode = 'walk';
-    nomad.follow = null; nomad.scattered = false;
-    nomad.chatGroup = null; nomad.crosser = false;
-    nomad.cross = null; nomad.marketPlaced = false;
-    return nomad; }
-  function buildPedShell(figNode, idxNo, keyVal) {
-    const nomad = seedPedFields({}, figNode, idxNo, keyVal);
-    const shellGrp = new THREE.Group(); shellGrp.add(figNode);
-    nomad.fig = shellGrp;
-    return nomad; }
-  function pairHomes() {
-    const homesOut = [];
-    homesOut.push({ x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 }, { x: -330, z: -330 });
-    homesOut.push({ x: -412.5, z: 412.5 }, { x: 0, z: 0 }, { x: 250, z: 420 }, { x: -480, z: -255 });
-    return homesOut; }
-  function strollHomes() {
-    return [{ x: -330, z: 330 }, { x: 330, z: 330 }, { x: 330, z: -330 }, { x: -330, z: -330 },
-      { x: -412.5, z: 412.5 }, { x: 0, z: 0 }, { x: 250, z: 420 }, { x: -480, z: -255 }]; }
-  function mountPhone(figureArg) {
-    try { const phoneGeo = new THREE.BoxGeometry(0.09, 0.16, 0.02);
-      const phoneMat = new THREE.MeshStandardMaterial({ color: 0x111318, roughness: 0.4, metalness: 0.4, emissive: 0x2a4a6a, emissiveIntensity: 0.7 });
-      const phoneNode = new THREE.Mesh(phoneGeo, phoneMat);
-      phoneNode.position.x = 0.22; phoneNode.position.y = 1.05; phoneNode.position.z = 0.22;
-      figureArg.add(phoneNode); } catch (muteErr) {} }
-  let spawnNo = 0;
-  while (WAVE_TOTAL > spawnNo) { const idxNo = spawnNo; spawnNo = (spawnNo + 1);
-    let figNode = null;
-    try { figNode = makeFigure(buildLook()); } catch (muteErr) { continue; }
-    const claimedRow = slotRowFor(idxNo);
-    const nomad = buildPedShell(figNode, idxNo, claimedRow ? claimedRow.key : null);
-    if (12 > idxNo) { nomad.idle = true;
-      if (!(idxNo >= 3)) placeInRing(nomad, -410, 418, idxNo, 3);
-      else if (!(idxNo >= 6)) placeInRing(nomad, 330, -330, (idxNo + -3), 3);
-      else if (!(idxNo >= 9)) placeInRing(nomad, 182.2, 147.8, (idxNo + -6), 3);
-      else { nomad.chatGroup = 'market';
-        const marketPt = locateMarket(game);
-        if (marketPt) { placeInRing(nomad, (13 + marketPt.x), (9 + marketPt.z), (idxNo + -9), 3); nomad.marketPlaced = true; }
-        else placeInRing(nomad, -312.8, -147.8, (idxNo + -9), 3); }
-      if ((1 === idxNo) || (4 === idxNo)) mountPhone(figNode);
-    } else if (24 > idxNo) {
-      if (0 === (idxNo % 2)) { const homeSel = pick(pairHomes());
-        placeOnPavement(nomad, huntPavement(game, homeSel.x, homeSel.z, 0, 190));
-      } else { const leaderRec = game.peds[(game.peds.length + -1)];
-        nomad.follow = leaderRec || null;
-        if (!leaderRec) { const homePick = pick(pairHomes());
-          placeOnPavement(nomad, huntPavement(game, homePick.x, homePick.z, 0, 190));
-        } else { nomad.x = ((leaderRec.x + -(Math.sin(leaderRec.angle) * 2.3)) + (Math.cos(leaderRec.angle) * 0.85));
-          nomad.z = ((leaderRec.z + -(Math.cos(leaderRec.angle) * 2.3)) + -(Math.sin(leaderRec.angle) * 0.85));
-          nomad.angle = leaderRec.angle; nomad.speed = leaderRec.speed; } }
-    } else if (32 > idxNo) {
-      const cornerX = pick([-330, -165, 0, 165, 330]);
-      const cornerZ = pick([-330, -165, 0, 165, 330]);
-      stageCrossing(nomad, cornerX, cornerZ, chance(0.5) ? 1 : -1, chance(0.5) ? 1 : -1, true);
-    } else { const homeSel = pick(strollHomes());
-      placeOnPavement(nomad, huntPavement(game, homeSel.x, homeSel.z, 0, 190)); }
-    armShadows(nomad.fig);
-    nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
-    nomad.fig.rotation.y = nomad.angle;
-    game.scene.add(nomad.fig); game.peds.push(nomad);
-    graftModel(nomad); }
-  // The crowd topped up below never receives a model; those
-  // figures stay procedural from creation through to placement.
-  function spawnBonusPed() {
-    let figNode = null;
-    try { figNode = makeFigure(buildLook()); } catch (muteErr) { return null; }
-    const shellNode = new THREE.Group(); shellNode.add(figNode);
-    armShadows(shellNode);
-    // Bonus figures spell their fields out longhand rather than
-    // borrowing the wave seeder; the two crowds stay separate.
-    const nomad = {}; nomad.fig = shellNode; nomad.visual = figNode;
-    nomad.glbInner = null; nomad.figIsGlb = false; nomad.citizenKey = null;
-    nomad.idx = game.peds.length;
-    nomad.angle = 0; nomad.x = 0; nomad.z = 0;
-    nomad.speed = rr(1.2, 1.8); nomad.phase = rr(0, 10);
-    nomad.dir = 1; nomad.vertical = true;
-    nomad.line = 0; nomad.off = 17.2;
-    nomad.idle = false; nomad.panicT = 0; nomad.sway = rr(0, 6);
-    nomad.fleeDir = null; nomad.startleT = 0; nomad.fleeT = 0;
-    nomad.chat = false; nomad.mode = 'walk';
-    nomad.follow = null; nomad.scattered = false;
-    nomad.chatGroup = null; nomad.crosser = false;
-    nomad.cross = null; nomad.marketPlaced = false;
-    return nomad; }
-  function placeBonusPed(nomad) {
-    if (!nomad) return;
-    nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
-    nomad.fig.rotation.y = nomad.angle;
-    game.scene.add(nomad.fig); game.peds.push(nomad); }
-  function placeStanding(nomad, standX, standZ, headingVal) {
-    nomad.x = standX; nomad.z = standZ;
-    nomad.idle = true; nomad.chat = true;
-    nomad.chatCx = (Math.sin(headingVal) * 3) + standX;
-    nomad.chatCz = (Math.cos(headingVal) * 3) + standZ;
-    nomad.angle = headingVal; }
-  function placeLaneWalker(nomad, laneOff, loVal, hiVal, dirVal) {
-    nomad.vertical = false; nomad.line = 495; nomad.off = laneOff;
-    nomad.x = rr(loVal, hiVal); nomad.z = (495 + laneOff);
-    nomad.dir = dirVal;
-    nomad.angle = (0 < dirVal) ? (Math.PI / 2) : (-Math.PI / 2);
-    nomad.mode = 'walk'; nomad.idle = false; }
-  const RESERVE_SPOTS = [{ x: 100, z: 511, ry: 0, stall: false },
-    { x: 300, z: 552, ry: 0, stall: false }, { x: -60, z: -238, ry: 0, stall: false },
-    { x: -210, z: 481, ry: 0, stall: false }];
-  let gatheredList = null;
-  try { if (Array.isArray(game.gatherSpots) && game.gatherSpots.length) gatheredList = game.gatherSpots; } catch (muteErr) {}
-  const activeSpots = gatheredList || RESERVE_SPOTS;
-  function frameForSpot(spotIn) {
-    const yawAmt = Number.isFinite(spotIn.ry) ? spotIn.ry : 0;
-    const basisRec = {}; basisRec.yaw = yawAmt;
-    basisRec.fwdX = Math.sin(yawAmt); basisRec.fwdZ = Math.cos(yawAmt);
-    basisRec.sideX = Math.cos(yawAmt); basisRec.sideZ = -Math.sin(yawAmt);
-    return basisRec; }
-  activeSpots.forEach((spotIn) => {
-    if (!spotIn || !Number.isFinite(spotIn.x) || !Number.isFinite(spotIn.z)) return;
-    const basisRec = frameForSpot(spotIn);
-    const ringHubX = (basisRec.sideX * 4.5) + spotIn.x;
-    const ringHubZ = (basisRec.sideZ * 4.5) + spotIn.z;
-    let ringNo = 0;
-    while (3 > ringNo) { const bonusPed = spawnBonusPed();
-      if (bonusPed) { placeInRing(bonusPed, ringHubX, ringHubZ, ringNo, 3); placeBonusPed(bonusPed); }
-      ringNo = (ringNo + 1); }
-    [-1, 1].forEach((sideAmt) => {
-      const bonusPed = spawnBonusPed();
-      if (bonusPed) { placeStanding(bonusPed, (spotIn.x + -(basisRec.fwdX * 3.5)) + (basisRec.sideX * sideAmt * 2.2), (spotIn.z + -(basisRec.fwdZ * 3.5)) + (basisRec.sideZ * sideAmt * 2.2), basisRec.yaw);
-        placeBonusPed(bonusPed); } });
-    if (spotIn.stall) { [-1, 1].forEach((sideAmt) => {
-        const bonusPed = spawnBonusPed();
-        if (bonusPed) { placeStanding(bonusPed, (spotIn.x + (basisRec.fwdX * 1.9)) + (basisRec.sideX * sideAmt * 0.95), (spotIn.z + (basisRec.fwdZ * 1.9)) + (basisRec.sideZ * sideAmt * 0.95), (Math.PI + basisRec.yaw));
-          placeBonusPed(bonusPed); } });
-      const vendorPed = spawnBonusPed();
-      if (vendorPed) { placeStanding(vendorPed, (spotIn.x + -(basisRec.fwdX * 1.6)), (spotIn.z + -(basisRec.fwdZ * 1.6)), basisRec.yaw); placeBonusPed(vendorPed); } } });
-  activeSpots.forEach((spotIn) => {
-    if (!spotIn || !spotIn.stall) return;
-    if (!Number.isFinite(spotIn.x) || !Number.isFinite(spotIn.z)) return;
-    const basisRec = frameForSpot(spotIn);
-    let queueNo = 0;
-    while (2 > queueNo) { const queuedPed = spawnBonusPed();
-      if (queuedPed) { const backStep = ((0.9 * (queueNo + 1)) + 1.9);
-        const wobbleAmt = (0 === queueNo) ? -0.18 : 0.22;
-        placeStanding(queuedPed, (spotIn.x + (basisRec.fwdX * backStep)) + (basisRec.sideX * wobbleAmt), (spotIn.z + (basisRec.fwdZ * backStep)) + (basisRec.sideZ * wobbleAmt), (Math.PI + basisRec.yaw));
-        placeBonusPed(queuedPed); }
-      queueNo = (queueNo + 1); } });
-  const LANE_ROWS = [{ off: -9, n: 8, xMin: -420, xMax: 560 },
-    { off: 10, n: 7, xMin: -420, xMax: 560 }, { off: 57, n: 5, xMin: -380, xMax: 600 }];
-  LANE_ROWS.forEach((laneRow) => {
-    let laneNo = 0;
-    while (laneRow.n > laneNo) { const lanePed = spawnBonusPed();
-      if (lanePed) { placeLaneWalker(lanePed, laneRow.off, laneRow.xMin, laneRow.xMax, (0 === (laneNo % 2)) ? 1 : -1); placeBonusPed(lanePed); }
-      laneNo = (laneNo + 1); } });
-  let martNo = 0;
-  while (4 > martNo) { const martPed = spawnBonusPed();
-    if (martPed) { placeInRing(martPed, -79.5, -251, martNo, 4); placeBonusPed(martPed); }
-    martNo = (martNo + 1); }
-  let dtNo = 0;
-  while (4 > dtNo) { const dtPed = spawnBonusPed();
-    if (dtPed) { placeOnPavement(dtPed, huntPavement(game, 0, 0, 0, 70)); placeBonusPed(dtPed); }
-    dtNo = (dtNo + 1); }
-  let dtMoreNo = 0;
-  while (4 > dtMoreNo) { const dtMorePed = spawnBonusPed();
-    if (dtMorePed) { placeOnPavement(dtMorePed, huntPavement(game, 0, 0, 0, 70)); placeBonusPed(dtMorePed); }
-    dtMoreNo = (dtMoreNo + 1); }
-  // The get-together cluster that anchors itself on the park.
-  { let parkSpotRec = { x: 82, z: 415, stallX: (32 + 82), stallZ: (8 + 415) };
-    try { const liveParkSpot = game.parkSpot;
-      if (liveParkSpot && Number.isFinite(liveParkSpot.x) && Number.isFinite(liveParkSpot.z)) {
-        const rebuiltSpot = {}; rebuiltSpot.x = liveParkSpot.x; rebuiltSpot.z = liveParkSpot.z;
-        rebuiltSpot.stallX = Number.isFinite(liveParkSpot.stallX) ? liveParkSpot.stallX : (32 + liveParkSpot.x);
-        rebuiltSpot.stallZ = Number.isFinite(liveParkSpot.stallZ) ? liveParkSpot.stallZ : (8 + liveParkSpot.z);
-        parkSpotRec = rebuiltSpot; } } catch (muteErr) {}
-    const parkHubX = parkSpotRec.x; const parkHubZ = parkSpotRec.z;
-    let benchNo = 0;
-    while (3 > benchNo) { const benchPed = spawnBonusPed();
-      if (benchPed) { placeInRing(benchPed, (10 + parkHubX), (6 + parkHubZ), benchNo, 3); placeBonusPed(benchPed); }
-      benchNo = (benchNo + 1); }
-    let benchMoreNo = 0;
-    while (3 > benchMoreNo) { const benchMorePed = spawnBonusPed();
-      if (benchMorePed) { placeInRing(benchMorePed, (parkHubX + -10), (parkHubZ + -6), benchMoreNo, 3); placeBonusPed(benchMorePed); }
-      benchMoreNo = (benchMoreNo + 1); }
-    const parkVendor = spawnBonusPed();
-    if (parkVendor) { placeStanding(parkVendor, (0.9 + parkSpotRec.stallX), parkSpotRec.stallZ, (-Math.PI / 2)); placeBonusPed(parkVendor); }
-    [-1, 1].forEach((sideAmt) => {
-      const custPed = spawnBonusPed();
-      if (custPed) { placeStanding(custPed, (parkSpotRec.stallX + -2.6), (parkSpotRec.stallZ + (sideAmt * 0.95)), (Math.PI / 2)); placeBonusPed(custPed); } });
-    const duoSpecs = [[16, 0, Math.PI / 2], [0, 16, 0]];
-    duoSpecs.forEach((duoSpec) => {
-      const [duoDx, duoDz] = duoSpec; const duoFacing = duoSpec[2];
-      [-1, 1].forEach((sideAmt) => {
-        const duoPed = spawnBonusPed();
-        if (duoPed) { const splitAmt = (sideAmt * 0.85);
-          placeStanding(duoPed, ((duoDx + parkHubX) + ((duoFacing !== 0) ? splitAmt : 0)), ((duoDz + parkHubZ) + ((duoFacing === 0) ? splitAmt : 0)), (duoFacing + ((0 < sideAmt) ? Math.PI : 0)));
-          placeBonusPed(duoPed); } }); });
-    const walkSpecs = [[-1.5, -20, 1], [1.5, 18, -1]];
-    walkSpecs.forEach((walkSpec) => {
-      const strollerPed = spawnBonusPed();
-      const [walkOff, walkDz, walkDir] = walkSpec;
-      if (strollerPed) { strollerPed.vertical = true;
-        strollerPed.line = parkHubX; strollerPed.off = walkSpec[0];
-        strollerPed.x = (walkOff + parkHubX); strollerPed.z = (walkDz + parkHubZ);
-        strollerPed.dir = walkDir;
-        strollerPed.angle = (0 < walkDir) ? 0 : Math.PI;
-        strollerPed.mode = 'walk'; strollerPed.idle = false;
-        placeBonusPed(strollerPed); } }); }
-  // A horn going off makes nearby standers jump, and whoever is
-  // close to a road line runs from the sound; best effort only.
-  game.pedsStartle = function pedsStartle(hitX, hitZ, radiusIn) {
-    try { if (!Array.isArray(game.peds)) return;
-      if (!Number.isFinite(hitX) || !Number.isFinite(hitZ)) return;
-      const reachAmt = (Number.isFinite(radiusIn) && (0 < radiusIn)) ? radiusIn : 12;
-      const nearLine = (coordVal, linesArr) => Array.isArray(linesArr) && linesArr.some((lineVal) => !(Math.abs((coordVal + -lineVal)) > 20));
-      game.peds.forEach((nomad) => {
-        if (!nomad || nomad.downed) return;
-        const awayX = (nomad.x + -hitX); const awayZ = (nomad.z + -hitZ);
-        const distAmt = Math.hypot(awayX, awayZ);
-        if (distAmt > reachAmt) return;
-        nomad.startleT = 0.25;
-        const onRoad = nearLine(nomad.x, game.roadX) || nearLine(nomad.z, game.roadZ);
-        const fleeing = (nomad.fleeT > 0) && nomad.fleeDir;
-        if (!(onRoad || fleeing)) return;
-        const denomAmt = (distAmt > 0.001) ? distAmt : 1;
-        nomad.fleeDir = (distAmt > 0.001) ? { x: (awayX / denomAmt), z: (awayZ / denomAmt) } : { x: 1, z: 0 };
-        nomad.fleeT = Math.max((nomad.fleeT || 0), 0.8); }); } catch (muteErr) {} };
-  game.updaters.push((frameArg, dtAmt) => {
-    const heroX = game.car ? game.car.x : game.player.x;
-    const heroZ = game.car ? game.car.z : game.player.z;
-    const fastCar = Boolean(game.car && game.flags.inCar && ((game.speedKmh || 0) > 40));
-    function setFigPose(nomad, hopAmt) {
-      nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
-      nomad.fig.rotation.y = nomad.angle; }
-    // One pedestrian's whole per-frame decision tree, lifted out
-    // of the sweep so the loop body below is nothing but a pass.
-    function stepWalker(nomad) {
-      const heroGap = Math.hypot((nomad.x + -heroX), (nomad.z + -heroZ));
-      let hopAmt = 0;
-      if (nomad.startleT > 0) { nomad.startleT = (nomad.startleT + -dtAmt);
-        const fracDone = Math.min(1, Math.max(0, (1 + -(nomad.startleT / 0.25))));
-        hopAmt = (0.14 * Math.sin(Math.PI * fracDone)); }
-      if (nomad.downed) { nomad.downedT = ((nomad.downedT || 0) + -dtAmt);
-        if (nomad.downedT > 0) return;
-        nomad.downed = false; nomad._tipped = false; nomad.hp = 100;
-        try { nomad.fig.rotation.set(0, nomad.angle, 0); } catch (muteErr) {}
-        placeOnPavement(nomad, huntPavement(game, heroX, heroZ, 60, 180));
-        nomad.chat = false; nomad.idle = false; nomad.mode = 'walk';
-        nomad.follow = null; nomad.scattered = false;
-        nomad.fig.position.set(nomad.x, groundH(nomad.x, nomad.z), nomad.z);
-        nomad.fig.rotation.y = nomad.angle;
-        return; }
-      if ((nomad.fleeT > 0) && nomad.fleeDir) {
-        if (nomad.chat) nomad.scattered = true;
-        nomad.fleeT = (nomad.fleeT + -dtAmt);
-        nomad.x = ((nomad.fleeDir.x * 3.4) * dtAmt) + nomad.x;
-        nomad.z = ((nomad.fleeDir.z * 3.4) * dtAmt) + nomad.z;
-        nomad.angle = Math.atan2(nomad.fleeDir.x, nomad.fleeDir.z);
-        nomad.phase = (((3.4 * dtAmt) * 2.4) + nomad.phase);
-        if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, nomad.phase, 1.6); } catch (muteErr) {}
-        } else { try { bobModel(nomad, 0.06, 0.05, 0.13, nomad.phase); } catch (muteErr) {} }
-        setFigPose(nomad, hopAmt);
-        return; }
-      if (nomad.scattered) { nomad.scattered = false;
-        nomad.chat = false; nomad.idle = false;
-        resetWalkHere(nomad); }
-      if ((350 < heroGap) && !nomad.chat && ('cross' !== nomad.mode) && !nomad.follow) {
-        placeOnPavement(nomad, huntPavement(game, heroX, heroZ, 150, 250));
-        nomad.idle = false; }
-      if (nomad.idle) { nomad.sway = (nomad.sway + dtAmt);
-        if (nomad.chat) {
-          if (('market' === nomad.chatGroup) && !nomad.marketPlaced) { const marketPt = locateMarket(game);
-            if (marketPt) { placeInRing(nomad, (13 + marketPt.x), (9 + marketPt.z), (nomad.idx % 3), 3); nomad.marketPlaced = true; } }
-          nomad.angle = Math.atan2((nomad.chatCx + -nomad.x), (nomad.chatCz + -nomad.z));
-          const talkAmt = (0.5 + (0.5 * Math.sin(((nomad.idx * 2.1) + (nomad.sway * 0.33)))));
-          if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), ((talkAmt * 0.2) + 0.12)); } catch (muteErr) {}
-          } else { try { nomad.glbInner.position.y = ((talkAmt * 0.008) + 0.006) * Math.sin(((nomad.sway * 1.5) + nomad.idx));
-              nomad.glbInner.rotation.z = ((talkAmt * 0.014) + 0.01) * Math.sin(((nomad.sway * 0.9) + nomad.idx));
-              nomad.glbInner.rotation.x = 0; } catch (muteErr) {} }
-          nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
-          nomad.fig.rotation.y = ((Math.sin(nomad.sway * 0.4) * 0.15) + nomad.angle);
-          return; }
-        if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, (0.7 * nomad.sway), 0.12); } catch (muteErr) {}
-        } else { try { nomad.glbInner.position.y = (0.006 * Math.sin(((nomad.sway * 1.5) + nomad.idx)));
-            nomad.glbInner.rotation.z = (0.01 * Math.sin(((nomad.sway * 0.9) + nomad.idx)));
-            nomad.glbInner.rotation.x = 0; } catch (muteErr) {} }
-        nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
-        nomad.fig.rotation.y = ((Math.sin(nomad.sway * 0.4) * 0.15) + nomad.angle);
-        return; }
-      if (nomad.follow) { const leaderRec = nomad.follow;
-        if (!leaderRec || leaderRec.downed) { nomad.sway = (nomad.sway + dtAmt);
-          paintIdle(nomad); setFigPose(nomad, hopAmt);
-          return; }
-        const trailX = ((leaderRec.x + -(Math.sin(leaderRec.angle) * 2.3)) + (Math.cos(leaderRec.angle) * 0.85));
-        const trailZ = ((leaderRec.z + -(Math.cos(leaderRec.angle) * 2.3)) + -(Math.sin(leaderRec.angle) * 0.85));
-        const trailGap = Math.hypot((trailX + -nomad.x), (trailZ + -nomad.z));
-        if (trailGap > 25) { nomad.x = trailX; nomad.z = trailZ; }
-        else { const easeAmt = Math.min(1, (4.5 * dtAmt));
-          nomad.x = (((trailX + -nomad.x) * easeAmt) + nomad.x);
-          nomad.z = (((trailZ + -nomad.z) * easeAmt) + nomad.z); }
-        nomad.angle = leaderRec.angle; nomad.phase = leaderRec.phase;
-        if (trailGap > 0.25) paintWalk(nomad, 0.55);
-        setFigPose(nomad, hopAmt);
-        return; }
-      if (('cross' === nomad.mode) && nomad.cross) { const routeRec = nomad.cross;
-        if ('wait' === routeRec.stage) { routeRec.waitT = (routeRec.waitT + -dtAmt);
-          nomad.sway = (nomad.sway + dtAmt); paintIdle(nomad);
-          nomad.fig.position.set(nomad.x, (hopAmt + groundH(nomad.x, nomad.z)), nomad.z);
-          nomad.fig.rotation.y = ((Math.sin(nomad.sway * 1.7) * 0.55) + routeRec.faceAngle);
-          if (!(routeRec.waitT > 0)) { routeRec.stage = 'cross'; routeRec.tx = (routeRec.cx + -(routeRec.sx * 17.2)); routeRec.tz = ((routeRec.sz * 9) + routeRec.cz); }
-          return; }
-        const stepX = (routeRec.tx + -nomad.x); const stepZ = (routeRec.tz + -nomad.z);
-        const stepGap = Math.hypot(stepX, stepZ);
-        const speedNow = (('cross' === routeRec.stage) ? 1.2 : 1) * nomad.speed;
-        if (stepGap < 0.35) {
-          if ('toCorner' === routeRec.stage) { routeRec.stage = 'toCurb';
-            routeRec.tx = ((routeRec.sx * 17.2) + routeRec.cx);
-            routeRec.tz = ((routeRec.sz * 9) + routeRec.cz);
-          } else if ('toCurb' === routeRec.stage) { routeRec.stage = 'wait';
-            routeRec.waitT = rr(1.4, 3.8); nomad.sway = rr(0, 6);
-          } else if ('cross' === routeRec.stage) { routeRec.stage = 'toWalk';
-            routeRec.tx = (routeRec.cx + -(routeRec.sx * 17.2));
-            routeRec.tz = ((routeRec.sz * 17.2) + routeRec.cz);
-          } else { nomad.mode = 'walk'; nomad.vertical = true;
-            nomad.line = routeRec.cx; nomad.off = (-routeRec.sx * 17.2);
-            nomad.x = (nomad.off + routeRec.cx);
-            nomad.dir = (0 < routeRec.sz) ? 1 : -1; nomad.cross = null; }
-        } else { const moveAmt = Math.min(stepGap, (speedNow * dtAmt));
-          nomad.x = (((stepX / stepGap) * moveAmt) + nomad.x);
-          nomad.z = (((stepZ / stepGap) * moveAmt) + nomad.z);
-          nomad.angle = Math.atan2(stepX, stepZ);
-          nomad.phase = (((speedNow * dtAmt) * 2.4) + nomad.phase);
-          paintWalk(nomad, 0.55); }
-        setFigPose(nomad, hopAmt);
-        return; }
-      if (fastCar && (heroGap < 6)) nomad.panicT = 0.9;
-      let paceAmt = nomad.speed; let lateralAmt = 0;
-      if (nomad.panicT > 0) { nomad.panicT = (nomad.panicT + -dtAmt);
-        paceAmt = (2.1 * nomad.speed);
-        const awaySign = Math.sign((((nomad.x + -heroX) * Math.cos(nomad.angle)) + -((nomad.z + -heroZ) * Math.sin(nomad.angle)))) || 1;
-        lateralAmt = (2.4 * awaySign); }
-      if (nomad.startleT > 0) paceAmt = 0;
-      const fwdAmt = (paceAmt * nomad.dir) * dtAmt;
-      if (!nomad.vertical) { nomad.x = (fwdAmt + nomad.x); nomad.z = ((nomad.line + nomad.off) + ((lateralAmt * dtAmt) * 3)); }
-      else { nomad.z = (fwdAmt + nomad.z); nomad.x = ((nomad.line + nomad.off) + ((lateralAmt * dtAmt) * 3)); }
-      nomad.phase = (((paceAmt * dtAmt) * 2.4) + nomad.phase);
-      const crossLines = nomad.vertical ? game.roadZ : game.roadX;
-      const alongCoord = nomad.vertical ? nomad.z : nomad.x;
-      let replanned = false;
-      for (const lineVal of crossLines) {
-        if (nomad.crosser && (Math.abs((alongCoord + -lineVal)) < 1.2) && chance(0.30)) {
-          if (nomad.vertical) stageCrossing(nomad, nomad.line, lineVal, (Math.sign(nomad.off) || 1), nomad.dir);
-          else stageCrossing(nomad, lineVal, nomad.line, nomad.dir, (Math.sign(nomad.off) || 1));
-          replanned = true; break; }
-        if ((Math.abs((alongCoord + -lineVal)) < 1.2) && chance(0.012)) {
-          const oldLine = nomad.line; const oldOff = nomad.off;
-          nomad.vertical = !(nomad.vertical); nomad.line = lineVal;
-          nomad.off = ((chance(0.5) ? -1 : 1) * 17.2);
-          nomad.dir = chance(0.5) ? 1 : -1;
-          if (!nomad.vertical) { nomad.z = (nomad.off + nomad.line); nomad.x = (oldOff + oldLine); }
-          else { nomad.x = (nomad.off + nomad.line); nomad.z = (oldOff + oldLine); }
-          break; } }
-      if (replanned) { setFigPose(nomad, hopAmt); return; }
-      if ((nomad.x > 640) || (-640 > nomad.x) || (nomad.z > 640) || (-640 > nomad.z)) {
-        nomad.dir = (-1 * nomad.dir);
-        nomad.x = THREE.MathUtils.clamp(nomad.x, -638, 638);
-        nomad.z = THREE.MathUtils.clamp(nomad.z, -638, 638); }
-      if (nomad.vertical) nomad.angle = (0 < nomad.dir) ? 0 : Math.PI;
-      else nomad.angle = (0 < nomad.dir) ? (Math.PI / 2) : (-Math.PI / 2);
-      if (!game.flags.inCar && (heroGap > 0.001) && (heroGap < 1.1)) {
-        const pushAmt = (((1.1 + -heroGap) * 2.2) * dtAmt);
-        nomad.x = ((((nomad.x + -heroX) / heroGap) * pushAmt) + nomad.x);
-        nomad.z = ((((nomad.z + -heroZ) / heroGap) * pushAmt) + nomad.z); }
-      if (!(nomad.figIsGlb && nomad.glbInner)) { try { animateFigure(nomad.visual, nomad.phase, (nomad.panicT > 0) ? 1.6 : 0.55); } catch (muteErr) {}
-      } else { try { const panicFlag = (nomad.panicT > 0);
-          let bobAmt = (0.04 * Math.abs(Math.sin(nomad.phase)));
-          if (panicFlag) bobAmt = ((Math.abs(Math.sin(nomad.phase * 1.7)) * 0.06) + bobAmt);
-          nomad.glbInner.position.y = bobAmt;
-          nomad.glbInner.rotation.z = (panicFlag ? 0.05 : 0.04) * Math.sin(nomad.phase);
-          nomad.glbInner.rotation.x = panicFlag ? 0.10 : 0.05; } catch (muteErr) {} }
-      setFigPose(nomad, hopAmt); }
-    game.peds.forEach((nomad) => stepWalker(nomad)); });
+
+const SKIN_SHADES = [];
+SKIN_SHADES.push(0xf0c8a0); SKIN_SHADES.push(0xe8b48c); SKIN_SHADES.push(0xc98d64);
+SKIN_SHADES.push(0xb97a4e); SKIN_SHADES.push(0x8a5a34);
+const HAIR_STYLES = [];
+HAIR_STYLES.push('black topknot'); HAIR_STYLES.push('red ponytail'); HAIR_STYLES.push('violet bob');
+HAIR_STYLES.push('buzz'); HAIR_STYLES.push('silver undercut'); HAIR_STYLES.push('slick black');
+HAIR_STYLES.push('cap'); HAIR_STYLES.push('long'); HAIR_STYLES.push('bun');
+const HAIR_SHADES = [];
+HAIR_SHADES.push(0x14100e); HAIR_SHADES.push(0x8c2f1d); HAIR_SHADES.push(0x6a3fa0);
+HAIR_SHADES.push(0x2a2a2e); HAIR_SHADES.push(0xc9ccd4); HAIR_SHADES.push(0x1a1512);
+HAIR_SHADES.push(0x24406e); HAIR_SHADES.push(0x3a2415); HAIR_SHADES.push(0x101010);
+const TOP_STYLES = [];
+TOP_STYLES.push('tank'); TOP_STYLES.push('hoodie'); TOP_STYLES.push('jacket');
+const TOP_SHADES = [];
+TOP_SHADES.push(0xff5c39); TOP_SHADES.push(0x2e6fb7); TOP_SHADES.push(0x37b268); TOP_SHADES.push(0xf2c230);
+TOP_SHADES.push(0xe879ff); TOP_SHADES.push(0xeeeeee); TOP_SHADES.push(0x22242a); TOP_SHADES.push(0xff8ab0);
+TOP_SHADES.push(0x57b7ff); TOP_SHADES.push(0x8a5a34); TOP_SHADES.push(0xffb7d5); TOP_SHADES.push(0xa8e6cf);
+TOP_SHADES.push(0xfff0b3);
+const LEG_SHADES = [];
+LEG_SHADES.push(0x2c3e57); LEG_SHADES.push(0x3a3f47); LEG_SHADES.push(0x5b4632);
+LEG_SHADES.push(0x243024); LEG_SHADES.push(0x6e7f52); LEG_SHADES.push(0x39424e);
+const MODEL_YAW = 0;
+const MODEL_SLOTS = [];
+{
+  const slotA = {};
+  slotA.key = 'citizenWoman'; slotA.every = 5; slotA.offset = 0;
+  MODEL_SLOTS.push(slotA);
+  const slotB = {};
+  slotB.key = 'citizenTeen2'; slotB.every = 5; slotB.offset = 1;
+  MODEL_SLOTS.push(slotB);
+  const slotC = {};
+  slotC.key = 'citizenOffice'; slotC.every = 5; slotC.offset = 2;
+  MODEL_SLOTS.push(slotC);
+  const slotD = {};
+  slotD.key = 'citizenTeen'; slotD.every = 5; slotD.offset = 3;
+  MODEL_SLOTS.push(slotD);
 }
+const TEEN_SHADES = [];
+TEEN_SHADES.push(0x3f8f7a); TEEN_SHADES.push(0xc96f3f); TEEN_SHADES.push(0xd9b23f); TEEN_SHADES.push(0x5a6d8a);
+TEEN_SHADES.push(0x7a9a4f); TEEN_SHADES.push(0x8a4f7d); TEEN_SHADES.push(0x9aa0a8); TEEN_SHADES.push(0x4f6db8);
+
+const probeCarrierXZ = (holder) => {
+  if (!holder) return undefined;
+  if (!Number.isFinite(holder.x) || !Number.isFinite(holder.z)) return undefined;
+  const pairOut = {};
+  pairOut.x = holder.x; pairOut.z = holder.z;
+  return pairOut;
+};
+
+const rowForSlot = (slotIdx) => {
+  if (!Number.isFinite(slotIdx)) return null;
+  let foundRow = null;
+  let rowIdx = 0;
+  for (; MODEL_SLOTS.length > rowIdx;) {
+    const rowEntry = MODEL_SLOTS[rowIdx];
+    rowIdx += 1;
+    if (foundRow) continue;
+    if (!rowEntry) continue;
+    const offVal = rowEntry.offset || 0;
+    if (rowEntry.every > 0 && offVal === slotIdx % rowEntry.every) foundRow = rowEntry;
+  }
+  return foundRow;
+};
+
+const composeLook = () => {
+  const cutIdx = ri(0, HAIR_STYLES.length - 1);
+  const cutPair = [HAIR_STYLES[cutIdx], HAIR_SHADES[cutIdx]];
+  const shoeOpts = [];
+  shoeOpts.push(0xffffff); shoeOpts.push(0x222222); shoeOpts.push(0xd23b3b); shoeOpts.push(0x2e6fb7);
+  const kitBag = { top: pick(TOP_STYLES), topColor: pick(TOP_SHADES), trim: pick(TOP_SHADES),
+    pants: chance(0.6) ? 'jeans' : 'cargo', pantsColor: pick(LEG_SHADES), shoes: pick(shoeOpts) };
+  const styleRec = { name: 'Pedestrian', skin: pick(SKIN_SHADES), hair: cutPair.at(0), hairColor: cutPair.at(1),
+    h: rr(0.9, 1.03), build: rr(0.38, 0.7), outfit: kitBag };
+  return styleRec;
+};
+
+const findPavement = (gw, srcX, srcZ, nearCap, farCap) => {
+  let triesNum = 24;
+  for (; 0 < triesNum;) {
+    triesNum -= 1;
+    const goesVertical = chance(0.5);
+    let pickedLine;
+    if (goesVertical) pickedLine = pick(gw.roadX); else pickedLine = pick(gw.roadZ);
+    let sideSign;
+    if (chance(0.5)) sideSign = 1; else sideSign = -1;
+    const sideShift = sideSign * -17.2;
+    const alongVal = rr(-640, 640);
+    const tryRec = {};
+    tryRec.vertical = goesVertical; tryRec.line = pickedLine; tryRec.off = sideShift;
+    if (goesVertical) { tryRec.x = pickedLine + sideShift; tryRec.z = alongVal; }
+    else { tryRec.x = alongVal; tryRec.z = pickedLine + sideShift; }
+    tryRec.dist = Math.hypot(tryRec.x + -srcX, tryRec.z + -srcZ);
+    if (nearCap <= tryRec.dist && tryRec.dist <= farCap) {
+      const foundSpot = { vertical: tryRec.vertical, line: tryRec.line, off: tryRec.off, x: tryRec.x, z: tryRec.z };
+      return foundSpot;
+    }
+  }
+  const backupLine = pick(gw.roadX);
+  const backupSpot = { vertical: true, line: backupLine, off: 17.2, x: 17.2 + backupLine, z: rr(-300, 300) };
+  return backupSpot;
+};
+
+const probeLandmark = (markIn) => {
+  try { if (!markIn) return null;
+    const carrierArr = [markIn, markIn.pos, markIn.position, markIn.at];
+    let probeIdx = 0;
+    for (; carrierArr.length > probeIdx;) {
+      const carrierItem = carrierArr[probeIdx];
+      probeIdx += 1;
+      const hitRec = probeCarrierXZ(carrierItem);
+      if (undefined !== hitRec) return hitRec;
+    }
+  } catch (skip) {}
+  return null;
+};
+
+const findMarketPt = (gw) => {
+  let locatedPt = null;
+  try { const marketNode = (gw.landmarks || {}).market;
+    if (marketNode) locatedPt = probeLandmark(marketNode);
+  } catch (skip) {}
+  return locatedPt;
+};
+
+export const initPeds = (gw) => {
+  gw.peds = [];
+  const WAVE_COUNT = 44;
+  const modelCache = {};
+
+  const tintTeenModel = (rootIn, hueVal) => {
+    rootIn.traverse(function (meshItem) {
+      if (!(meshItem && meshItem.isMesh)) return;
+      if (!(meshItem.material && meshItem.material.color)) return;
+      meshItem.material = meshItem.material.clone();
+      meshItem.material.color.setHex(hueVal);
+    });
+  };
+
+  const enableShadows = (rootIn) => {
+    rootIn.traverse(function (meshItem) { if (meshItem && meshItem.isMesh) meshItem.castShadow = true; });
+  };
+
+  const attachModel = (npc) => {
+    try { if (!npc || npc.figIsGlb || !npc.citizenKey) return;
+      const tplItem = modelCache[npc.citizenKey];
+      if (!tplItem) return;
+      const wrapItem = new THREE.Group();
+      wrapItem.rotation.y = MODEL_YAW;
+      const cloneItem = tplItem.clone(true);
+      if ('citizenTeen' === npc.citizenKey) tintTeenModel(cloneItem, TEEN_SHADES[npc.idx % TEEN_SHADES.length]);
+      enableShadows(wrapItem);
+      wrapItem.add(cloneItem);
+      if (npc.visual) npc.fig.remove(npc.visual);
+      npc.fig.add(wrapItem);
+      npc.visual = wrapItem;
+      npc.glbInner = wrapItem;
+      npc.figIsGlb = true;
+    } catch (skip) {}
+  };
+
+  for (const rowEntry of MODEL_SLOTS) {
+    try { const jobReq = loadHeroAsset(rowEntry.key);
+      if (!jobReq || 'function' !== typeof jobReq.then) continue;
+      jobReq.then(function (tplIn) {
+        try { if (!tplIn) return;
+          modelCache[rowEntry.key] = tplIn;
+          for (const npc of gw.peds) attachModel(npc);
+        } catch (skip) {}
+      }).catch(function () {});
+    } catch (skip) {}
+  }
+
+  const setOnPavement = (npc, spotArg) => {
+    npc.x = spotArg.x;
+    npc.z = spotArg.z;
+    npc.vertical = spotArg.vertical;
+    npc.line = spotArg.line;
+    npc.off = spotArg.off;
+    if (chance(0.5)) npc.dir = 1; else npc.dir = -1;
+    const headingPositive = 0 < npc.dir;
+    let vertAng;
+    let horizAng;
+    if (headingPositive) { vertAng = 0; horizAng = Math.PI / 2; } else { vertAng = Math.PI; horizAng = -Math.PI / 2; }
+    if (npc.vertical) npc.angle = vertAng; else npc.angle = horizAng;
+  };
+
+  const ringAngleFor = (ringIdx, ringTotal) => {
+    return rr(-0.25, 0.25) + (ringIdx / ringTotal) * Math.PI * 2;
+  };
+
+  const setInRing = (npc, hubX, hubZ, ringIdx, ringTotal) => {
+    const thetaAmt = ringAngleFor(ringIdx, ringTotal);
+    npc.x = Math.sin(thetaAmt) * 1.25 + hubX;
+    npc.z = Math.cos(thetaAmt) * 1.25 + hubZ;
+    npc.chatCx = hubX;
+    npc.chatCz = hubZ;
+    npc.chat = true;
+    npc.idle = true;
+    npc.angle = Math.atan2(hubX + -npc.x, hubZ + -npc.z);
+  };
+
+  const setCrossing = (npc, cornerX, cornerZ, signX, signZ, snapFlag) => {
+    npc.mode = 'cross';
+    npc.crosser = true;
+    const kerbX = cornerX + signX * 17.2;
+    const kerbZ = cornerZ + signZ * 17.2;
+    if (snapFlag) { npc.x = kerbX; npc.z = kerbZ; }
+    const gapNow = Math.hypot(kerbX + -npc.x, kerbZ + -npc.z);
+    const farFlag = 2 < gapNow;
+    let stageVal;
+    let routeTx;
+    let routeTz;
+    if (farFlag) { stageVal = 'toCorner'; routeTx = kerbX; routeTz = kerbZ; }
+    else { stageVal = 'toCurb'; routeTx = cornerX + signX * 17.2; routeTz = cornerZ + signZ * 9; }
+    const routeRec = { stage: stageVal, cx: cornerX, cz: cornerZ, sx: signX, sz: signZ, waitT: 0,
+      tx: routeTx, tz: routeTz, faceAngle: Math.atan2(-signX, 0) };
+    npc.cross = routeRec;
+    npc.angle = Math.atan2(routeRec.tx + -npc.x, routeRec.tz + -npc.z);
+  };
+
+  const rewalkHere = (npc) => {
+    let topLine = gw.roadX[0];
+    let topGap = Infinity;
+    for (const lineItem of gw.roadX) {
+      const gapNow = Math.abs(npc.x + -lineItem);
+      if (gapNow < topGap) {
+        topGap = gapNow;
+        topLine = lineItem;
+      }
+    }
+    npc.vertical = true;
+    npc.line = topLine;
+    npc.off = THREE.MathUtils.clamp(npc.x + -topLine, -17.2, 17.2);
+    if (!(Math.abs(npc.off) >= 13)) {
+      let offSign;
+      if (0 > npc.off) offSign = -1; else offSign = 1;
+      npc.off = offSign * 17.2;
+    }
+    npc.x = npc.off + topLine;
+    if (chance(0.5)) npc.dir = 1; else npc.dir = -1;
+    npc.mode = 'walk';
+  };
+
+  const bobGlb = (npc, bobAmt, swayAmt, leanAmt, phaseAmt) => {
+    npc.glbInner.position.y = Math.abs(Math.sin(phaseAmt)) * bobAmt;
+    npc.glbInner.rotation.z = Math.sin(phaseAmt) * swayAmt;
+    npc.glbInner.rotation.x = leanAmt;
+  };
+
+  const showWalk = (npc, amtVal) => {
+    if (!(npc.figIsGlb && npc.glbInner)) {
+      try { animateFigure(npc.visual, npc.phase, amtVal); } catch (skip) {}
+      return;
+    }
+    try { bobGlb(npc, (amtVal + amtVal) * 0.04, 0.04, 0.05, npc.phase); } catch (skip) {}
+  };
+
+  const showIdle = (npc) => {
+    if (!(npc.figIsGlb && npc.glbInner)) {
+      try { animateFigure(npc.visual, npc.sway * 0.7, 0.12); } catch (skip) {}
+      return;
+    }
+    try { const innerItem = npc.glbInner;
+      innerItem.position.y = Math.sin(npc.idx + npc.sway * 1.5) * 0.006;
+      innerItem.rotation.z = Math.sin(npc.idx + npc.sway * 0.9) * 0.01;
+      innerItem.rotation.x = 0;
+    } catch (skip) {}
+  };
+
+  const initPedFields = (npc, figIn, slotIdx, keyIn) => {
+    npc.fig = null; npc.visual = figIn; npc.glbInner = null; npc.figIsGlb = false;
+    npc.citizenKey = keyIn; npc.idx = slotIdx; npc.angle = 0; npc.x = 0; npc.z = 0;
+    npc.speed = rr(1.2, 1.8); npc.phase = rr(0, 10); npc.dir = 1; npc.vertical = true;
+    npc.line = 0; npc.off = 17.2; npc.sway = rr(0, 6); npc.idle = false; npc.panicT = 0;
+    npc.fleeDir = null; npc.startleT = 0; npc.fleeT = 0; npc.chat = false; npc.mode = 'walk';
+    npc.follow = null; npc.scattered = false; npc.chatGroup = null; npc.crosser = false;
+    npc.cross = null; npc.marketPlaced = false;
+    return npc;
+  };
+
+  const makePedShell = (figIn, slotIdx, keyIn) => {
+    const npc = initPedFields({}, figIn, slotIdx, keyIn);
+    const shellNode = new THREE.Group();
+    shellNode.add(figIn);
+    npc.fig = shellNode;
+    return npc;
+  };
+
+  const pairHomeList = () => {
+    const homeA = {}; homeA.x = -330; homeA.z = 330;
+    const homeB = {}; homeB.x = 330; homeB.z = 330;
+    const homeC = {}; homeC.x = 330; homeC.z = -330;
+    const homeD = {}; homeD.x = -330; homeD.z = -330;
+    const homeE = {}; homeE.x = -412.5; homeE.z = 412.5;
+    const homeF = {}; homeF.x = 0; homeF.z = 0;
+    const homeG = {}; homeG.x = 250; homeG.z = 420;
+    const homeH = {}; homeH.x = -480; homeH.z = -255;
+    const homesArr = [homeA, homeB, homeC, homeD, homeE, homeF, homeG, homeH];
+    return homesArr;
+  };
+
+  const strollHomeList = () => {
+    const homesArr = [];
+    const strollA = {}; strollA.x = -330; strollA.z = 330; homesArr.push(strollA);
+    const strollB = {}; strollB.x = 330; strollB.z = 330; homesArr.push(strollB);
+    const strollC = {}; strollC.x = 330; strollC.z = -330; homesArr.push(strollC);
+    const strollD = {}; strollD.x = -330; strollD.z = -330; homesArr.push(strollD);
+    const strollE = {}; strollE.x = -412.5; strollE.z = 412.5; homesArr.push(strollE);
+    const strollF = {}; strollF.x = 0; strollF.z = 0; homesArr.push(strollF);
+    const strollG = {}; strollG.x = 250; strollG.z = 420; homesArr.push(strollG);
+    const strollH = {}; strollH.x = -480; strollH.z = -255; homesArr.push(strollH);
+    return homesArr;
+  };
+
+  const attachPhone = (figIn) => {
+    try { const handsetGeo = new THREE.BoxGeometry(0.09, 0.16, 0.02);
+      const handsetCfg = {};
+      handsetCfg.color = 0x111318; handsetCfg.roughness = 0.4; handsetCfg.metalness = 0.4;
+      handsetCfg.emissive = 0x2a4a6a; handsetCfg.emissiveIntensity = 0.7;
+      const handsetMat = new THREE.MeshStandardMaterial(handsetCfg);
+      const handsetNode = new THREE.Mesh(handsetGeo, handsetMat);
+      handsetNode.position.x = 0.22;
+      handsetNode.position.y = 1.05;
+      handsetNode.position.z = 0.22;
+      figIn.add(handsetNode);
+    } catch (skip) {}
+  };
+
+  let spawnIdx = 0;
+  for (; WAVE_COUNT > spawnIdx;) {
+    const slotIdx = spawnIdx;
+    spawnIdx += 1;
+    let figIn = null;
+    try { figIn = makeFigure(composeLook()); } catch (skip) { continue; }
+    const claimedRow = rowForSlot(slotIdx);
+    let citizenKeyVal;
+    if (claimedRow) citizenKeyVal = claimedRow.key; else citizenKeyVal = null;
+    const npc = makePedShell(figIn, slotIdx, citizenKeyVal);
+    if (12 > slotIdx) {
+      npc.idle = true;
+      if (!(slotIdx >= 3)) setInRing(npc, -410, 418, slotIdx, 3);
+      else if (!(slotIdx >= 6)) setInRing(npc, 330, -330, slotIdx + -3, 3);
+      else if (!(slotIdx >= 9)) setInRing(npc, 182.2, 147.8, slotIdx + -6, 3);
+      else { npc.chatGroup = 'market';
+        const marketLoc = findMarketPt(gw);
+        if (marketLoc) {
+          setInRing(npc, marketLoc.x + 13, marketLoc.z + 9, slotIdx + -9, 3);
+          npc.marketPlaced = true;
+        } else setInRing(npc, -312.8, -147.8, slotIdx + -9, 3);
+      }
+      if (1 === slotIdx || 4 === slotIdx) attachPhone(figIn);
+    } else if (24 > slotIdx) {
+      if (0 === slotIdx % 2) {
+        const homeSel = pick(pairHomeList());
+        setOnPavement(npc, findPavement(gw, homeSel.x, homeSel.z, 0, 190));
+      } else { const leaderNpc = gw.peds[gw.peds.length + -1];
+        npc.follow = leaderNpc || null;
+        if (!leaderNpc) {
+          const homePick = pick(pairHomeList());
+          setOnPavement(npc, findPavement(gw, homePick.x, homePick.z, 0, 190));
+        } else { npc.x = leaderNpc.x + -(Math.sin(leaderNpc.angle) * 2.3) + Math.cos(leaderNpc.angle) * 0.85;
+          npc.z = leaderNpc.z + -(Math.cos(leaderNpc.angle) * 2.3) + -(Math.sin(leaderNpc.angle) * 0.85);
+          npc.angle = leaderNpc.angle;
+          npc.speed = leaderNpc.speed;
+        }
+      }
+    } else if (32 > slotIdx) {
+      const cnrOptsX = [];
+      cnrOptsX.push(-330); cnrOptsX.push(-165); cnrOptsX.push(0); cnrOptsX.push(165); cnrOptsX.push(330);
+      const cnrX = pick(cnrOptsX);
+      const cnrOptsZ = [];
+      cnrOptsZ.push(-330); cnrOptsZ.push(-165); cnrOptsZ.push(0); cnrOptsZ.push(165); cnrOptsZ.push(330);
+      const cnrZ = pick(cnrOptsZ);
+      let crossSignX;
+      let crossSignZ;
+      if (chance(0.5)) crossSignX = 1; else crossSignX = -1;
+      if (chance(0.5)) crossSignZ = 1; else crossSignZ = -1;
+      setCrossing(npc, cnrX, cnrZ, crossSignX, crossSignZ, true);
+    } else { const homeSel = pick(strollHomeList());
+      setOnPavement(npc, findPavement(gw, homeSel.x, homeSel.z, 0, 190));
+    }
+    enableShadows(npc.fig);
+    npc.fig.position.set(npc.x, groundH(npc.x, npc.z), npc.z);
+    npc.fig.rotation.y = npc.angle;
+    gw.scene.add(npc.fig);
+    gw.peds.push(npc);
+    attachModel(npc);
+  }
+
+  const makeBonusPed = () => {
+    let figIn = null;
+    try { figIn = makeFigure(composeLook()); } catch (skip) { return null; }
+    const bonusShell = new THREE.Group();
+    bonusShell.add(figIn);
+    enableShadows(bonusShell);
+    const npc = { fig: bonusShell, visual: figIn, glbInner: null, figIsGlb: false,
+      citizenKey: null, idx: gw.peds.length, angle: 0, x: 0, z: 0,
+      speed: rr(1.2, 1.8), phase: rr(0, 10), dir: 1, vertical: true,
+      line: 0, off: 17.2, idle: false, panicT: 0, sway: rr(0, 6),
+      fleeDir: null, startleT: 0, fleeT: 0, chat: false, mode: 'walk',
+      follow: null, scattered: false, chatGroup: null, crosser: false,
+      cross: null, marketPlaced: false };
+    return npc;
+  };
+
+  const mountBonusPed = (npc) => {
+    if (!npc) return;
+    npc.fig.position.set(npc.x, groundH(npc.x, npc.z), npc.z);
+    npc.fig.rotation.y = npc.angle;
+    gw.scene.add(npc.fig);
+    gw.peds.push(npc);
+  };
+
+  const setStanding = (npc, standX, standZ, headingVal) => {
+    npc.x = standX;
+    npc.z = standZ;
+    npc.idle = true;
+    npc.chat = true;
+    npc.chatCx = Math.sin(headingVal) * 3 + standX;
+    npc.chatCz = Math.cos(headingVal) * 3 + standZ;
+    npc.angle = headingVal;
+  };
+
+  const setLaneWalker = (npc, laneOff, loVal, hiVal, dirVal) => {
+    npc.vertical = false;
+    npc.line = 495;
+    npc.off = laneOff;
+    npc.x = rr(loVal, hiVal);
+    npc.z = laneOff + 495;
+    npc.dir = dirVal;
+    if (0 < dirVal) npc.angle = Math.PI / 2; else npc.angle = -Math.PI / 2;
+    npc.mode = 'walk';
+    npc.idle = false;
+  };
+
+  const FALLBACK_SPOTS = [];
+  {
+    const fbA = {}; fbA.stall = false; fbA.ry = 0; fbA.z = 511; fbA.x = 100; FALLBACK_SPOTS.push(fbA);
+    const fbB = {}; fbB.stall = false; fbB.ry = 0; fbB.z = 552; fbB.x = 300; FALLBACK_SPOTS.push(fbB);
+    const fbC = {}; fbC.stall = false; fbC.ry = 0; fbC.z = -238; fbC.x = -60; FALLBACK_SPOTS.push(fbC);
+    const fbD = {}; fbD.stall = false; fbD.ry = 0; fbD.z = 481; fbD.x = -210; FALLBACK_SPOTS.push(fbD);
+  }
+
+  let spotList = null;
+  try { if (Array.isArray(gw.gatherSpots) && gw.gatherSpots.length) spotList = gw.gatherSpots; } catch (skip) {}
+  const activeSpots = spotList || FALLBACK_SPOTS;
+
+  const frameOfSpot = (spotArg) => {
+    let yawNow;
+    if (Number.isFinite(spotArg.ry)) yawNow = spotArg.ry; else yawNow = 0;
+    const frameBasis = { yaw: yawNow, fwdX: Math.sin(yawNow), fwdZ: Math.cos(yawNow),
+      sideX: Math.cos(yawNow), sideZ: -Math.sin(yawNow) };
+    return frameBasis;
+  };
+
+  for (const spotArg of activeSpots) {
+    if (!spotArg || !Number.isFinite(spotArg.x) || !Number.isFinite(spotArg.z)) continue;
+    const frameBasis = frameOfSpot(spotArg);
+    const ringHubX = frameBasis.sideX * 4.5 + spotArg.x;
+    const ringHubZ = frameBasis.sideZ * 4.5 + spotArg.z;
+    let ringCnt = 0;
+    for (; 3 > ringCnt;) {
+      const extraNpc = makeBonusPed();
+      if (extraNpc) {
+        setInRing(extraNpc, ringHubX, ringHubZ, ringCnt, 3);
+        mountBonusPed(extraNpc);
+      }
+      ringCnt += 1;
+    }
+    for (const sideVal of [-1, 1]) {
+      const extraNpc = makeBonusPed();
+      if (extraNpc) {
+        setStanding(extraNpc,
+          spotArg.x + -(frameBasis.fwdX * 3.5) + frameBasis.sideX * sideVal * 2.2,
+          spotArg.z + -(frameBasis.fwdZ * 3.5) + frameBasis.sideZ * sideVal * 2.2,
+          frameBasis.yaw);
+        mountBonusPed(extraNpc);
+      }
+    }
+    if (spotArg.stall) {
+      for (const sideVal of [-1, 1]) {
+        const extraNpc = makeBonusPed();
+        if (extraNpc) {
+          setStanding(extraNpc,
+            spotArg.x + frameBasis.fwdX * 1.9 + frameBasis.sideX * sideVal * 0.95,
+            spotArg.z + frameBasis.fwdZ * 1.9 + frameBasis.sideZ * sideVal * 0.95,
+            frameBasis.yaw + Math.PI);
+          mountBonusPed(extraNpc);
+        }
+      }
+      const vendorNpc = makeBonusPed();
+      if (vendorNpc) {
+        setStanding(vendorNpc, spotArg.x + -(frameBasis.fwdX * 1.6), spotArg.z + -(frameBasis.fwdZ * 1.6), frameBasis.yaw);
+        mountBonusPed(vendorNpc);
+      }
+    }
+  }
+
+  for (const spotArg of activeSpots) {
+    if (!spotArg || !spotArg.stall) continue;
+    if (!Number.isFinite(spotArg.x) || !Number.isFinite(spotArg.z)) continue;
+    const frameBasis = frameOfSpot(spotArg);
+    let queueIdx = 0;
+    for (; 2 > queueIdx;) {
+      const queueNpc = makeBonusPed();
+      if (queueNpc) {
+        const backDist = 0.9 * (queueIdx + 1) + 1.9;
+        let wobbleVal;
+        if (0 === queueIdx) wobbleVal = -0.18; else wobbleVal = 0.22;
+        setStanding(queueNpc,
+          spotArg.x + frameBasis.fwdX * backDist + frameBasis.sideX * wobbleVal,
+          spotArg.z + frameBasis.fwdZ * backDist + frameBasis.sideZ * wobbleVal,
+          frameBasis.yaw + Math.PI);
+        mountBonusPed(queueNpc);
+      }
+      queueIdx += 1;
+    }
+  }
+
+  const LANE_SPECS = [];
+  {
+    const laneA = {}; laneA.n = 8; laneA.off = -9; laneA.xMax = 560; laneA.xMin = -420; LANE_SPECS.push(laneA);
+    const laneB = {}; laneB.n = 7; laneB.off = 10; laneB.xMax = 560; laneB.xMin = -420; LANE_SPECS.push(laneB);
+    const laneC = {}; laneC.n = 5; laneC.off = 57; laneC.xMax = 600; laneC.xMin = -380; LANE_SPECS.push(laneC);
+  }
+  for (const laneSpec of LANE_SPECS) {
+    let laneIdx = 0;
+    for (; laneSpec.n > laneIdx;) {
+      const laneNpc = makeBonusPed();
+      if (laneNpc) {
+        let laneDir;
+        if (0 === laneIdx % 2) laneDir = 1; else laneDir = -1;
+        setLaneWalker(laneNpc, laneSpec.off, laneSpec.xMin, laneSpec.xMax, laneDir);
+        mountBonusPed(laneNpc);
+      }
+      laneIdx += 1;
+    }
+  }
+
+  let martIdx = 0;
+  for (; 4 > martIdx;) {
+    const martNpc = makeBonusPed();
+    if (martNpc) {
+      setInRing(martNpc, -79.5, -251, martIdx, 4);
+      mountBonusPed(martNpc);
+    }
+    martIdx += 1;
+  }
+
+  let dtIdx = 0;
+  for (; 4 > dtIdx;) {
+    const dtNpc = makeBonusPed();
+    if (dtNpc) {
+      setOnPavement(dtNpc, findPavement(gw, 0, 0, 0, 70));
+      mountBonusPed(dtNpc);
+    }
+    dtIdx += 1;
+  }
+
+  let dtMoreIdx = 0;
+  for (; 4 > dtMoreIdx;) {
+    const dtMoreNpc = makeBonusPed();
+    if (dtMoreNpc) {
+      setOnPavement(dtMoreNpc, findPavement(gw, 0, 0, 0, 70));
+      mountBonusPed(dtMoreNpc);
+    }
+    dtMoreIdx += 1;
+  }
+
+  {
+    const parkRec = {};
+    parkRec.x = 82; parkRec.z = 415; parkRec.stallX = 32 + 82; parkRec.stallZ = 8 + 415;
+    let liveParkRec = parkRec;
+    try { const liveRec = gw.parkSpot;
+      if (liveRec && Number.isFinite(liveRec.x) && Number.isFinite(liveRec.z)) {
+        let stallXVal;
+        let stallZVal;
+        if (Number.isFinite(liveRec.stallX)) stallXVal = liveRec.stallX; else stallXVal = liveRec.x + 32;
+        if (Number.isFinite(liveRec.stallZ)) stallZVal = liveRec.stallZ; else stallZVal = liveRec.z + 8;
+        liveParkRec = { x: liveRec.x, z: liveRec.z, stallX: stallXVal, stallZ: stallZVal };
+      }
+    } catch (skip) {}
+    const parkHubX = liveParkRec.x;
+    const parkHubZ = liveParkRec.z;
+    let benchIdx = 0;
+    for (; 3 > benchIdx;) {
+      const benchNpc = makeBonusPed();
+      if (benchNpc) {
+        setInRing(benchNpc, parkHubX + 10, parkHubZ + 6, benchIdx, 3);
+        mountBonusPed(benchNpc);
+      }
+      benchIdx += 1;
+    }
+    let benchMoreIdx = 0;
+    for (; 3 > benchMoreIdx;) {
+      const benchMoreNpc = makeBonusPed();
+      if (benchMoreNpc) {
+        setInRing(benchMoreNpc, parkHubX + -10, parkHubZ + -6, benchMoreIdx, 3);
+        mountBonusPed(benchMoreNpc);
+      }
+      benchMoreIdx += 1;
+    }
+    const parkVendorNpc = makeBonusPed();
+    if (parkVendorNpc) {
+      setStanding(parkVendorNpc, liveParkRec.stallX + 0.9, liveParkRec.stallZ, -Math.PI / 2);
+      mountBonusPed(parkVendorNpc);
+    }
+    for (const sideVal of [-1, 1]) {
+      const custNpc = makeBonusPed();
+      if (custNpc) {
+        setStanding(custNpc, liveParkRec.stallX + -2.6, sideVal * 0.95 + liveParkRec.stallZ, Math.PI / 2);
+        mountBonusPed(custNpc);
+      }
+    }
+    const duoSpecArr = [];
+    duoSpecArr.push([16, 0, Math.PI / 2]);
+    duoSpecArr.push([0, 16, 0]);
+    for (const duoItem of duoSpecArr) {
+      const [duoOffX, duoOffZ] = duoItem;
+      const duoYaw = duoItem[2];
+      for (const sideVal of [-1, 1]) {
+        const duoNpc = makeBonusPed();
+        if (duoNpc) {
+          const splitVal = sideVal * 0.85;
+          let addX;
+          let addZ;
+          let yawAdd;
+          if (duoYaw !== 0) addX = splitVal; else addX = 0;
+          if (duoYaw === 0) addZ = splitVal; else addZ = 0;
+          if (0 < sideVal) yawAdd = Math.PI; else yawAdd = 0;
+          setStanding(duoNpc,
+            addX + duoOffX + parkHubX,
+            addZ + duoOffZ + parkHubZ,
+            duoYaw + yawAdd);
+          mountBonusPed(duoNpc);
+        }
+      }
+    }
+    const walkSpecArr = [];
+    walkSpecArr.push([-1.5, -20, 1]);
+    walkSpecArr.push([1.5, 18, -1]);
+    for (const walkItem of walkSpecArr) {
+      const walkerNpc = makeBonusPed();
+      const [walkOffX, walkOffZ, walkDirVal] = walkItem;
+      if (walkerNpc) {
+        walkerNpc.vertical = true;
+        walkerNpc.line = parkHubX;
+        walkerNpc.off = walkItem[0];
+        walkerNpc.x = parkHubX + walkOffX;
+        walkerNpc.z = parkHubZ + walkOffZ;
+        walkerNpc.dir = walkDirVal;
+        if (0 < walkDirVal) walkerNpc.angle = 0; else walkerNpc.angle = Math.PI;
+        walkerNpc.mode = 'walk';
+        walkerNpc.idle = false;
+        mountBonusPed(walkerNpc);
+      }
+    }
+  }
+
+  gw.pedsStartle = (hitPX, hitPZ, radiusArg) => {
+    try { if (!Array.isArray(gw.peds)) return;
+      if (!Number.isFinite(hitPX) || !Number.isFinite(hitPZ)) return;
+      let reachNow;
+      if (Number.isFinite(radiusArg) && 0 < radiusArg) reachNow = radiusArg; else reachNow = 12;
+      function nearLineFn(coordIn, lineArr) {
+        return Array.isArray(lineArr) && lineArr.some(function (lineItem) { return !(Math.abs(coordIn + -lineItem) > 20); });
+      }
+      for (const npc of gw.peds) {
+        if (!npc || npc.downed) continue;
+        const awayX = npc.x + -hitPX;
+        const awayZ = npc.z + -hitPZ;
+        const distNow = Math.hypot(awayX, awayZ);
+        if (distNow > reachNow) continue;
+        npc.startleT = 0.25;
+        const onRoadFlag = nearLineFn(npc.x, gw.roadX) || nearLineFn(npc.z, gw.roadZ);
+        const fleeFlag = npc.fleeT > 0 && npc.fleeDir;
+        if (!(onRoadFlag || fleeFlag)) continue;
+        const denomNow = distNow > 0.001 ? distNow : 1;
+        if (distNow > 0.001) {
+          const fleeVec = {};
+          fleeVec.x = awayX / denomNow; fleeVec.z = awayZ / denomNow;
+          npc.fleeDir = fleeVec;
+        } else {
+          const fleeVec = {};
+          fleeVec.x = 1; fleeVec.z = 0;
+          npc.fleeDir = fleeVec;
+        }
+        npc.fleeT = Math.max(npc.fleeT || 0, 0.8);
+      }
+    } catch (skip) {}
+  };
+
+  gw.updaters.push(function (frameIn, stepAmt) {
+    let heroX;
+    let heroZ;
+    if (gw.car) { heroX = gw.car.x; heroZ = gw.car.z; } else { heroX = gw.player.x; heroZ = gw.player.z; }
+    const fastCar = Boolean(gw.car && gw.flags.inCar && (gw.speedKmh || 0) > 40);
+
+    const poseFig = (npc, hopVal) => {
+      npc.fig.position.set(npc.x, hopVal + groundH(npc.x, npc.z), npc.z);
+      npc.fig.rotation.y = npc.angle;
+    };
+
+    const advanceNpc = (npc) => {
+      const heroDist = Math.hypot(npc.x + -heroX, npc.z + -heroZ);
+      let hopVal = 0;
+      if (npc.startleT > 0) {
+        npc.startleT = npc.startleT + -stepAmt;
+        const fracNow = Math.min(1, Math.max(0, 1 + -(npc.startleT / 0.25)));
+        hopVal = Math.sin(Math.PI * fracNow) * 0.14;
+      }
+      if (npc.downed) {
+        npc.downedT = (npc.downedT || 0) + -stepAmt;
+        if (npc.downedT > 0) return;
+        npc.downed = false;
+        npc._tipped = false;
+        npc.hp = 100;
+        try { npc.fig.rotation.set(0, npc.angle, 0); } catch (skip) {}
+        setOnPavement(npc, findPavement(gw, heroX, heroZ, 60, 180));
+        npc.chat = false;
+        npc.idle = false;
+        npc.mode = 'walk';
+        npc.follow = null;
+        npc.scattered = false;
+        npc.fig.position.set(npc.x, groundH(npc.x, npc.z), npc.z);
+        npc.fig.rotation.y = npc.angle; return;
+      }
+      if (npc.fleeT > 0 && npc.fleeDir) {
+        if (npc.chat) npc.scattered = true;
+        npc.fleeT = npc.fleeT + -stepAmt;
+        npc.x = npc.fleeDir.x * 3.4 * stepAmt + npc.x;
+        npc.z = npc.fleeDir.z * 3.4 * stepAmt + npc.z;
+        npc.angle = Math.atan2(npc.fleeDir.x, npc.fleeDir.z);
+        npc.phase = 3.4 * stepAmt * 2.4 + npc.phase;
+        if (!(npc.figIsGlb && npc.glbInner)) {
+          try { animateFigure(npc.visual, npc.phase, 1.6); } catch (skip) {}
+        } else { try { bobGlb(npc, 0.06, 0.05, 0.13, npc.phase); } catch (skip) {} }
+        poseFig(npc, hopVal); return;
+      }
+      if (npc.scattered) {
+        npc.scattered = false;
+        npc.chat = false;
+        npc.idle = false;
+        rewalkHere(npc);
+      }
+      if (350 < heroDist && !npc.chat && 'cross' !== npc.mode && !npc.follow) {
+        setOnPavement(npc, findPavement(gw, heroX, heroZ, 150, 250));
+        npc.idle = false;
+      }
+      if (npc.idle) {
+        npc.sway = npc.sway + stepAmt;
+        if (npc.chat) {
+          if ('market' === npc.chatGroup && !npc.marketPlaced) {
+            const marketLoc = findMarketPt(gw);
+            if (marketLoc) {
+              setInRing(npc, marketLoc.x + 13, marketLoc.z + 9, npc.idx % 3, 3);
+              npc.marketPlaced = true;
+            }
+          }
+          npc.angle = Math.atan2(npc.chatCx + -npc.x, npc.chatCz + -npc.z);
+          const talkAmt = 0.5 + 0.5 * Math.sin(npc.idx * 2.1 + npc.sway * 0.33);
+          if (!(npc.figIsGlb && npc.glbInner)) {
+            try { animateFigure(npc.visual, npc.sway * 0.7, talkAmt * 0.2 + 0.12); } catch (skip) {}
+          } else { try {
+              npc.glbInner.position.y = (talkAmt * 0.008 + 0.006) * Math.sin(npc.sway * 1.5 + npc.idx);
+              npc.glbInner.rotation.z = (talkAmt * 0.014 + 0.01) * Math.sin(npc.sway * 0.9 + npc.idx);
+              npc.glbInner.rotation.x = 0;
+            } catch (skip) {} }
+          npc.fig.position.set(npc.x, hopVal + groundH(npc.x, npc.z), npc.z);
+          npc.fig.rotation.y = Math.sin(npc.sway * 0.4) * 0.15 + npc.angle; return;
+        }
+        if (!(npc.figIsGlb && npc.glbInner)) {
+          try { animateFigure(npc.visual, npc.sway * 0.7, 0.12); } catch (skip) {}
+        } else { try {
+            npc.glbInner.position.y = Math.sin(npc.sway * 1.5 + npc.idx) * 0.006;
+            npc.glbInner.rotation.z = Math.sin(npc.sway * 0.9 + npc.idx) * 0.01;
+            npc.glbInner.rotation.x = 0;
+          } catch (skip) {} }
+        npc.fig.position.set(npc.x, hopVal + groundH(npc.x, npc.z), npc.z);
+        npc.fig.rotation.y = Math.sin(npc.sway * 0.4) * 0.15 + npc.angle; return;
+      }
+      if (npc.follow) {
+        const leaderNpc = npc.follow;
+        if (!leaderNpc || leaderNpc.downed) {
+          npc.sway = npc.sway + stepAmt;
+          showIdle(npc);
+          poseFig(npc, hopVal); return;
+        }
+        const trailX = leaderNpc.x + -(Math.sin(leaderNpc.angle) * 2.3) + Math.cos(leaderNpc.angle) * 0.85;
+        const trailZ = leaderNpc.z + -(Math.cos(leaderNpc.angle) * 2.3) + -(Math.sin(leaderNpc.angle) * 0.85);
+        const trailDist = Math.hypot(trailX + -npc.x, trailZ + -npc.z);
+        if (25 < trailDist) {
+          npc.x = trailX;
+          npc.z = trailZ;
+        } else { const easeNow = Math.min(1, stepAmt * 4.5);
+          npc.x = (trailX + -npc.x) * easeNow + npc.x;
+          npc.z = (trailZ + -npc.z) * easeNow + npc.z;
+        }
+        npc.angle = leaderNpc.angle;
+        npc.phase = leaderNpc.phase;
+        if (trailDist > 0.25) showWalk(npc, 0.55);
+        poseFig(npc, hopVal); return;
+      }
+      if ('cross' === npc.mode && npc.cross) {
+        const routeRec = npc.cross;
+        if ('wait' === routeRec.stage) {
+          routeRec.waitT = routeRec.waitT + -stepAmt;
+          npc.sway = npc.sway + stepAmt;
+          showIdle(npc);
+          npc.fig.position.set(npc.x, hopVal + groundH(npc.x, npc.z), npc.z);
+          npc.fig.rotation.y = Math.sin(npc.sway * 1.7) * 0.55 + routeRec.faceAngle;
+          if (!(routeRec.waitT > 0)) {
+            routeRec.stage = 'cross';
+            routeRec.tx = routeRec.cx + -(routeRec.sx * 17.2);
+            routeRec.tz = routeRec.sz * 9 + routeRec.cz;
+          }
+          return;
+        }
+        const stepDX = routeRec.tx + -npc.x;
+        const stepDZ = routeRec.tz + -npc.z;
+        const stepDist = Math.hypot(stepDX, stepDZ);
+        let paceMul;
+        if ('cross' === routeRec.stage) paceMul = 1.2; else paceMul = 1;
+        const paceNow = paceMul * npc.speed;
+        if (0.35 > stepDist) {
+          if ('toCorner' === routeRec.stage) {
+            routeRec.stage = 'toCurb';
+            routeRec.tx = routeRec.sx * 17.2 + routeRec.cx;
+            routeRec.tz = routeRec.sz * 9 + routeRec.cz;
+          } else if ('toCurb' === routeRec.stage) {
+            routeRec.stage = 'wait';
+            routeRec.waitT = rr(1.4, 3.8);
+            npc.sway = rr(0, 6);
+          } else if ('cross' === routeRec.stage) {
+            routeRec.stage = 'toWalk';
+            routeRec.tx = routeRec.cx + -(routeRec.sx * 17.2);
+            routeRec.tz = routeRec.sz * 17.2 + routeRec.cz;
+          } else { npc.mode = 'walk';
+            npc.vertical = true;
+            npc.line = routeRec.cx;
+            npc.off = -routeRec.sx * 17.2;
+            npc.x = npc.off + routeRec.cx;
+            if (0 < routeRec.sz) npc.dir = 1; else npc.dir = -1;
+            npc.cross = null;
+          }
+        } else { const moveAmt = Math.min(stepDist, paceNow * stepAmt);
+          npc.x = (stepDX / stepDist) * moveAmt + npc.x;
+          npc.z = (stepDZ / stepDist) * moveAmt + npc.z;
+          npc.angle = Math.atan2(stepDX, stepDZ);
+          npc.phase = paceNow * stepAmt * 2.4 + npc.phase;
+          showWalk(npc, 0.55);
+        }
+        poseFig(npc, hopVal); return;
+      }
+      if (fastCar && 6 > heroDist) npc.panicT = 0.9;
+      let paceWalk = npc.speed;
+      let sideDrift = 0;
+      if (npc.panicT > 0) {
+        npc.panicT = npc.panicT + -stepAmt;
+        paceWalk = npc.speed * 2.1;
+        const awaySign = Math.sign((npc.x + -heroX) * Math.cos(npc.angle) + -((npc.z + -heroZ) * Math.sin(npc.angle))) || 1;
+        sideDrift = awaySign * 2.4;
+      }
+      if (npc.startleT > 0) paceWalk = 0;
+      const fwdAmt = paceWalk * npc.dir * stepAmt;
+      if (!npc.vertical) {
+        npc.x = fwdAmt + npc.x;
+        npc.z = npc.line + npc.off + sideDrift * stepAmt * 3;
+      } else { npc.z = fwdAmt + npc.z;
+        npc.x = npc.line + npc.off + sideDrift * stepAmt * 3;
+      }
+      npc.phase = paceWalk * stepAmt * 2.4 + npc.phase;
+      let crossArr;
+      let alongVal;
+      if (npc.vertical) { crossArr = gw.roadZ; alongVal = npc.z; } else { crossArr = gw.roadX; alongVal = npc.x; }
+      let replannedFlag = false;
+      const crossIter = crossArr[Symbol.iterator]();
+      let crossStep = crossIter.next();
+      while (!crossStep.done) {
+        const lineItem = crossStep.value;
+        if (npc.crosser && 1.2 > Math.abs(alongVal + -lineItem) && chance(0.30)) {
+          if (npc.vertical) setCrossing(npc, npc.line, lineItem, Math.sign(npc.off) || 1, npc.dir);
+          else setCrossing(npc, lineItem, npc.line, npc.dir, Math.sign(npc.off) || 1);
+          replannedFlag = true; break;
+        }
+        if (1.2 > Math.abs(alongVal + -lineItem) && chance(0.012)) {
+          const prevLine = npc.line;
+          const prevOff = npc.off;
+          npc.vertical = !npc.vertical;
+          npc.line = lineItem;
+          let offSign;
+          if (chance(0.5)) offSign = -1; else offSign = 1;
+          npc.off = offSign * 17.2;
+          if (chance(0.5)) npc.dir = 1; else npc.dir = -1;
+          if (!npc.vertical) {
+            npc.z = npc.off + npc.line;
+            npc.x = prevOff + prevLine;
+          } else { npc.x = npc.off + npc.line;
+            npc.z = prevOff + prevLine;
+          } break;
+        }
+        crossStep = crossIter.next();
+      }
+      if (replannedFlag) {
+        poseFig(npc, hopVal); return;
+      }
+      if (npc.x > 640 || -640 > npc.x || npc.z > 640 || -640 > npc.z) {
+        npc.dir = -1 * npc.dir;
+        npc.x = THREE.MathUtils.clamp(npc.x, -638, 638);
+        npc.z = THREE.MathUtils.clamp(npc.z, -638, 638);
+      }
+      let vertAng;
+      let horizAng;
+      if (0 < npc.dir) vertAng = 0; else vertAng = Math.PI;
+      if (0 < npc.dir) horizAng = Math.PI / 2; else horizAng = -Math.PI / 2;
+      if (npc.vertical) npc.angle = vertAng; else npc.angle = horizAng;
+      if (!gw.flags.inCar && heroDist > 0.001 && 1.1 > heroDist) {
+        const pushNow = (1.1 + -heroDist) * 2.2 * stepAmt;
+        npc.x = (npc.x + -heroX) / heroDist * pushNow + npc.x;
+        npc.z = (npc.z + -heroZ) / heroDist * pushNow + npc.z;
+      }
+      if (!(npc.figIsGlb && npc.glbInner)) {
+        let walkAmt;
+        if (npc.panicT > 0) walkAmt = 1.6; else walkAmt = 0.55;
+        try { animateFigure(npc.visual, npc.phase, walkAmt); } catch (skip) {}
+      } else { try {
+          const panicNow = npc.panicT > 0;
+          let bobNow = Math.abs(Math.sin(npc.phase)) * 0.04;
+          if (panicNow) bobNow = Math.abs(Math.sin(npc.phase * 1.7)) * 0.06 + bobNow;
+          npc.glbInner.position.y = bobNow;
+          let swayNow;
+          let leanNow;
+          if (panicNow) { swayNow = 0.05; leanNow = 0.10; } else { swayNow = 0.04; leanNow = 0.05; }
+          npc.glbInner.rotation.z = swayNow * Math.sin(npc.phase);
+          npc.glbInner.rotation.x = leanNow;
+        } catch (skip) {} }
+      poseFig(npc, hopVal);
+    };
+
+    for (const npc of gw.peds) advanceNpc(npc);
+  });
+};
